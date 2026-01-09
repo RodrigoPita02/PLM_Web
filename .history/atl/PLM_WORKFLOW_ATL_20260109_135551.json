@@ -1,0 +1,10 @@
+{
+  "run_type": "PLM_WORKFLOW_ATL",
+  "timestamp": "2026-01-09 13:55:51",
+  "user": "ajesus4",
+  "plant_scope": "Apenas PT01",
+  "metrics": {
+    "PT01_rows": 139,
+    "PT02_rows": 0
+  }
+}

@@ -1990,7 +1990,8 @@ def postprocess_with_views_roles_and_classification(
     mara_df: pd.DataFrame,
     marc_df: pd.DataFrame,
     roles_df: pd.DataFrame,
-    views_df: pd.DataFrame
+    views_df: pd.DataFrame,
+    plant_filter: str | None = None,
 ):
     """
     Pós-processamento completo:
@@ -2012,10 +2013,10 @@ def postprocess_with_views_roles_and_classification(
     # -----------------------------------------------
     # 1) Normalizações de inputs (strip e consistência)
     # -----------------------------------------------
+    
     if errors_df is None:
         errors_df = pd.DataFrame()
     if roles_df is None or views_df is None:
-        # sem roles/views -> devolve estruturas vazias consistentes
         empty = pd.DataFrame()
         return errors_df, empty, empty, empty, empty, {}
 
@@ -2023,6 +2024,39 @@ def postprocess_with_views_roles_and_classification(
     views_df = views_df.copy()
     marc_df = marc_df.copy()
     mara_df = mara_df.copy()
+    errors_df = errors_df.copy()
+
+    
+    # --- NOVO: normalizar e aplicar filtro de planta logo no início ---
+    if plant_filter is not None:
+        plant_filter = str(plant_filter).strip().upper()
+
+        # Conjunto de materiais que existem na planta selecionada (via MARC)
+        mats_in_plant = set()
+        if 'Material' in marc_df.columns and 'Plant' in marc_df.columns:
+            mats_in_plant = set(
+                marc_df.loc[
+                    marc_df['Plant'].astype(str).str.strip().str.upper() == plant_filter,
+                    'Material'
+                ].astype(str).str.strip()
+            )
+
+        # 1) Filtrar MARC (para views missing / coverage / tabs)
+        if 'Plant' in marc_df.columns:
+            marc_df = marc_df[marc_df['Plant'].astype(str).str.strip().str.upper() == plant_filter].copy()
+
+        # 2) Filtrar errors_df:
+        #    - manter linhas com Plant == plant_filter
+        #    - manter linhas com Plant vazio SE o Material existir na planta (mats_in_plant)
+        if 'Plant' in errors_df.columns and 'Material' in errors_df.columns:
+            plant_col = errors_df['Plant'].astype(str).str.strip().str.upper()
+            mat_col   = errors_df['Material'].astype(str).str.strip()
+
+            mask_keep = (
+                (plant_col == plant_filter) |
+                ((plant_col == '') & (mat_col.isin(mats_in_plant)))
+            )
+            errors_df = errors_df[mask_keep].copy()
 
     # Strip de cabeçalhos críticos
     roles_df.columns = roles_df.columns.astype(str).str.strip()
@@ -2329,7 +2363,8 @@ def run_full_validation(
     roles_file=None,
     zplm_marc_file=None,
     zplm_mara_file=None,
-    previous_report=None
+    previous_report=None,
+    plant_filter: str | None = None,
 ):
     """
     Executa o processo completo:
@@ -2377,9 +2412,14 @@ def run_full_validation(
     if "Roles" not in rolesviews_dict or "Views" not in rolesviews_dict:
         raise ValueError("RolesViews.xlsx (embutido) deve conter as folhas 'Roles' e 'Views'.")
 
-
     roles_df = rolesviews_dict["Roles"]
     views_df = rolesviews_dict["Views"]
+
+    # --- NOVO: aplicar filtro de planta ao SAPUI5 Export (Original Data) ---
+    if plant_filter is not None and 'Plant' in sap_df.columns:
+        pf = str(plant_filter).strip().upper()
+        sap_df = sap_df[sap_df['Plant'].astype(str).str.strip().str.upper() == pf].copy()
+
 
     # ------------------
     # Pré-normalização
@@ -2476,7 +2516,8 @@ def run_full_validation(
         mara_df,
         marc_df,
         roles_df,
-        views_df
+        views_df,
+        plant_filter=plant_filter,
     )
 
     # ------------------
@@ -2713,3 +2754,353 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file):
     xlsx_bytes = _apply_conditional_formatting_in_memory(xlsx_bytes, sheet_names=("PT01", "PT02"))
 
     return xlsx_bytes, df_pt01, df_pt02
+
+
+# =============== DIFF ENGINE (Comparador) ===============
+import pandas as pd
+import io
+
+def _norm_str(x) -> str:
+    """Normaliza para string sem espaços; NaN -> ''."""
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return ''
+    return str(x).strip()
+
+def _load_rolesviews_maps() -> tuple[dict, dict]:
+    """
+    Carrega o Excel embutido RolesViews.xlsx (via Base64) e devolve:
+      - field_to_view: Field -> View (letra)
+      - view_to_desc:  View (letra) -> Descrição
+    """
+    try:
+        rolesviews_dict = load_xlsx(get_rolesviews_bytesio(), sheet_name=None)
+        roles_df = rolesviews_dict.get("Roles", pd.DataFrame())
+        views_df = rolesviews_dict.get("Views", pd.DataFrame())
+        if not roles_df.empty:
+            roles_df['Field'] = roles_df['Field'].astype(str).str.strip()
+            roles_df['View']  = roles_df['View'].astype(str).str.strip()
+            field_to_view = roles_df.set_index('Field')['View'].to_dict()
+        else:
+            field_to_view = {}
+        if not views_df.empty:
+            views_df['Codigo']    = views_df['Codigo'].astype(str).str.strip()
+            views_df['Descricao'] = views_df['Descricao'].astype(str).str.strip()
+            view_to_desc = views_df.set_index('Codigo')['Descricao'].to_dict()
+        else:
+            view_to_desc = {}
+        return field_to_view, view_to_desc
+    except Exception:
+        return {}, {}
+
+def _extract_missing_views_from_workbook(book_dict: dict[str, pd.DataFrame]) -> dict[tuple[str,str], set[str]]:
+    """
+    Lê todas as folhas 'Missing_<View>' e devolve um mapa:
+        (Material, Plant) -> {views_missing}
+    Se não existir nenhuma 'Missing_*', tenta inferir a partir de 'All Errors'
+    usando a coluna 'Justified_By_Missing_View' = True e 'View' (letra).
+    """
+    missing_map: dict[tuple[str, str], set[str]] = {}
+    # 1) Preferência: folhas Missing_<View>
+    missing_sheets = [name for name in book_dict.keys() if name.startswith("Missing_")]
+    if missing_sheets:
+        for sheet in missing_sheets:
+            df = book_dict.get(sheet, pd.DataFrame())
+            if df.empty:
+                continue
+            view_code = sheet.replace("Missing_", "").strip()
+            for _, r in df.iterrows():
+                mat = _norm_str(r.get('Material'))
+                plant = _norm_str(r.get('Plant'))
+                if not mat:
+                    continue
+                key = (mat, plant)
+                missing_map.setdefault(key, set()).add(view_code)
+        return missing_map
+
+    # 2) Fallback: Inferir a partir de 'All Errors'
+    df_err = book_dict.get("All Errors", pd.DataFrame())
+    if not df_err.empty and {'Material', 'Plant', 'View', 'Justified_By_Missing_View'}.issubset(df_err.columns):
+        for _, r in df_err.iterrows():
+            if bool(r.get('Justified_By_Missing_View', False)):
+                mat = _norm_str(r.get('Material'))
+                plant = _norm_str(r.get('Plant'))
+                view_code = _norm_str(r.get('View'))
+                if not mat or not view_code or view_code in ('', 'Not aplicable'):
+                    continue
+                key = (mat, plant)
+                missing_map.setdefault(key, set()).add(view_code)
+    return missing_map
+
+
+def compare_adjusted_reports(current_file, previous_file):
+    """
+    Compara dois relatórios ajustados gerados por run_full_validation e devolve:
+      - excel_bytes_diff: BytesIO com folhas:
+            'New Errors', 'Resolved Errors', 'Changed Errors',
+            'New Materials', 'Views Lost'
+      - diff_dfs: dict com os DataFrames acima (para mostrar no Streamlit)
+
+    Keys usadas:
+      - 'New/Resolved Errors': (Material, Plant, Field, Error) exata
+      - 'Changed Errors':      (Material, Plant, Field) igual, Error diferente
+      - 'New Materials':       materiais em 'Original Data' atuais que não existiam no anterior
+      - 'Views Lost':          views que passaram a estar em falta no atual, mas não estavam no anterior
+    """
+    # 1) Carregar ambos os workbooks para dict de DataFrames
+    current_dict  = load_xlsx(current_file, sheet_name=None)
+    previous_dict = load_xlsx(previous_file, sheet_name=None)
+
+    # 2) Obter DataFrames base
+    curr_err = current_dict.get("All Errors", pd.DataFrame()).copy()
+    prev_err = previous_dict.get("All Errors", pd.DataFrame()).copy()
+
+    curr_orig = current_dict.get("Original Data", pd.DataFrame()).copy()
+    prev_orig = previous_dict.get("Original Data", pd.DataFrame()).copy()
+
+    # Normalização light
+    for df in [curr_err, prev_err, curr_orig, prev_orig]:
+        if not df.empty:
+            for col in df.columns:
+                # Convert to string for key columns used later (avoid NaNs mismatch)
+                if col in {'Material', 'Plant', 'Field', 'Error'}:
+                    df[col] = df[col].astype(str).str.strip()
+
+    # 3) NEW / RESOLVED ERRORS pela chave completa (Material, Plant, Field, Error)
+    def _key4(df: pd.DataFrame):
+        if df.empty:
+            return set()
+        cols = ['Material', 'Plant', 'Field', 'Error']
+        for c in cols:
+            if c not in df.columns:
+                df[c] = ''
+        return set(tuple(row[c] for c in cols) for _, row in df[cols].iterrows())
+
+    curr_set4 = _key4(curr_err)
+    prev_set4 = _key4(prev_err)
+
+    new_errors_tuples     = curr_set4 - prev_set4
+    resolved_errors_tuples= prev_set4 - curr_set4
+
+    df_new_errors = pd.DataFrame(list(new_errors_tuples), columns=['Material', 'Plant', 'Field', 'Error'])
+    df_resolved_errors = pd.DataFrame(list(resolved_errors_tuples), columns=['Material', 'Plant', 'Field', 'Error'])
+
+    # 4) CHANGED ERRORS: mesmo (Material, Plant, Field), mas Error mudou
+    def _key3_map(df: pd.DataFrame) -> dict[tuple[str,str,str], set[str]]:
+        if df.empty:
+            return {}
+        cols = ['Material', 'Plant', 'Field', 'Error']
+        for c in cols:
+            if c not in df.columns:
+                df[c] = ''
+        m: dict[tuple[str,str,str], set[str]] = {}
+        for _, row in df[cols].iterrows():
+            key3 = (row['Material'], row['Plant'], row['Field'])
+            m.setdefault(key3, set()).add(row['Error'])
+        return m
+
+    curr_map3 = _key3_map(curr_err)
+    prev_map3 = _key3_map(prev_err)
+
+    changed_rows = []
+    for key3 in set(curr_map3.keys()).intersection(set(prev_map3.keys())):
+        if curr_map3[key3] != prev_map3[key3]:
+            # houve alteração de texto de erro para o mesmo Material/Plant/Field
+            mat, plant, field = key3
+            changed_rows.append({
+                'Material': mat,
+                'Plant': plant,
+                'Field': field,
+                'Prev_Errors': "; ".join(sorted(prev_map3[key3])),
+                'Curr_Errors': "; ".join(sorted(curr_map3[key3])),
+            })
+    df_changed_errors = pd.DataFrame(changed_rows)
+
+    # 5) NEW MATERIALS
+    def _materials(df: pd.DataFrame) -> set[str]:
+        if df.empty or 'Material' not in df.columns:
+            return set()
+        return set(df['Material'].astype(str).str.strip().unique())
+
+    curr_mats = _materials(curr_orig)
+    prev_mats = _materials(prev_orig)
+    new_mats  = sorted(curr_mats - prev_mats)
+    df_new_materials = pd.DataFrame({'Material': new_mats})
+
+    # 6) VIEWS LOST (passaram a estar em falta no atual)
+    curr_missing_map = _extract_missing_views_from_workbook(current_dict)
+    prev_missing_map = _extract_missing_views_from_workbook(previous_dict)
+
+    # Mapa para fácil lookup
+    all_keys = set(curr_missing_map.keys()).union(set(prev_missing_map.keys()))
+    field_to_view, view_to_desc = _load_rolesviews_maps()
+
+    views_lost_rows = []
+    for key in all_keys:
+        curr_missing = curr_missing_map.get(key, set())
+        prev_missing = prev_missing_map.get(key, set())
+        # Views novas em falta agora (presentes no curr_missing mas NÃO no prev_missing)
+        lost = sorted(curr_missing - prev_missing)
+        if not lost:
+            continue
+        mat, plant = key
+        for v in lost:
+            views_lost_rows.append({
+                'Material': mat,
+                'Plant': plant,
+                'View_Lost': v,
+                'View_Description': view_to_desc.get(v, ''),
+            })
+    df_views_lost = pd.DataFrame(views_lost_rows)
+
+    # 7) Construir Excel com estes DataFrames
+    out_bytes = io.BytesIO()
+    with pd.ExcelWriter(out_bytes, engine="openpyxl") as writer:
+        # Ordem de abas
+        df_new_errors.to_excel(writer,      sheet_name="New Errors",      index=False)
+        df_resolved_errors.to_excel(writer, sheet_name="Resolved Errors", index=False)
+        df_changed_errors.to_excel(writer,  sheet_name="Changed Errors",  index=False)
+        df_new_materials.to_excel(writer,   sheet_name="New Materials",   index=False)
+        df_views_lost.to_excel(writer,      sheet_name="Views Lost",      index=False)
+    out_bytes.seek(0)
+
+    # 8) Devolver ambos (bytes + dict com dfs)
+    diff_dfs = {
+        "New Errors": df_new_errors,
+        "Resolved Errors": df_resolved_errors,
+        "Changed Errors": df_changed_errors,
+        "New Materials": df_new_materials,
+        "Views Lost": df_views_lost,
+    }
+    return out_bytes, diff_dfs
+
+
+# ==========================
+# HISTÓRICO DE EXECUÇÕES / LOGS
+# ==========================
+import os, json
+from datetime import datetime
+
+def _ensure_dir(path: str):
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception:
+        pass
+
+def _safe_name(uploaded, default_name: str):
+    """Extrai o nome do ficheiro de UploadedFile/BytesIO/path; fallback para default_name."""
+    try:
+        if hasattr(uploaded, "name") and uploaded.name:
+            return str(uploaded.name)
+        if isinstance(uploaded, str):
+            return os.path.basename(uploaded)
+    except Exception:
+        pass
+    return default_name
+
+def _ts():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+# --------- Construção de payloads por tipo de run ---------
+def build_sap_log_payload(*, user: str, plant_filter: str | None,
+                          sap_file, mara_file, marc_file, mvke_file,
+                          errors_df, summary_df):
+    return {
+        "run_type": "SAP_VALIDATION",
+        "timestamp": _ts(),
+        "user": user,
+        "plant_filter": plant_filter or "ALL",
+        "files": {
+            "SAP": _safe_name(sap_file, "SAPUI5 Export.xlsx"),
+            "MARA": _safe_name(mara_file, "MARA.xlsx"),
+            "MARC": _safe_name(marc_file, "MARC.xlsx"),
+            "MVKE": _safe_name(mvke_file, "MVKE.xlsx"),
+        },
+        "metrics": {
+            "total_errors": int(errors_df.shape[0]) if errors_df is not None else 0,
+            "top_fields": (
+                summary_df.head(5).to_dict(orient="records") if summary_df is not None else []
+            ),
+        },
+    }
+
+def build_atl_log_payload(*, user: str, plant_scope: str,
+                          df_pt01: pd.DataFrame, df_pt02: pd.DataFrame):
+    return {
+        "run_type": "PLM_WORKFLOW_ATL",
+        "timestamp": _ts(),
+        "user": user,
+        "plant_scope": plant_scope,
+        "metrics": {
+            "PT01_rows": int(df_pt01.shape[0]) if df_pt01 is not None else 0,
+            "PT02_rows": int(df_pt02.shape[0]) if df_pt02 is not None else 0,
+        },
+    }
+
+def build_progress_log_payload(*, user: str,
+                               current_name: str, previous_name: str,
+                               diff_dfs: dict):
+    def _n(name): 
+        df = diff_dfs.get(name)
+        return int(df.shape[0]) if df is not None else 0
+    return {
+        "run_type": "SAP_VALIDATION_PROGRESS",
+        "timestamp": _ts(),
+        "user": user,
+        "files": {
+            "current": current_name,
+            "previous": previous_name,
+        },
+        "metrics": {
+            "new_errors": _n("New Errors"),
+            "resolved_errors": _n("Resolved Errors"),
+            "changed_errors": _n("Changed Errors"),
+            "new_materials": _n("New Materials"),
+            "views_lost": _n("Views Lost"),
+        },
+    }
+
+# --------- Persistência ---------
+def save_run_log(payload: dict, *, base_dir: str = ".history"):
+    """Guarda o payload JSON numa subpasta por tipo de run."""
+    run_type = payload.get("run_type", "UNKNOWN")
+    subdir = {
+        "SAP_VALIDATION": "sap",
+        "PLM_WORKFLOW_ATL": "atl",
+        "SAP_VALIDATION_PROGRESS": "progress",
+    }.get(run_type, "misc")
+
+    out_dir = os.path.join(base_dir, subdir)
+    _ensure_dir(out_dir)
+    ts_file = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = os.path.join(out_dir, f"{run_type}_{ts_file}.json")
+
+    try:
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return out_path
+    except Exception:
+        return None
+
+def list_run_logs(run_type: str, *, base_dir: str = ".history", limit: int = 25):
+    """Lista os últimos 'limit' logs para um run_type: 'sap' | 'atl' | 'progress'."""
+    subdir = {"sap": "sap", "atl": "atl", "progress": "progress"}.get(run_type, "")
+    if not subdir:
+        return []
+    folder = os.path.join(base_dir, subdir)
+    if not os.path.isdir(folder):
+        return []
+
+    files = sorted(
+        (os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(".json")),
+        reverse=True
+    )
+    out = []
+    for p in files[:limit]:
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                data["_path"] = p  # útil para debugging
+                out.append(data)
+        except Exception:
+            continue
+    return out
