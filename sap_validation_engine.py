@@ -2973,7 +2973,6 @@ def compare_adjusted_reports(current_file, previous_file):
     }
     return out_bytes, diff_dfs
 
-
 # ==========================
 # HISTÓRICO DE EXECUÇÕES / LOGS
 # ==========================
@@ -3121,6 +3120,86 @@ def list_run_logs(run_type: str, *, base_dir: str = ".history", limit: int = 25)
         except Exception:
             continue
     return out
+
+
+# ==========================================================
+# REPORTS VAULT (guardar Excel gerado) + payload helper
+# ==========================================================
+import os, io
+from datetime import datetime
+
+def save_report_to_vault(excel_bytes: io.BytesIO, *, report_type: str = "sap", plant_suffix: str = "ALL") -> str:
+    """
+    Grava o Excel gerado num diretório local tipo ./reports/<report_type>/YYYY-MM/
+    Retorna o caminho do ficheiro gravado.
+    """
+    # Diretório base
+    base_dir = os.path.join(".", "reports", report_type)
+    # Subpasta por mês (organização simples)
+    month_dir = datetime.now().strftime("%Y-%m")
+    out_dir = os.path.join(base_dir, month_dir)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Nome do ficheiro
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    fname = f"{ts}_SAP_Validation_Adjusted_Report_{plant_suffix}.xlsx"
+    fpath = os.path.join(out_dir, fname)
+
+    # Escrever bytes
+    excel_bytes.seek(0)
+    with open(fpath, "wb") as f:
+        f.write(excel_bytes.getvalue())
+
+    return os.path.abspath(fpath)
+
+
+def build_sap_log_payload(
+    *,
+    user: str,
+    plant_filter: str | None,
+    sap_file,
+    mara_file,
+    marc_file,
+    mvke_file,
+    errors_df,
+    summary_df,
+    report_path: str | None = None,   # <-- NOVO (opcional)
+):
+    """
+    Mantém API compatível; acrescenta caminho do relatório no payload quando fornecido.
+    """
+    from datetime import datetime
+
+    def _name(f, default):
+        return getattr(f, "name", default) if f is not None else default
+
+    total_errors = int(errors_df.shape[0]) if errors_df is not None else 0
+    total_fields = int(errors_df['Field'].nunique()) if (errors_df is not None and 'Field' in errors_df.columns) else 0
+    total_materials = int(errors_df['Material'].nunique()) if (errors_df is not None and 'Material' in errors_df.columns) else 0
+
+    payload = {
+        "type": "sap",
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "user": user,
+        "plant_filter": plant_filter if plant_filter else "ALL",
+        "metrics": {
+            "total_errors": total_errors,
+            "fields_with_error": total_fields,
+            "materials_with_error": total_materials,
+        },
+        "files": {
+            "sap": _name(sap_file, "Item Browse Report.xlsx"),
+            "mara": _name(mara_file, "MARA.xlsx"),
+            "marc": _name(marc_file, "MARC.xlsx"),
+            "mvke": _name(mvke_file, "MVKE.xlsx"),
+        },
+    }
+
+    # Novo: anexar caminho do relatório gerado (se existir)
+    if report_path:
+        payload["report_path"] = report_path
+
+    return payload
 
 # ==========================================================
 #  MRP VALIDATION (MARC + MARA + ZPLM MARC)

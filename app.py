@@ -1,9 +1,7 @@
-
 # app.py
 import streamlit as st
 import pandas as pd
 import io
-
 
 from utils.dashboard import (
     render_sap_run_kpis, render_sap_run_charts, render_sap_history_charts,
@@ -25,6 +23,120 @@ from sap_validation_engine import (
     run_mrp_validation,
     build_mrp_log_payload
 )
+
+# ==========================================================
+# NOVO: Classificador Universal de Ficheiros (Multi‑Upload)
+# ==========================================================
+
+def classify_uploaded_files(files):
+    """
+    Recebe uma lista de ficheiros carregados e classifica-os automaticamente
+    pelas páginas SAP, MRP, ATL e Progress.
+    """
+    mapping = {
+        # SAP Validation
+        "sap": None,
+        "mara": None,
+        "marc": None,
+        "mvke": None,
+        "zplm_marc": None,
+        "zplm_mara": None,
+
+        # ATL Workflow
+        "auto": None,
+        "plm": None,
+        "timing": None,
+
+        # Progress
+        "current": None,
+        "previous": None,
+    }
+
+    if not files:
+        return mapping
+
+    for f in files:
+        name = f.name.lower()
+
+        # SAP
+        if "sapui5" in name or "item" in name:
+            mapping["sap"] = f
+            continue
+        if "mara" in name and "zplm" not in name:
+            mapping["mara"] = f
+            continue
+        if "marc" in name and "zplm" not in name:
+            mapping["marc"] = f
+            continue
+        if "mvke" in name:
+            mapping["mvke"] = f
+            continue
+        if "zplm" in name and "marc" in name:
+            mapping["zplm_marc"] = f
+            continue
+        if "zplm" in name and "mara" in name:
+            mapping["zplm_mara"] = f
+            continue
+
+        # ATL
+        if "automotive" in name:
+            mapping["auto"] = f
+            continue
+        if "timingletter" in name or "timing_letter" in name:
+            mapping["plm"] = f
+            continue
+        if "timing" in name:
+            mapping["timing"] = f
+            continue
+
+        # PROGRESS
+        if "current" in name or "novo" in name or "atual" in name:
+            mapping["current"] = f
+            continue
+        if "previous" in name or "anterior" in name or "old" in name:
+            mapping["previous"] = f
+            continue
+
+    return mapping
+
+
+# ==========================================================
+# NOVO: Quais ficheiros são relevantes por página
+# ==========================================================
+def required_keys_for_page(page_choice: str) -> list[str]:
+    if page_choice == "SAP Material Validation":
+        return ["sap", "mara", "marc", "mvke", "zplm_marc", "zplm_mara"]
+
+    if page_choice == "MRP Validation":
+        return ["mara", "marc", "zplm_marc"]
+
+    if page_choice == "PLM Workflow (ATL)":
+        return ["auto", "plm", "timing"]
+
+    if page_choice == "SAP Material Validation Progress":
+        return ["current", "previous"]
+
+    return []
+
+
+# ==========================================================
+# Nomes bonitos para exibir no Expander
+# ==========================================================
+LABELS_PT = {
+    "sap": "SAPUI5 Export (Item Browse Report.xlsx)",
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "mvke": "MVKE.xlsx",
+    "zplm_marc": "ZPLM MARC.xlsx",
+    "zplm_mara": "ZPLM MARA.xlsx",
+
+    "auto": "PLM Automotive Validation.xlsx",
+    "plm": "PLM TimingLetter Validation.xlsx",
+    "timing": "Timing Letters.xlsx",
+
+    "current": "Relatório Atual (Progress)",
+    "previous": "Relatório Anterior (Progress)",
+}
 
 # ==========================================================
 # CONFIGURAÇÃO INICIAL
@@ -91,12 +203,26 @@ if choice == "SAP Material Validation":
     save_history = st.checkbox("Guardar esta execução no histórico", value=True)
 
     # -------------------- Uploaders --------------------
-    sap_file  = st.file_uploader("Item Browse Report.xlsx (SAPUI5 Export)", type="xlsx", key="sap")
-    mara_file = st.file_uploader("MARA.xlsx", type="xlsx", key="mara")
-    marc_file = st.file_uploader("MARC.xlsx", type="xlsx", key="marc")
-    mvke_file = st.file_uploader("MVKE.xlsx", type="xlsx", key="mvke")
-    zplm_marc = st.file_uploader("ZPLM MARC.xlsx (opcional)", type="xlsx", key="zplm_marc")
-    zplm_mara = st.file_uploader("ZPLM MARA.xlsx (opcional)", type="xlsx", key="zplm_mara")
+    uploads = st.file_uploader(
+        "Largar todos os ficheiros necessários aqui",
+        type="xlsx",
+        accept_multiple_files=True
+    )
+    files = classify_uploaded_files(uploads)
+
+    # Expander — mostra apenas os ficheiros relevantes à página atual
+    with st.expander("🔍 Ficheiros identificados automaticamente (página atual)"):
+        for key in required_keys_for_page(choice):
+            val = files.get(key)
+            label = LABELS_PT.get(key, key)
+            st.write(f"**{label}** → {val.name if val else '❌ não encontrado'}")
+
+    sap_file    = files.get("sap")
+    mara_file   = files.get("mara")
+    marc_file   = files.get("marc")
+    mvke_file   = files.get("mvke")
+    zplm_marc   = files.get("zplm_marc")
+    zplm_mara   = files.get("zplm_mara")
 
     # -------------------- FILTRO DE PLANTA --------------------
     st.markdown("### 🧭 Âmbito de Exportação")
@@ -153,15 +279,23 @@ if choice == "SAP Material Validation":
         st.success("Validação concluída!")
 
         # -------------------- Guardar Histórico --------------------
+        # Guardar relatório SAP no vault
+        suffix = plant_filter_export if plant_filter_export else "ALL"
+        from sap_validation_engine import save_report_to_vault
+        report_path = save_report_to_vault(excel_export, report_type="sap", plant_suffix=suffix)
+
+        # Guardar log SAP com o caminho correto
         if save_history:
             payload = build_sap_log_payload(
                 user=effective_executor,
                 plant_filter=plant_filter_export,
                 sap_file=sap_file, mara_file=mara_file, marc_file=marc_file, mvke_file=mvke_file,
-                errors_df=errors_df, summary_df=summary_df
+                errors_df=errors_df, summary_df=summary_df,
+                report_path=report_path,  # ESSENCIAL 🔥🔥🔥
             )
             save_run_log(payload)
-            st.info("📁 Execução guardada no histórico.")
+            st.info("📁 Execução guardada no histórico (arquivada).")
+
 
         # -------------------- Apresentação --------------------
         st.header("All Errors")
@@ -181,7 +315,6 @@ if choice == "SAP Material Validation":
             render_sap_history_charts(logs)
 
         # Download
-        suffix = plant_filter_export if plant_filter_export else "ALL"
         st.download_button(
             "Download Excel",
             data=excel_export.getvalue(),
@@ -203,7 +336,6 @@ if choice == "SAP Material Validation":
             else:
                 st.write("Sem histórico.")
 
-
 # ======================================================================================
 #                                     PAGE 2
 #                               PLM WORKFLOW (ATL)
@@ -215,10 +347,25 @@ elif choice == "PLM Workflow (ATL)":
     effective_executor = identity_input("Quem executa?", "atl_exec")
     save_history = st.checkbox("Guardar esta execução no histórico", value=True)
 
+    # -------------------- Uploaders --------------------
+    uploads = st.file_uploader(
+        "Largar todos os ficheiros necessários aqui",
+        type="xlsx",
+        accept_multiple_files=True
+    )
+    files = classify_uploaded_files(uploads)
+
+    # Expander — mostra apenas os ficheiros relevantes à página atual
+    with st.expander("🔍 Ficheiros identificados automaticamente (página atual)"):
+        for key in required_keys_for_page(choice):
+            val = files.get(key)
+            label = LABELS_PT.get(key, key)
+            st.write(f"**{label}** → {val.name if val else '❌ não encontrado'}")
+
     # Uploads
-    auto_file  = st.file_uploader("PLM Automotive Validation.xlsx", type="xlsx")
-    plm_file   = st.file_uploader("PLM TimingLetter Validation.xlsx", type="xlsx")
-    timing_file = st.file_uploader("Timing Letters.xlsx", type="xlsx")
+    auto_file  = files.get("auto")
+    plm_file   = files.get("plm")
+    timing_file = files.get("timing")
 
     # Filtros
     st.markdown("### 🧭 Âmbito de Visualização / Exportação")
@@ -316,7 +463,7 @@ elif choice == "PLM Workflow (ATL)":
 
 
 # ======================================================================================
-#                                     PAGE 4
+#                                     PAGE 3
 #                                 MRP VALIDATION
 # ======================================================================================
 elif choice == "MRP Validation":
@@ -325,10 +472,25 @@ elif choice == "MRP Validation":
     effective_executor = identity_input("Quem executa?", "mrp_exec")
     save_history = st.checkbox("Guardar esta execução no histórico", value=True)
 
+    # -------------------- Uploaders --------------------
+    uploads = st.file_uploader(
+        "Largar todos os ficheiros necessários aqui",
+        type="xlsx",
+        accept_multiple_files=True
+    )
+    files = classify_uploaded_files(uploads)
+
+    # Expander — mostra apenas os ficheiros relevantes à página atual
+    with st.expander("🔍 Ficheiros identificados automaticamente (página atual)"):
+        for key in required_keys_for_page(choice):
+            val = files.get(key)
+            label = LABELS_PT.get(key, key)
+            st.write(f"**{label}** → {val.name if val else '❌ não encontrado'}")
+
     # Uploaders
-    mara_file = st.file_uploader("MARA.xlsx", type="xlsx", key="mrp_mara")
-    marc_file = st.file_uploader("MARC.xlsx", type="xlsx", key="mrp_marc")
-    zplm_marc = st.file_uploader("ZPLM MARC.xlsx (opcional)", type="xlsx", key="mrp_zplm_marc")
+    mara_file = files.get("mara")
+    marc_file = files.get("marc")
+    zplm_marc = files.get("zplm_marc")
 
     # Filtro de Plant (visualização/exportação)
     st.markdown("### 🧭 Âmbito de Exportação")
@@ -430,74 +592,219 @@ elif choice == "MRP Validation":
 #                          SAP MATERIAL VALIDATION PROGRESS
 # ======================================================================================
 else:
+    import os, io
+    import pandas as pd
+
     st.subheader("📈 SAP Material Validation Progress")
 
     # Identidade
     effective_executor = identity_input("Quem executa?", "prog_exec")
     save_history = st.checkbox("Guardar esta execução no histórico", value=True)
 
-    diff_curr = st.file_uploader("Relatório Atual", type="xlsx", key="diff_curr")
-    diff_prev = st.file_uploader("Relatório Anterior", type="xlsx", key="diff_prev")
+    # 🔁 NOVO: Modo Auto
+    auto_mode = st.toggle("Auto (usar últimos relatórios guardados)", value=True)
+    
+    # Filtro de planta para Auto (para casarmos 'ALL', 'PT01' ou 'PT02' com o relatório arquivado)
+    st.markdown("### 🧭 Âmbito (Auto)")
+    prog_scope = st.radio("Âmbito:", ["ALL", "PT01", "PT02"], horizontal=True, index=0)
+    
+    def pick_last_two_reports(plant_scope: str):
+        """
+        Prioridade:
+        1) usar os logs 'sap' com report_path (filtrados por scope)
+        2) fallback: varrer ./reports/sap/** pelo sufixo e usar dois mais recentes
+        Retorna: (curr_path, prev_path, count)
+        """
+        import os, glob
 
-    if st.button("▶ Run Progress", type="primary"):
-        if diff_curr is None or diff_prev is None:
-            st.error("⚠ Faltam ficheiros.")
-            st.stop()
+        scope = (plant_scope or "ALL").upper()
 
-        from sap_validation_engine import compare_adjusted_reports
+        # 1) Tenta pelos logs
+        logs = list_run_logs("sap", limit=200) or []
+        cand = []
+        for log in logs:
+            if str(log.get("plant_filter", "ALL")).upper() != scope:
+                continue
+            path = log.get("report_path")
+            if path and os.path.exists(path):
+                cand.append((log.get("timestamp", ""), os.path.abspath(path)))
 
-        with st.spinner("A comparar relatórios..."):
-            excel_diff, diff_dfs = compare_adjusted_reports(diff_curr, diff_prev)
+        # Se há 2 ou mais logs válidos → usar
+        if len(cand) >= 2:
+            cand.sort(key=lambda x: x[0], reverse=True)
+            return cand[0][1], cand[1][1], len(cand)
 
-        st.success("Progresso concluído!")
+        # 2) Fallback: varrer o vault
+        base = os.path.join(".", "reports", "sap")
+        month_dirs = [d for d in (os.listdir(base) if os.path.exists(base) else [])]
+        paths = []
+        for m in month_dirs:
+            paths.extend(glob.glob(os.path.join(base, m, f"*SAP_Validation_Adjusted_Report_{scope}.xlsx")))
 
-        # Guardar histórico
-        if save_history:
-            payload = build_progress_log_payload(
-                user=effective_executor,
-                current_name=getattr(diff_curr, "name", "current.xlsx"),
-                previous_name=getattr(diff_prev, "name", "previous.xlsx"),
-                diff_dfs=diff_dfs
+        # Ordenar por timestamp embutido no nome
+        paths = sorted(paths, reverse=True)
+
+        if len(paths) >= 2:
+            return os.path.abspath(paths[0]), os.path.abspath(paths[1]), len(paths)
+
+        if len(paths) == 1:
+            return os.path.abspath(paths[0]), None, 1
+
+        # Nenhum encontrado
+        return None, None, 0
+
+    # -------------------- Uploaders --------------------
+    if auto_mode:  
+        curr_path, prev_path, avail = pick_last_two_reports(prog_scope)
+
+        with st.expander("🔍 Relatórios selecionados automaticamente"):
+            st.write(f"**Disponíveis p/ {prog_scope}**: {avail}")
+            st.write(f"**Atual** → {curr_path if curr_path else '❌ não encontrado'}")
+            st.write(f"**Anterior** → {prev_path if prev_path else '❌ não encontrado'}")
+            if avail == 1:
+                st.info("Foi encontrado **1 relatório**. Gere mais **1** para poder comparar.")
+            if avail == 0:
+                st.warning("Ainda **não há relatórios** arquivados para este âmbito.")
+
+        run_disabled = not (curr_path and prev_path)
+        if st.button("▶ Run Progress (Auto)", type="primary", disabled=run_disabled):
+
+            if not curr_path or not prev_path:
+                st.error("⚠ Não foi possível encontrar dois relatórios arquivados para o âmbito selecionado.")
+                st.stop()
+
+            # Abrir como BytesIO (compatível com compare_adjusted_reports)
+            with open(curr_path, "rb") as f:
+                curr_bytes = io.BytesIO(f.read())
+            with open(prev_path, "rb") as f:
+                prev_bytes = io.BytesIO(f.read())
+
+            from sap_validation_engine import compare_adjusted_reports
+            with st.spinner("A comparar relatórios (Auto)..."):
+                excel_diff, diff_dfs = compare_adjusted_reports(curr_bytes, prev_bytes)
+
+            st.success("Progresso (Auto) concluído!")
+
+            # Guardar histórico (nome = basename dos caminhos)
+            if save_history:
+                payload = build_progress_log_payload(
+                    user=effective_executor,
+                    current_name=os.path.basename(curr_path),
+                    previous_name=os.path.basename(prev_path),
+                    diff_dfs=diff_dfs
+                )
+                save_run_log(payload)
+                st.info("📁 Progresso (Auto) guardado.")
+
+            # Tabs (mesmo bloco do Manual)
+            labels = ["Erros Novos", "Erros Resolvidos", "Erros Alterados", "Novos Materiais", "Views Perdidas"]
+            keys   = ["New Errors", "Resolved Errors", "Changed Errors", "New Materials", "Views Lost"]
+            tabs = st.tabs(labels)
+            for tab, key in zip(tabs, keys):
+                with tab:
+                    st.dataframe(diff_dfs.get(key, pd.DataFrame()), use_container_width=True)
+
+            # Dashboards + Download (iguais ao Manual)
+            st.markdown("## 📈 Dashboard — Progress (Diff)")
+            render_progress_kpis(diff_dfs)
+            render_progress_charts(diff_dfs)
+            st.markdown("---")
+            st.download_button(
+                "Download SAP_Validation_Progress.xlsx",
+                data=excel_diff.getvalue(),
+                file_name="SAP_Validation_Progress.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-            save_run_log(payload)
-            st.info("📁 Progresso guardado.")
 
-        # Tabs
-        labels = ["Erros Novos", "Erros Resolvidos", "Erros Alterados", "Novos Materiais", "Views Perdidas"]
-        keys =    ["New Errors",  "Resolved Errors",  "Changed Errors",  "New Materials",  "Views Lost"]
+            # Histórico (iguais ao Manual)
+            with st.expander("🕘 Histórico Progress (últimas 10 execuções)"):
+                logs = list_run_logs("progress", limit=10)
+                if logs:
+                    hist_df = pd.DataFrame([{
+                        "Quando": log["timestamp"],
+                        "Quem": log["user"],
+                        "New": log["metrics"]["new_errors"],
+                        "Resolved": log["metrics"]["resolved_errors"],
+                        "Changed": log["metrics"]["changed_errors"],
+                        "New Mats": log["metrics"]["new_materials"],
+                        "Views Lost": log["metrics"]["views_lost"],
+                    } for log in logs])
+                    st.dataframe(hist_df, use_container_width=True)
+                else:
+                    st.write("Sem histórico.")
 
-        tabs = st.tabs(labels)
-        for tab, key in zip(tabs, keys):
-            with tab:
-                st.dataframe(diff_dfs.get(key, pd.DataFrame()), use_container_width=True)
+    else:
+        # ============ MODO MANUAL (multi-upload já implementado) ============
+        uploads = st.file_uploader("Largar os ficheiros necessários aqui", type="xlsx", accept_multiple_files=True)
+        files = classify_uploaded_files(uploads)
 
-                
-        # ---- Dashboards (comparação atual) ----
-        st.markdown("## 📈 Dashboard — Progress (Diff)")
-        render_progress_kpis(diff_dfs)
-        render_progress_charts(diff_dfs)
+        with st.expander("🔍 Ficheiros identificados (página atual)"):
+            for key in required_keys_for_page(choice):
+                val = files.get(key)
+                label = LABELS_PT.get(key, key)
+                st.write(f"**{label}** → {val.name if val else '❌ não encontrado'}")
 
-        st.markdown("---")
-        st.download_button(
-            "Download SAP_Validation_Progress.xlsx",
-            data=excel_diff.getvalue(),
-            file_name="SAP_Validation_Progress.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        diff_curr = files.get("current")
+        diff_prev = files.get("previous")
 
-        with st.expander("🕘 Histórico Progress (últimas 10 execuções)"):
-            logs = list_run_logs("progress", limit=10)
-            if logs:
-                hist_df = pd.DataFrame([{
-                    "Quando": log["timestamp"],
-                    "Quem": log["user"],
-                    "New": log["metrics"]["new_errors"],
-                    "Resolved": log["metrics"]["resolved_errors"],
-                    "Changed": log["metrics"]["changed_errors"],
-                    "New Mats": log["metrics"]["new_materials"],
-                    "Views Lost": log["metrics"]["views_lost"],
-                } for log in logs])
-                st.dataframe(hist_df, use_container_width=True)
-            else:
-                st.write("Sem histórico.")
+        if st.button("▶ Run Progress (Manual)", type="primary"):
+            if diff_curr is None or diff_prev is None:
+                st.error("⚠ Faltam ficheiros: Relatório Atual e Relatório Anterior.")
+                st.stop()
+
+            from sap_validation_engine import compare_adjusted_reports
+            with st.spinner("A comparar relatórios (Manual)..."):
+                excel_diff, diff_dfs = compare_adjusted_reports(diff_curr, diff_prev)
+
+            st.success("Progresso (Manual) concluído!")
+
+            # Guardar histórico
+            if save_history:
+                payload = build_progress_log_payload(
+                    user=effective_executor,
+                    current_name=getattr(diff_curr, "name", "current.xlsx"),
+                    previous_name=getattr(diff_prev, "name", "previous.xlsx"),
+                    diff_dfs=diff_dfs
+                )
+                save_run_log(payload)
+                st.info("📁 Progresso guardado.")
+
+            # Tabs
+            labels = ["Erros Novos", "Erros Resolvidos", "Erros Alterados", "Novos Materiais", "Views Perdidas"]
+            keys =    ["New Errors",  "Resolved Errors",  "Changed Errors",  "New Materials",  "Views Lost"]
+
+            tabs = st.tabs(labels)
+            for tab, key in zip(tabs, keys):
+                with tab:
+                    st.dataframe(diff_dfs.get(key, pd.DataFrame()), use_container_width=True)
+
+                    
+            # ---- Dashboards (comparação atual) ----
+            st.markdown("## 📈 Dashboard — Progress (Diff)")
+            render_progress_kpis(diff_dfs)
+            render_progress_charts(diff_dfs)
+
+            st.markdown("---")
+            st.download_button(
+                "Download SAP_Validation_Progress.xlsx",
+                data=excel_diff.getvalue(),
+                file_name="SAP_Validation_Progress.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+            with st.expander("🕘 Histórico Progress (últimas 10 execuções)"):
+                logs = list_run_logs("progress", limit=10)
+                if logs:
+                    hist_df = pd.DataFrame([{
+                        "Quando": log["timestamp"],
+                        "Quem": log["user"],
+                        "New": log["metrics"]["new_errors"],
+                        "Resolved": log["metrics"]["resolved_errors"],
+                        "Changed": log["metrics"]["changed_errors"],
+                        "New Mats": log["metrics"]["new_materials"],
+                        "Views Lost": log["metrics"]["views_lost"],
+                    } for log in logs])
+                    st.dataframe(hist_df, use_container_width=True)
+                else:
+                    st.write("Sem histórico.")
                 
