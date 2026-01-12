@@ -4,6 +4,14 @@ import streamlit as st
 import pandas as pd
 import io
 
+
+from utils.dashboard import (
+    render_sap_run_kpis, render_sap_run_charts, render_sap_history_charts,
+    render_atl_run_kpis, render_atl_run_charts, render_atl_history_charts,
+    render_progress_kpis, render_progress_charts, render_mrp_history_charts,
+    render_mrp_run_kpis, render_mrp_run_charts
+)
+
 from utils.identify import get_executor_identity
 from sap_validation_engine import (
     run_full_validation,
@@ -13,7 +21,9 @@ from sap_validation_engine import (
     build_atl_log_payload,
     build_progress_log_payload,
     save_run_log,
-    list_run_logs
+    list_run_logs,
+    run_mrp_validation,
+    build_mrp_log_payload
 )
 
 # ==========================================================
@@ -28,7 +38,7 @@ st.title("🧰 Validation Hub")
 st.sidebar.header("Menu")
 choice = st.sidebar.radio(
     "Escolher relatório:",
-    ["SAP Material Validation", "PLM Workflow (ATL)", "SAP Material Validation Progress"],
+    ["SAP Material Validation", "PLM Workflow (ATL)", "MRP Validation", "SAP Material Validation Progress"],
     index=0
 )
 
@@ -160,6 +170,16 @@ if choice == "SAP Material Validation":
         st.header("Adjusted Summary")
         st.dataframe(summary_df, use_container_width=True)
 
+        # ---- Dashboards (execução atual) ----
+        st.markdown("## 📈 Dashboard — SAP Material Validation")
+        render_sap_run_kpis(errors_df)
+        render_sap_run_charts(errors_df)
+
+        # ---- Evolução (histórico SAP) ----
+        with st.expander("📉 Evolução temporal (Histórico SAP)"):
+            logs = list_run_logs("sap", limit=50)
+            render_sap_history_charts(logs)
+
         # Download
         suffix = plant_filter_export if plant_filter_export else "ALL"
         st.download_button(
@@ -240,6 +260,16 @@ elif choice == "PLM Workflow (ATL)":
         for plant, df in df_display.items():
             st.header(plant)
             st.dataframe(df, use_container_width=True)
+   
+        # ---- Dashboards (execução atual ATL) ----
+        st.markdown("## 📈 Dashboard — PLM Workflow (ATL)")
+        render_atl_run_kpis(df_pt01, df_pt02)
+        render_atl_run_charts(df_pt01, df_pt02)
+
+        # ---- Evolução (histórico ATL) ----
+        with st.expander("📉 Evolução temporal (Histórico ATL)"):
+            logs = list_run_logs("atl", limit=50)
+            render_atl_history_charts(logs)
 
         # Export
         if atl_filter_export == "PT01":
@@ -286,7 +316,117 @@ elif choice == "PLM Workflow (ATL)":
 
 
 # ======================================================================================
-#                                     PAGE 3
+#                                     PAGE 4
+#                                 MRP VALIDATION
+# ======================================================================================
+elif choice == "MRP Validation":
+    st.subheader("🧩 MRP Validation")
+    # Identidade (cross-page)
+    effective_executor = identity_input("Quem executa?", "mrp_exec")
+    save_history = st.checkbox("Guardar esta execução no histórico", value=True)
+
+    # Uploaders
+    mara_file = st.file_uploader("MARA.xlsx", type="xlsx", key="mrp_mara")
+    marc_file = st.file_uploader("MARC.xlsx", type="xlsx", key="mrp_marc")
+    zplm_marc = st.file_uploader("ZPLM MARC.xlsx (opcional)", type="xlsx", key="mrp_zplm_marc")
+
+    # Filtro de Plant (visualização/exportação)
+    st.markdown("### 🧭 Âmbito de Exportação")
+    export_scope = st.radio(
+        "Âmbito do download:",
+        ["Tudo", "Apenas PT01", "Apenas PT02"],
+        index=0, horizontal=True
+    )
+    plant_filter_export = {"Apenas PT01": "PT01", "Apenas PT02": "PT02"}.get(export_scope)
+
+    apply_filter_display = st.checkbox("Aplicar filtro às tabelas apresentadas", value=False)
+    plant_filter_display = plant_filter_export if apply_filter_display else None
+
+    # RUN
+    if st.button("▶ Run MRP Validation", type="primary"):
+        missing = [mara_file, marc_file]
+        if any(f is None for f in missing):
+            st.error("⚠ Faltam ficheiros (MARA/MARC).")
+            st.stop()
+
+        with st.spinner("A validar regras MRP..."):
+            # Execução para visualização
+            excel_display, errors_df, summary_df = run_mrp_validation(
+                mara_file=mara_file,
+                marc_file=marc_file,
+                zplm_marc_file=zplm_marc,
+                plant_filter=plant_filter_display
+            )
+
+            # Execução para exportação (se filtro diferente do display)
+            if plant_filter_export != plant_filter_display:
+                excel_export, _, _ = run_mrp_validation(
+                    mara_file=mara_file,
+                    marc_file=marc_file,
+                    zplm_marc_file=zplm_marc,
+                    plant_filter=plant_filter_export
+                )
+            else:
+                excel_export = excel_display
+
+        st.success("Validação MRP concluída!")
+
+        # Guardar histórico
+        if save_history:
+            payload = build_mrp_log_payload(
+                user=effective_executor,
+                plant_filter=plant_filter_export,
+                mara_file=mara_file,
+                marc_file=marc_file,
+                zplm_marc_file=zplm_marc,
+                errors_df=errors_df,
+                summary_df=summary_df
+            )
+            save_run_log(payload)
+            st.info("📁 Execução MRP guardada no histórico.")
+
+        # Apresentação
+        st.header("All Errors")
+        st.dataframe(errors_df, use_container_width=True)
+
+        st.header("Adjusted Summary")
+        st.dataframe(summary_df, use_container_width=True)
+
+        # Dashboards (execução atual)
+        st.markdown("## 📈 Dashboard — MRP Validation")
+        render_mrp_run_kpis(errors_df)
+        render_mrp_run_charts(errors_df)
+
+        # Evolução temporal (histórico MRP)
+        with st.expander("📉 Evolução temporal (Histórico MRP)"):
+            logs = list_run_logs("mrp", limit=50)
+            render_mrp_history_charts(logs)
+
+        # Download
+        suffix = plant_filter_export if plant_filter_export else "ALL"
+        st.download_button(
+            "Download Excel (MRP)",
+            data=excel_export.getvalue(),
+            file_name=f"MRP_Validation_Adjusted_Report_{suffix}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        # Histórico (últimas 10 execuções)
+        with st.expander("🕘 Histórico MRP (últimas 10 execuções)"):
+            logs = list_run_logs("mrp", limit=10)
+            if logs:
+                hist_df = pd.DataFrame([{
+                    "Quando": log["timestamp"],
+                    "Quem": log["user"],
+                    "Filtro": log["plant_filter"],
+                    "Erros": log["metrics"]["total_errors"]
+                } for log in logs])
+                st.dataframe(hist_df, use_container_width=True)
+            else:
+                st.write("Sem histórico.")
+
+# ======================================================================================
+#                                     PAGE 4
 #                          SAP MATERIAL VALIDATION PROGRESS
 # ======================================================================================
 else:
@@ -331,6 +471,12 @@ else:
             with tab:
                 st.dataframe(diff_dfs.get(key, pd.DataFrame()), use_container_width=True)
 
+                
+        # ---- Dashboards (comparação atual) ----
+        st.markdown("## 📈 Dashboard — Progress (Diff)")
+        render_progress_kpis(diff_dfs)
+        render_progress_charts(diff_dfs)
+
         st.markdown("---")
         st.download_button(
             "Download SAP_Validation_Progress.xlsx",
@@ -354,3 +500,4 @@ else:
                 st.dataframe(hist_df, use_container_width=True)
             else:
                 st.write("Sem histórico.")
+                

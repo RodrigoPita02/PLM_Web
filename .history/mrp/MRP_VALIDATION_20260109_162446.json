@@ -1,0 +1,11 @@
+{
+  "run_type": "MRP_VALIDATION",
+  "timestamp": "2026-01-09 16:24:46",
+  "user": "Rodrigo",
+  "plant_filter": "ALL",
+  "boolean_col": "Advanced Planning",
+  "metrics": {
+    "total_errors": 47380,
+    "rows_validated": 36756
+  }
+}

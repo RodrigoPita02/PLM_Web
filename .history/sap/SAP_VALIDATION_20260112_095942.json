@@ -1,0 +1,37 @@
+{
+  "run_type": "SAP_VALIDATION",
+  "timestamp": "2026-01-12 09:59:42",
+  "user": "Rodrigo",
+  "plant_filter": "PT01",
+  "files": {
+    "SAP": "Item Browse Report.xlsx",
+    "MARA": "MARA.xlsx",
+    "MARC": "MARC.xlsx",
+    "MVKE": "MVKE.xlsx"
+  },
+  "metrics": {
+    "total_errors": 52935,
+    "top_fields": [
+      {
+        "Field": "Inspection Type",
+        "Adjusted Nº of Errors": 28605
+      },
+      {
+        "Field": "MRP Type",
+        "Adjusted Nº of Errors": 8688
+      },
+      {
+        "Field": "Lot Sizing Procedure",
+        "Adjusted Nº of Errors": 5668
+      },
+      {
+        "Field": "Planning Time Fence",
+        "Adjusted Nº of Errors": 2276
+      },
+      {
+        "Field": "Item Category Group",
+        "Adjusted Nº of Errors": 1578
+      }
+    ]
+  }
+}

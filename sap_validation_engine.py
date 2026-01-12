@@ -3059,6 +3059,22 @@ def build_progress_log_payload(*, user: str,
         },
     }
 
+def build_mrp_log_payload(
+    *, user: str, plant_filter: str | None, boolean_col: str | None,
+    errors_df: pd.DataFrame, marc_rows: int
+):
+    return {
+        "run_type": "MRP_VALIDATION",
+        "timestamp": _ts(),
+        "user": user,
+        "plant_filter": plant_filter or "ALL",
+        "boolean_col": boolean_col or "",
+        "metrics": {
+            "total_errors": int(errors_df.shape[0]) if errors_df is not None else 0,
+            "rows_validated": int(marc_rows),
+        },
+    }
+
 # --------- Persistência ---------
 def save_run_log(payload: dict, *, base_dir: str = ".history"):
     """Guarda o payload JSON numa subpasta por tipo de run."""
@@ -3067,6 +3083,7 @@ def save_run_log(payload: dict, *, base_dir: str = ".history"):
         "SAP_VALIDATION": "sap",
         "PLM_WORKFLOW_ATL": "atl",
         "SAP_VALIDATION_PROGRESS": "progress",
+        "MRP_VALIDATION": "mrp", 
     }.get(run_type, "misc")
 
     out_dir = os.path.join(base_dir, subdir)
@@ -3104,3 +3121,273 @@ def list_run_logs(run_type: str, *, base_dir: str = ".history", limit: int = 25)
         except Exception:
             continue
     return out
+
+# ==========================================================
+#  MRP VALIDATION (MARC + MARA + ZPLM MARC)
+# ==========================================================
+def run_mrp_validation(
+    mara_file,
+    marc_file,
+    zplm_marc_file=None,
+    *,
+    plant_filter: str | None = None,
+):
+    """
+    Constrói a página 'MRP Validation' com regras:
+    - Advanced Planning:
+        * HALB com Transfer e FERT  -> 'true'
+        * HALB sem Transfer (interno) e ROH -> 'false'
+    - Heuristic / PP Plng Procedure / Requirement Strategy:
+        * ROH e HALB sem Transfer (interno) -> VAZIOS
+        * HALB com Transfer e FERT -> 'SAP_PP_002' / 4 / 20
+
+    Gera:
+    - Excel (Original Data + All Errors + Adjusted Summary)
+    - errors_df, summary_df
+    """
+    import pandas as pd
+    import io
+
+    # 1) Carregar dataframes
+    mara_df = load_xlsx(mara_file, sheet_name=0)
+    marc_df = load_xlsx(marc_file, sheet_name=0)
+    zplm_marc_df = load_xlsx(zplm_marc_file, sheet_name=0) if zplm_marc_file else None
+
+    if mara_df is None or marc_df is None:
+        raise ValueError("MARA.xlsx/MARC.xlsx não carregados.")
+
+    # 2) Normalizações mínimas + filtro por Plant (visualização/exportação)
+    for df in (mara_df, marc_df):
+        df.columns = [str(c).strip() for c in df.columns]
+    if plant_filter is not None and 'Plant' in marc_df.columns:
+        pf = str(plant_filter).strip().upper()
+        marc_df = marc_df[marc_df['Plant'].astype(str).str.strip().str.upper() == pf].copy()
+
+    # 3) Mapa Material -> Material Type (MARA)
+    if not {'Material', 'Material Type'}.issubset(mara_df.columns):
+        raise ValueError("MARA.xlsx tem de conter 'Material' e 'Material Type'.")
+    mt_map = dict(zip(
+        mara_df['Material'].astype(str).str.strip(),
+        mara_df['Material Type'].astype(str).str.strip().str.upper()
+    ))
+
+    # 4) Mapa (Material, Plant) -> Transfer (ZPLM MARC)
+    transfer_map = {}
+    try:
+        transfer_map = build_material_transfer_map(zplm_marc_df)
+    except Exception:
+        transfer_map = {}
+
+    # 5) Helper p/ normalizar valores e apanhar colunas-alvo
+    def _s(x):  # string normalizada
+        import pandas as pd
+        return '' if pd.isna(x) else str(x).strip()
+
+    def pick_col(df, candidates):
+        for c in candidates:
+            if c in df.columns:
+                return c
+        return None
+
+    col_adv = pick_col(marc_df, ['Advanced Planning'])
+    col_heur = pick_col(marc_df, ['Heuristic'])
+    col_pp = pick_col(marc_df, ['PP Plng Procedure'])
+    col_req = pick_col(marc_df, ['Requirement Strategy'])
+    for needed, name in [(col_adv, 'Advanced Planning'),
+                         (col_heur, 'Heuristic'),
+                         (col_pp, 'PP Plng Procedure'),
+                         (col_req, 'Requirement Strategy')]:
+        if needed is None:
+            raise ValueError(f"MARC.xlsx tem de conter a coluna '{name}'.")
+
+    # 6) Loop MARC e aplicar regras
+    resultados = []
+    consider_types = {'FERT', 'HALB', 'ROH'}
+
+    for idx, row in marc_df.iterrows():
+        material = _s(row.get('Material'))
+        plant = _s(row.get('Plant'))
+        mt = mt_map.get(material, '').upper()
+
+        if mt not in consider_types:
+            continue  # fora do escopo
+
+        # Detectar HALB com/sem Transfer
+        is_transfer = transfer_map.get((material, plant), False)
+        # Valores
+        adv = _s(row.get(col_adv)).lower()  # esperamos 'true'/'false'
+        heur = _s(row.get(col_heur))
+        pp = normalize_code(row.get(col_pp), as_int=True) if col_pp else ''
+        req = normalize_code(row.get(col_req), as_int=True) if col_req else ''
+
+        # --- Regras Advanced Planning ---
+        # HALB com Transfer  OU FERT  -> "true"
+        # HALB sem Transfer (interno) OU ROH -> "false"
+        if (mt == 'HALB' and is_transfer) or (mt == 'FERT'):
+            if adv == '' or adv != 'true':
+                resultados.append({
+                    'Line': idx + 2,
+                    'Field': 'Advanced Planning',
+                    'Error': "Invalid value: deve ser 'true' (HALB com Transfer ou FERT)",
+                    'Material': material,
+                    'Plant': plant
+                })
+        elif (mt == 'HALB' and not is_transfer) or (mt == 'ROH'):
+            if adv == '' or adv != 'false':
+                resultados.append({
+                    'Line': idx + 2,
+                    'Field': 'Advanced Planning',
+                    'Error': "Invalid value: deve ser 'false' (HALB interno ou ROH)",
+                    'Material': material,
+                    'Plant': plant
+                })
+
+        # --- Regras Heuristic / PP / Requirement ---
+        if (mt == 'ROH') or (mt == 'HALB' and not is_transfer):
+            # Devem estar VAZIOS
+            if heur != '':
+                resultados.append({
+                    'Line': idx + 2, 'Field': 'Heuristic',
+                    'Error': "Should be empty (ROH ou HALB interno)",
+                    'Material': material, 'Plant': plant
+                })
+            if _s(row.get(col_pp)) != '':
+                resultados.append({
+                    'Line': idx + 2, 'Field': 'PP Plng Procedure',
+                    'Error': "Should be empty (ROH ou HALB interno)",
+                    'Material': material, 'Plant': plant
+                })
+            if _s(row.get(col_req)) != '':
+                resultados.append({
+                    'Line': idx + 2, 'Field': 'Requirement Strategy',
+                    'Error': "Should be empty (ROH ou HALB interno)",
+                    'Material': material, 'Plant': plant
+                })
+        else:
+            # HALB com Transfer OU FERT -> valores fixos
+            if heur != 'SAP_PP_002':
+                resultados.append({
+                    'Line': idx + 2, 'Field': 'Heuristic',
+                    'Error': "Invalid value: deve ser 'SAP_PP_002' (HALB com Transfer ou FERT)",
+                    'Material': material, 'Plant': plant
+                })
+            if pp != '4':
+                resultados.append({
+                    'Line': idx + 2, 'Field': 'PP Plng Procedure',
+                    'Error': "Invalid value: deve ser 4 (HALB com Transfer ou FERT)",
+                    'Material': material, 'Plant': plant
+                })
+            if req != '20':
+                resultados.append({
+                    'Line': idx + 2, 'Field': 'Requirement Strategy',
+                    'Error': "Invalid value: deve ser 20 (HALB com Transfer ou FERT)",
+                    'Material': material, 'Plant': plant
+                })
+
+    errors_df = pd.DataFrame(resultados)
+
+    # 7) Original Data enriquecido (útil para análise)
+    out_cols = ['Material', 'Plant', 'Material Type',
+                'Advanced Planning', 'Heuristic', 'PP Plng Procedure', 'Requirement Strategy']
+    marc_enriched = marc_df.copy()
+    marc_enriched['Material Type'] = marc_enriched['Material'].astype(str).str.strip().map(mt_map).fillna('')
+    # Marca HALB Transfer (para referência)
+    marc_enriched['HALB Transfer'] = [
+        bool(transfer_map.get((str(r['Material']).strip(), str(r.get('Plant', '')).strip()), False))
+        for _, r in marc_enriched.iterrows()
+    ]
+    original_df = marc_enriched[[c for c in out_cols if c in marc_enriched.columns]].copy()
+    if 'HALB Transfer' in marc_enriched.columns:
+        original_df['HALB Transfer'] = marc_enriched['HALB Transfer']
+
+    # 8) Pós-processamento (Views/Roles/Summary) usando o RolesViews embutido
+    rolesviews_dict = load_xlsx(get_rolesviews_bytesio(), sheet_name=None)
+    roles_df = rolesviews_dict.get("Roles")
+    views_df = rolesviews_dict.get("Views")
+    (
+        errors_df,
+        errors_filtered_df,
+        views_missing_output_df,
+        contagem_final_df,
+        coverage_df,
+        view_tabs_dict
+    ) = postprocess_with_views_roles_and_classification(
+        errors_df=errors_df,
+        mara_df=mara_df,
+        marc_df=marc_df,
+        roles_df=roles_df,
+        views_df=views_df,
+        plant_filter=plant_filter,
+    )
+
+    # 9) Escrever Excel em memória (Original Data + erros + summary)
+    file_bytes = io.BytesIO()
+    with pd.ExcelWriter(file_bytes, engine="openpyxl") as writer:
+        original_df.to_excel(writer, sheet_name="Original Data", index=False)
+        errors_df.to_excel(writer, sheet_name="All Errors", index=False)
+        contagem_final_df.to_excel(writer, sheet_name="Adjusted Summary", index=False, startrow=1)
+        # (opcional) incluir as folhas de views/coverage como nas outras páginas
+        base_row = len(contagem_final_df) + 5
+        if not coverage_df.empty:
+            coverage_df.to_excel(writer, sheet_name="Adjusted Summary", index=False, startrow=base_row)
+        for view_code, df_view in view_tabs_dict.items():
+            sheet = f"Missing_{view_code}"[:31]
+            df_view.to_excel(writer, sheet_name=sheet, index=False)
+
+    file_bytes.seek(0)
+
+    # 10) Summary para interface
+    if 'Field' in errors_df.columns and not errors_df.empty:
+        summary_df = (
+            errors_df['Field']
+            .value_counts()
+            .rename_axis('Field')
+            .reset_index(name='Adjusted Nº of Errors')
+        )
+    else:
+        import pandas as pd
+        summary_df = pd.DataFrame({"Field": [], "Adjusted Nº of Errors": []})
+
+    return file_bytes, errors_df, summary_df
+
+
+def build_mrp_log_payload(
+    *,
+    user: str,
+    plant_filter: str | None,
+    mara_file,
+    marc_file,
+    zplm_marc_file,
+    errors_df,
+    summary_df,
+):
+    """
+    Monta o payload de log para a página MRP.
+    Mantém o mesmo formato das outras páginas para consistência.
+    """
+    from datetime import datetime
+
+    def _name(f, default):
+        return getattr(f, "name", default) if f is not None else default
+
+    total_errors = int(errors_df.shape[0]) if errors_df is not None else 0
+    total_fields = int(errors_df['Field'].nunique()) if (errors_df is not None and 'Field' in errors_df.columns) else 0
+    total_materials = int(errors_df['Material'].nunique()) if (errors_df is not None and 'Material' in errors_df.columns) else 0
+
+    payload = {
+        "type": "mrp",
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "user": user,
+        "plant_filter": plant_filter if plant_filter else "ALL",
+        "metrics": {
+            "total_errors": total_errors,
+            "fields_with_error": total_fields,
+            "materials_with_error": total_materials,
+        },
+        "files": {
+            "mara": _name(mara_file, "MARA.xlsx"),
+            "marc": _name(marc_file, "MARC.xlsx"),
+            "zplm_marc": _name(zplm_marc_file, "ZPLM MARC.xlsx"),
+        },
+    }
+    return payload
