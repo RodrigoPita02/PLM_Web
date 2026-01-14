@@ -3178,6 +3178,7 @@ def build_sap_log_payload(
     total_materials = int(errors_df['Material'].nunique()) if (errors_df is not None and 'Material' in errors_df.columns) else 0
 
     payload = {
+        "run_type": "SAP_VALIDATION",
         "type": "sap",
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "user": user,

@@ -2,6 +2,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import os
 
 from utils.dashboard import (
     render_sap_run_kpis, render_sap_run_charts, render_sap_history_charts,
@@ -23,6 +24,66 @@ from sap_validation_engine import (
     run_mrp_validation,
     build_mrp_log_payload
 )
+
+
+# ==========================================================
+# HELPERS PARA MODO MANUAL (Progress) – DETEÇÃO DE "Atual" e "Anterior"
+# ==========================================================
+import re
+from datetime import datetime
+
+_TS_PATTERN = re.compile(r'(\d{8}_\d{6})')  # ex.: 20260114_085435
+
+def extract_timestamp_from_name(filename: str) -> datetime | None:
+    """
+    Procura por 'YYYYMMDD_HHMMSS' no nome do ficheiro e devolve um datetime.
+    Se não encontrar, devolve None.
+    """
+    if not filename:
+        return None
+    m = _TS_PATTERN.search(filename)
+    if not m:
+        return None
+    raw = m.group(1)  # '20260114_085435'
+    try:
+        return datetime.strptime(raw, "%Y%m%d_%H%M%S")
+    except Exception:
+        return None
+
+
+def pick_current_previous_from_uploads(files: list) -> tuple:
+    """
+    Recebe a lista de UploadedFile (qualquer nome).
+    - Extrai timestamps do nome
+    - Ordena desc por timestamp
+    - Seleciona (Atual, Anterior)
+    Retorna (curr_file, prev_file, diagnostics:list[str])
+    diagnostics: mensagens para mostrar no UI (ex.: ficheiros sem timestamp).
+    """
+    diagnostics = []
+    candidates = []
+
+    for f in files or []:
+        ts = extract_timestamp_from_name(getattr(f, "name", ""))
+        if ts is None:
+            diagnostics.append(f"⚠ Sem timestamp reconhecido: {getattr(f, 'name', '')}")
+        candidates.append((ts, f))
+
+    # mantém os que têm timestamp primeiro; em seguida, ordena por ts desc
+    with_ts = [(ts, f) for ts, f in candidates if ts is not None]
+    without_ts = [(ts, f) for ts, f in candidates if ts is None]
+
+    with_ts.sort(key=lambda x: x[0], reverse=True)  # mais recente primeiro
+
+    ordered = [f for _, f in with_ts] + [f for _, f in without_ts]
+
+    curr = ordered[0] if len(ordered) >= 1 else None
+    prev = ordered[1] if len(ordered) >= 2 else None
+
+    if len(with_ts) < 2:
+        diagnostics.append("ℹ️ Menos de dois ficheiros com timestamp válido; separei pela ordem de upload para completar os 2.")
+
+    return curr, prev, diagnostics
 
 # ==========================================================
 # NOVO: Classificador Universal de Ficheiros (Multi‑Upload)
@@ -314,11 +375,13 @@ if choice == "SAP Material Validation":
             logs = list_run_logs("sap", limit=50)
             render_sap_history_charts(logs)
 
+        download_name = os.path.basename(report_path)
+
         # Download
         st.download_button(
             "Download Excel",
             data=excel_export.getvalue(),
-            file_name=f"SAP_Validation_Adjusted_Report_{suffix}.xlsx",
+            file_name=download_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
@@ -732,29 +795,38 @@ else:
                     st.dataframe(hist_df, use_container_width=True)
                 else:
                     st.write("Sem histórico.")
-
     else:
-        # ============ MODO MANUAL (multi-upload já implementado) ============
-        uploads = st.file_uploader("Largar os ficheiros necessários aqui", type="xlsx", accept_multiple_files=True)
-        files = classify_uploaded_files(uploads)
+        # ============ MODO MANUAL (agora com deteção automática por timestamp) ============
+        uploads = st.file_uploader(
+            "Largar os ficheiros (pelo menos 2) – sem renomear; eu detecto Atual/Anterior pelo timestamp do nome",
+            type="xlsx",
+            accept_multiple_files=True
+        )
 
-        with st.expander("🔍 Ficheiros identificados (página atual)"):
-            for key in required_keys_for_page(choice):
-                val = files.get(key)
-                label = LABELS_PT.get(key, key)
-                st.write(f"**{label}** → {val.name if val else '❌ não encontrado'}")
+        # Mostrar os ficheiros que o utilizador colocou
+        with st.expander("🔍 Ficheiros carregados (Manual)"):
+            if uploads:
+                for f in uploads:
+                    st.write(f"• {f.name}")
+            else:
+                st.write("Ainda sem ficheiros carregados.")
 
-        diff_curr = files.get("current")
-        diff_prev = files.get("previous")
+        # Selecionar (Atual, Anterior) automaticamente
+        curr_file, prev_file, notes = pick_current_previous_from_uploads(uploads or [])
 
-        if st.button("▶ Run Progress (Manual)", type="primary"):
-            if diff_curr is None or diff_prev is None:
-                st.error("⚠ Faltam ficheiros: Relatório Atual e Relatório Anterior.")
-                st.stop()
+        with st.expander("🧭 Seleção automática (Manual)"):
+            if notes:
+                for n in notes:
+                    st.info(n)
+            st.write(f"**Atual (mais recente)** → {getattr(curr_file, 'name', '❌ não selecionado')}")
+            st.write(f"**Anterior** → {getattr(prev_file, 'name', '❌ não selecionado')}")
 
+        # Botão com proteção (precisa de 2)
+        run_disabled_manual = not (curr_file and prev_file)
+        if st.button("▶ Run Progress (Manual)", type="primary", disabled=run_disabled_manual):
             from sap_validation_engine import compare_adjusted_reports
             with st.spinner("A comparar relatórios (Manual)..."):
-                excel_diff, diff_dfs = compare_adjusted_reports(diff_curr, diff_prev)
+                excel_diff, diff_dfs = compare_adjusted_reports(curr_file, prev_file)
 
             st.success("Progresso (Manual) concluído!")
 
@@ -762,8 +834,8 @@ else:
             if save_history:
                 payload = build_progress_log_payload(
                     user=effective_executor,
-                    current_name=getattr(diff_curr, "name", "current.xlsx"),
-                    previous_name=getattr(diff_prev, "name", "previous.xlsx"),
+                    current_name=getattr(curr_file, "name", "current.xlsx"),
+                    previous_name=getattr(prev_file, "name", "previous.xlsx"),
                     diff_dfs=diff_dfs
                 )
                 save_run_log(payload)
@@ -771,19 +843,18 @@ else:
 
             # Tabs
             labels = ["Erros Novos", "Erros Resolvidos", "Erros Alterados", "Novos Materiais", "Views Perdidas"]
-            keys =    ["New Errors",  "Resolved Errors",  "Changed Errors",  "New Materials",  "Views Lost"]
-
+            keys   = ["New Errors", "Resolved Errors", "Changed Errors", "New Materials", "Views Lost"]
             tabs = st.tabs(labels)
             for tab, key in zip(tabs, keys):
                 with tab:
                     st.dataframe(diff_dfs.get(key, pd.DataFrame()), use_container_width=True)
 
-                    
-            # ---- Dashboards (comparação atual) ----
+            # Dashboards (comparação atual)
             st.markdown("## 📈 Dashboard — Progress (Diff)")
             render_progress_kpis(diff_dfs)
             render_progress_charts(diff_dfs)
 
+            # Download
             st.markdown("---")
             st.download_button(
                 "Download SAP_Validation_Progress.xlsx",
@@ -792,6 +863,7 @@ else:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
+            # Histórico (últimas 10 execuções)
             with st.expander("🕘 Histórico Progress (últimas 10 execuções)"):
                 logs = list_run_logs("progress", limit=10)
                 if logs:
@@ -807,4 +879,3 @@ else:
                     st.dataframe(hist_df, use_container_width=True)
                 else:
                     st.write("Sem histórico.")
-                
