@@ -65,22 +65,22 @@ from datetime import datetime
 _TS_PATTERN = re.compile(r'(\d{8}_\d{6})')  # ex.: 20260114_085435
 
 def extract_timestamp_from_name(filename: str) -> datetime | None:
-    """
-    Procura por 'YYYYMMDD_HHMMSS' no nome do ficheiro e devolve um datetime.
-    Se não encontrar, devolve None.
-    """
     if not filename:
         return None
     m = _TS_PATTERN.search(filename)
     if not m:
         return None
-    raw = m.group(1)  # '20260114_085435'
+    raw = m.group(1)  # 'YYYYMMDD_HHMMSS'
     try:
         return datetime.strptime(raw, "%Y%m%d_%H%M%S")
     except Exception:
         return None
 
-
+# ==========================================================
+# Helper: escolher (Atual, Anterior) a partir de uploads (modo Manual)
+# Usa extract_timestamp_from_name para ordenar por YYYYMMDD_HHMMSS
+# Retorna: (curr_file, prev_file, diagnostics: list[str])
+# ==========================================================
 def pick_current_previous_from_uploads(files: list) -> tuple:
     """
     Recebe a lista de UploadedFile (qualquer nome).
@@ -114,6 +114,55 @@ def pick_current_previous_from_uploads(files: list) -> tuple:
         diagnostics.append("ℹ️ Menos de dois ficheiros com timestamp válido; separei pela ordem de upload para completar os 2.")
 
     return curr, prev, diagnostics
+
+
+# ==========================================================
+# Helper: escolher os dois últimos relatórios arquivados (ALL/PT01/PT02)
+# Usado pela Página 4 (Progress) em modo "Auto (arquivado)"
+# ==========================================================
+def pick_last_two_reports(plant_scope: str):
+    """
+    Prioridade:
+    1) usar os logs 'sap' com report_path (filtrados por scope)
+    2) fallback: varrer ./reports/sap/** pelo sufixo e usar dois mais recentes
+    Retorna: (curr_path, prev_path, count)
+    """
+    import os, glob
+    scope = (plant_scope or "ALL").upper()
+
+    # 1) Tenta pelos logs
+    logs = list_run_logs("sap", limit=200) or []
+    cand = []
+    for log in logs:
+        if str(log.get("plant_filter", "ALL")).upper() != scope:
+            continue
+        path = log.get("report_path")
+        if path and os.path.exists(path):
+            # timestamp dos logs é suficiente para ordenar por ordem de criação
+            cand.append((log.get("timestamp", ""), os.path.abspath(path)))
+
+    if len(cand) >= 2:
+        cand.sort(key=lambda x: x[0], reverse=True)
+        return cand[0][1], cand[1][1], len(cand)
+
+    # 2) Fallback: varrer o vault
+    base = os.path.join(".", "reports", "sap")
+    month_dirs = [d for d in (os.listdir(base) if os.path.exists(base) else [])]
+    paths = []
+    for m in month_dirs:
+        paths.extend(
+            glob.glob(os.path.join(base, m, f"*SAP_Validation_Adjusted_Report_{scope}.xlsx"))
+        )
+    # Ordenar por timestamp embutido no nome (YYYYMMDD_HHMMSS_...)
+    paths = sorted(paths, reverse=True)
+
+    if len(paths) >= 2:
+        return os.path.abspath(paths[0]), os.path.abspath(paths[1]), len(paths)
+    if len(paths) == 1:
+        return os.path.abspath(paths[0]), None, 1
+
+    # Nenhum encontrado
+    return None, None, 0
 
 # ==========================================================
 # Persistência robusta de ficheiros (evita perder uploads)
@@ -669,483 +718,879 @@ if choice == "SAP Material Validation":
                 st.session_state.sap_step = 1
                 st.rerun()
 
-# ======================================================================================
-#                                     PAGE 2
-#                               PLM WORKFLOW (ATL)
-# ======================================================================================
+
+# ==========================================================
+# PAGE 2 — PLM WORKFLOW (ATL) — PREMIUM WIZARD
+# ==========================================================
 elif choice == "PLM Workflow (ATL)":
+
     st.subheader("🚗 PLM Workflow (ATL)")
 
-    # Identidade
+    inject_css("assets/styles.css")
+
+    # ------------------------------
+    # IDENTIDADE (igual Página 1)
+    # ------------------------------
     effective_executor = identity_input("Quem executa?", "atl_exec")
     save_history = st.checkbox("Guardar esta execução no histórico", value=True)
 
-    # -------------------- Uploaders --------------------
-    uploads = st.file_uploader(
-        "Largar todos os ficheiros necessários aqui",
-        type="xlsx",
-        accept_multiple_files=True
-    )
-    files = classify_uploaded_files(uploads)
+    # ------------------------------
+    # ESTADO DO WIZARD
+    # ------------------------------
+    if "atl_step" not in st.session_state:
+        st.session_state.atl_step = 1
 
-    # Expander — mostra apenas os ficheiros relevantes à página atual
-    with st.expander("🔍 Ficheiros identificados automaticamente (página atual)"):
-        for key in required_keys_for_page(choice):
-            val = files.get(key)
-            label = LABELS_PT.get(key, key)
-            st.write(f"**{label}** → {val.name if val else '❌ não encontrado'}")
+    # ------------------------------
+    # WIZARD VISUAL
+    # ------------------------------
+    def render_atl_wizard(current_step: int):
+        steps = ["Ficheiros", "Âmbito", "Validar", "Resultados"]
+        cols = st.columns(len(steps))
+        for idx, col in enumerate(cols, start=1):
+            with col:
+                if current_step == idx:
+                    klass = "active"
+                elif current_step > idx:
+                    klass = "done"
+                else:
+                    klass = "pending"
 
-    # Uploads
-    auto_file  = files.get("auto")
-    plm_file   = files.get("plm")
-    timing_file = files.get("timing")
+                st.markdown(
+                    f"""
+<div class="wizard-step">
+    <div class="step-circle {klass}">{idx}</div>
+    <div class="step-label">{steps[idx-1]}</div>
+</div>
+                    """,
+                    unsafe_allow_html=True
+                )
 
-    # Filtros
-    st.markdown("### 🧭 Âmbito de Visualização / Exportação")
-    atl_scope = st.radio("Âmbito:", ["Tudo", "Apenas PT01", "Apenas PT02"], horizontal=True)
-    atl_filter_export = {"Apenas PT01": "PT01", "Apenas PT02": "PT02"}.get(atl_scope)
-    apply_filter_display_atl = st.checkbox("Aplicar filtro às tabelas apresentadas", value=False)
-    atl_filter_display = atl_filter_export if apply_filter_display_atl else None
+        completion = (current_step - 1) / (len(steps) - 1)
+        st.markdown(
+            f"""
+<div class="progress-line" style="width:{completion * 100}%"></div>
+            """,
+            unsafe_allow_html=True
+        )
 
-    if st.button("▶ Run ATL", type="primary"):
-        if any(f is None for f in [auto_file, plm_file, timing_file]):
-            st.error("⚠ Faltam ficheiros.")
-            st.stop()
+    render_atl_wizard(st.session_state.atl_step)
 
-        with st.spinner("A construir PLM Workflow Combined..."):
-            excel_all, df_pt01, df_pt02 = run_plm_workflow_combined(
-                auto_file=auto_file, plm_file=plm_file, timing_file=timing_file
-            )
+    # ------------------------------
+    # CLASSIFY UPLOADS
+    # ------------------------------
+    def classify_atl_files(files):
+        mapping = {"auto": None, "plm": None, "timing": None}
+        if not files:
+            return mapping
 
-        st.success("ATL concluído!")
+        for f in files:
+            name = f.name.lower()
 
-        # -------------------- Guardar histórico --------------------
-        if save_history:
-            payload = build_atl_log_payload(
-                user=effective_executor,
-                plant_scope=atl_scope,
-                df_pt01=df_pt01, df_pt02=df_pt02
-            )
-            save_run_log(payload)
-            st.info("📁 Execução ATL guardada.")
+            if "automotive" in name:
+                mapping["auto"] = f
+                continue
 
-        # Display
-        if atl_filter_display == "PT01":
-            df_display = {"PT01": df_pt01}
-        elif atl_filter_display == "PT02":
-            df_display = {"PT02": df_pt02}
+            if "timingletter" in name or "timing_letter" in name:
+                mapping["plm"] = f
+                continue
+
+            if "timing" in name:
+                mapping["timing"] = f
+                continue
+
+        return mapping
+
+    # ==========================================================
+    # PASSO 1 — UPLOAD
+    # ==========================================================
+    if st.session_state.atl_step == 1:
+
+        st.markdown("### 📂 Passo 1 — Carregar Ficheiros")
+
+        uploads = st.file_uploader(
+            "Largar Automotive + TimingLetter + Timing Letter",
+            type="xlsx",
+            accept_multiple_files=True,
+            key="atl_multi_uploader"
+        )
+
+        files = classify_atl_files(uploads)
+
+        if uploads:
+            persist_uploaded_mapping(files, state_key="atl_files_persisted")
+
+        with st.expander("🔍 Ficheiros identificados (Upload atual)"):
+            for key in ["auto", "plm", "timing"]:
+                f = files.get(key)
+                st.write(f"**{key}** → {f.name if f else '—'}")
+
+        with st.expander("💾 Ficheiros guardados na sessão (persistidos)"):
+            persisted = st.session_state.get("atl_files_persisted", {}) or {}
+            if persisted:
+                for k, meta in persisted.items():
+                    st.write(f"**{k}** → {meta.get('name','')}")
+            else:
+                st.write("Ainda não existem ficheiros persistidos.")
+
+        persisted = st.session_state.get("atl_files_persisted", {}) or {}
+        disabled = any(k not in persisted for k in ["auto", "plm", "timing"])
+
+        c1, c2 = st.columns([1, 1])
+        with c2:
+            if st.button("➡️ Continuar para Âmbito", disabled=disabled, use_container_width=True):
+                st.session_state.atl_step = 2
+                st.rerun()
+
+        with st.expander("🧹 Limpar uploads persistidos"):
+            if st.button("Limpar uploads ATL"):
+                st.session_state["atl_files_persisted"] = {}
+                st.success("Limpado.")
+                st.rerun()
+
+    # ==========================================================
+    # PASSO 2 — ÂMBITO
+    # ==========================================================
+    if st.session_state.atl_step == 2:
+
+        st.markdown("### 🌍 Passo 2 — Escolher Âmbito")
+
+        atl_scope = st.radio("Âmbito:", ["Tudo", "Apenas PT01", "Apenas PT02"], horizontal=True)
+        atl_filter_export = {"Apenas PT01": "PT01", "Apenas PT02": "PT02"}.get(atl_scope)
+
+        apply_filter_display = st.checkbox("Aplicar filtro às tabelas apresentadas", value=False)
+        atl_filter_display = atl_filter_export if apply_filter_display else None
+
+        st.session_state.atl_scope = atl_scope
+        st.session_state.atl_filter_export = atl_filter_export
+        st.session_state.atl_filter_display = atl_filter_display
+
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("⬅️ Voltar (Ficheiros)", use_container_width=True):
+                st.session_state.atl_step = 1
+                st.rerun()
+
+        with c2:
+            if st.button("➡️ Continuar para Validação", use_container_width=True):
+                st.session_state.atl_step = 3
+                st.rerun()
+
+    # ==========================================================
+    # PASSO 3 — RUN ATL
+    # ==========================================================
+    if st.session_state.atl_step == 3:
+
+        st.markdown("### ⚙️ Passo 3 — Executar ATL")
+
+        if st.button("▶️ Executar Workflow ATL", type="primary"):
+
+            files = rehydrate_persisted_mapping("atl_files_persisted")
+
+            auto_file = files.get("auto")
+            plm_file = files.get("plm")
+            timing_file = files.get("timing")
+
+            if any(f is None for f in [auto_file, plm_file, timing_file]):
+                st.error("⚠️ Faltam ficheiros obrigatórios.")
+                st.stop()
+
+            with st.spinner("A processar Workflow ATL..."):
+                excel_all, df_pt01, df_pt02 = run_plm_workflow_combined(
+                    auto_file=auto_file,
+                    plm_file=plm_file,
+                    timing_file=timing_file
+                )
+
+            st.session_state.atl_pt01 = df_pt01
+            st.session_state.atl_pt02 = df_pt02
+            st.session_state.atl_excel_all = excel_all
+
+            if save_history:
+                payload = build_atl_log_payload(
+                    user=effective_executor,
+                    plant_scope=st.session_state.atl_scope,
+                    df_pt01=df_pt01,
+                    df_pt02=df_pt02
+                )
+                save_run_log(payload)
+
+            st.session_state.atl_step = 4
+            st.rerun()
+
+    # ==========================================================
+    # PASSO 4 — RESULTADOS
+    # ==========================================================
+    if st.session_state.atl_step == 4:
+
+        st.markdown("### 📊 Passo 4 — Resultados")
+
+        df_pt01 = st.session_state.atl_pt01
+        df_pt02 = st.session_state.atl_pt02
+        excel_all = st.session_state.atl_excel_all
+
+        # ------------------------------
+        # VISUALIZAÇÃO (scope filtro)
+        # ------------------------------
+        scope = st.session_state.atl_filter_display
+
+        if scope == "PT01":
+            st.header("PT01")
+            st.dataframe(df_pt01, use_container_width=True)
+
+        elif scope == "PT02":
+            st.header("PT02")
+            st.dataframe(df_pt02, use_container_width=True)
+
         else:
-            df_display = {"PT01": df_pt01, "PT02": df_pt02}
+            st.header("PT01")
+            st.dataframe(df_pt01, use_container_width=True)
 
-        for plant, df in df_display.items():
-            st.header(plant)
-            st.dataframe(df, use_container_width=True)
-   
-        # ---- Dashboards (execução atual ATL) ----
+            st.header("PT02")
+            st.dataframe(df_pt02, use_container_width=True)
+
+        # ------------------------------
+        # DASHBOARD
+        # ------------------------------
         st.markdown("## 📈 Dashboard — PLM Workflow (ATL)")
         render_atl_run_kpis(df_pt01, df_pt02)
         render_atl_run_charts(df_pt01, df_pt02)
 
-        # ---- Evolução (histórico ATL) ----
-        with st.expander("📉 Evolução temporal (Histórico ATL)"):
-            logs = list_run_logs("atl", limit=50)
-            render_atl_history_charts(logs)
-
-        # Export
-        if atl_filter_export == "PT01":
-            df_export_pt01 = df_pt01; df_export_pt02 = None
-            sheets = ("PT01",); suffix = "PT01"
-        elif atl_filter_export == "PT02":
-            df_export_pt01 = None; df_export_pt02 = df_pt02
-            sheets = ("PT02",); suffix = "PT02"
-        else:
-            df_export_pt01 = df_pt01; df_export_pt02 = df_pt02
-            sheets = ("PT01", "PT02"); suffix = "ALL"
-
-        out_excel = io.BytesIO()
-        with pd.ExcelWriter(out_excel, engine="openpyxl") as writer:
-            if df_export_pt01 is not None:
-                df_export_pt01.to_excel(writer, sheet_name="PT01", index=False)
-            if df_export_pt02 is not None:
-                df_export_pt02.to_excel(writer, sheet_name="PT02", index=False)
-        out_excel.seek(0)
-
-        out_excel = _apply_conditional_formatting_in_memory(out_excel, sheet_names=sheets)
+        # ------------------------------
+        # DOWNLOAD
+        # ------------------------------
+        suffix = st.session_state.atl_filter_export if st.session_state.atl_filter_export else "ALL"
 
         st.download_button(
-            f"Download PLM_Workflow_{suffix}.xlsx",
-            data=out_excel.getvalue(),
+            f"⬇️ Download PLM_Workflow_{suffix}.xlsx",
+            data=excel_all.getvalue(),
             file_name=f"PLM_Workflow_{suffix}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        # Histórico
-        with st.expander("🕘 Histórico ATL (últimas 10 execuções)"):
+        # ------------------------------
+        # HISTÓRICO
+        # ------------------------------
+        with st.expander("🕑 Histórico ATL (últimas 10 execuções)"):
             logs = list_run_logs("atl", limit=10)
             if logs:
-                hist_df = pd.DataFrame([{
-                    "Quando": log["timestamp"],
-                    "Quem": log["user"],
-                    "Âmbito": log["plant_scope"],
-                    "PT01 rows": log["metrics"]["PT01_rows"],
-                    "PT02 rows": log["metrics"]["PT02_rows"],
-                } for log in logs])
+                hist_df = pd.DataFrame([
+                    {
+                        "Quando": log["timestamp"],
+                        "Quem": log["user"],
+                        "Âmbito": log["plant_scope"],
+                        "PT01 rows": log["metrics"]["PT01_rows"],
+                        "PT02 rows": log["metrics"]["PT02_rows"]
+                    }
+                    for log in logs
+                ])
                 st.dataframe(hist_df, use_container_width=True)
             else:
                 st.write("Sem histórico.")
 
+        # ------------------------------
+        # NOVA EXECUÇÃO
+        # ------------------------------
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("🔄 Nova Execução ATL", use_container_width=True):
+                st.session_state.atl_step = 1
+                st.rerun()
 
-# ======================================================================================
-#                                     PAGE 3
-#                                 MRP VALIDATION
-# ======================================================================================
+        with c2:
+            if st.button("🧹 Limpar uploads persistidos e voltar ao início", use_container_width=True):
+                st.session_state["atl_files_persisted"] = {}
+                st.session_state.atl_step = 1
+                st.rerun()
+
+
+# ==========================================================
+# PAGE 3 — MRP VALIDATION — PREMIUM WIZARD
+# ==========================================================
 elif choice == "MRP Validation":
-    st.subheader("🧩 MRP Validation")
-    # Identidade (cross-page)
+
+    st.subheader("🧮 MRP Validation")
+
+    inject_css("assets/styles.css")
+
+    # ------------------------------
+    # IDENTIDADE (consistente com outras páginas)
+    # ------------------------------
     effective_executor = identity_input("Quem executa?", "mrp_exec")
     save_history = st.checkbox("Guardar esta execução no histórico", value=True)
 
-    # -------------------- Uploaders --------------------
-    uploads = st.file_uploader(
-        "Largar todos os ficheiros necessários aqui",
-        type="xlsx",
-        accept_multiple_files=True
-    )
-    files = classify_uploaded_files(uploads)
+    # ------------------------------
+    # ESTADO DO WIZARD
+    # ------------------------------
+    if "mrp_step" not in st.session_state:
+        st.session_state.mrp_step = 1
 
-    # Expander — mostra apenas os ficheiros relevantes à página atual
-    with st.expander("🔍 Ficheiros identificados automaticamente (página atual)"):
-        for key in required_keys_for_page(choice):
-            val = files.get(key)
-            label = LABELS_PT.get(key, key)
-            st.write(f"**{label}** → {val.name if val else '❌ não encontrado'}")
+    # ------------------------------
+    # WIZARD VISUAL
+    # ------------------------------
+    def render_mrp_wizard(current_step: int):
+        steps = ["Ficheiros", "Âmbito", "Validar", "Resultados"]
+        cols = st.columns(len(steps))
+        for idx, col in enumerate(cols, start=1):
+            with col:
+                if current_step == idx:
+                    klass = "active"
+                elif current_step > idx:
+                    klass = "done"
+                else:
+                    klass = "pending"
 
-    # Uploaders
-    mara_file = files.get("mara")
-    marc_file = files.get("marc")
-    zplm_marc = files.get("zplm_marc")
+                st.markdown(
+                    f"""
+<div class="wizard-step">
+    <div class="step-circle {klass}">{idx}</div>
+    <div class="step-label">{steps[idx-1]}</div>
+</div>
+                    """,
+                    unsafe_allow_html=True
+                )
 
-    # Filtro de Plant (visualização/exportação)
-    st.markdown("### 🧭 Âmbito de Exportação")
-    export_scope = st.radio(
-        "Âmbito do download:",
-        ["Tudo", "Apenas PT01", "Apenas PT02"],
-        index=0, horizontal=True
-    )
-    plant_filter_export = {"Apenas PT01": "PT01", "Apenas PT02": "PT02"}.get(export_scope)
+        completion = (current_step - 1) / (len(steps) - 1)
+        st.markdown(
+            f"""
+<div class="progress-line" style="width:{completion * 100}%"></div>
+            """,
+            unsafe_allow_html=True
+        )
 
-    apply_filter_display = st.checkbox("Aplicar filtro às tabelas apresentadas", value=False)
-    plant_filter_display = plant_filter_export if apply_filter_display else None
+    render_mrp_wizard(st.session_state.mrp_step)
 
-    # RUN
-    if st.button("▶ Run MRP Validation", type="primary"):
-        missing = [mara_file, marc_file]
-        if any(f is None for f in missing):
-            st.error("⚠ Faltam ficheiros (MARA/MARC).")
-            st.stop()
+    # ------------------------------
+    # CLASSIFY UPLOADS
+    # ------------------------------
+    def classify_mrp(files):
+        mapping = {"mara": None, "marc": None, "zplm_marc": None}
+        if not files:
+            return mapping
 
-        with st.spinner("A validar regras MRP..."):
-            # Execução para visualização
-            excel_display, errors_df, summary_df = run_mrp_validation(
-                mara_file=mara_file,
-                marc_file=marc_file,
-                zplm_marc_file=zplm_marc,
-                plant_filter=plant_filter_display
-            )
+        for f in files:
+            name = f.name.lower()
 
-            # Execução para exportação (se filtro diferente do display)
-            if plant_filter_export != plant_filter_display:
-                excel_export, _, _ = run_mrp_validation(
+            if "mara" in name and "zplm" not in name:
+                mapping["mara"] = f
+                continue
+
+            if "marc" in name and "zplm" not in name:
+                mapping["marc"] = f
+                continue
+
+            if "zplm" in name and "marc" in name:
+                mapping["zplm_marc"] = f
+                continue
+
+        return mapping
+
+    # ==========================================================
+    # PASSO 1 — UPLOAD
+    # ==========================================================
+    if st.session_state.mrp_step == 1:
+
+        st.markdown("### 📂 Passo 1 — Carregar Ficheiros")
+
+        uploads = st.file_uploader(
+            "Largar MARA + MARC + (opcional) ZPLM MARC",
+            type="xlsx",
+            accept_multiple_files=True,
+            key="mrp_multi_uploader"
+        )
+
+        files = classify_mrp(uploads)
+
+        if uploads:
+            persist_uploaded_mapping(files, state_key="mrp_files_persisted")
+
+        with st.expander("🔍 Ficheiros identificados (Upload atual)"):
+            for key in ["mara", "marc", "zplm_marc"]:
+                f = files.get(key)
+                st.write(f"**{key}** → {f.name if f else '—'}")
+
+        with st.expander("💾 Persistidos na sessão"):
+            persisted = st.session_state.get("mrp_files_persisted", {}) or {}
+            if persisted:
+                for k, meta in persisted.items():
+                    st.write(f"**{k}** → {meta.get('name')}")
+            else:
+                st.write("Nada persistido ainda.")
+
+        persisted = st.session_state.get("mrp_files_persisted", {}) or {}
+        disabled = any(k not in persisted for k in ["mara", "marc"])
+
+        c1, c2 = st.columns([1, 1])
+        with c2:
+            if st.button("➡️ Continuar para Âmbito", disabled=disabled, use_container_width=True):
+                st.session_state.mrp_step = 2
+                st.rerun()
+
+        with st.expander("🧹 Limpar uploads persistidos"):
+            if st.button("Limpar uploads MRP"):
+                st.session_state["mrp_files_persisted"] = {}
+                st.success("Limpado.")
+                st.rerun()
+
+    # ==========================================================
+    # PASSO 2 — ÂMBITO
+    # ==========================================================
+    if st.session_state.mrp_step == 2:
+
+        st.markdown("### 🌍 Passo 2 — Âmbito da Validação")
+
+        export_scope = st.radio(
+            "Âmbito do download:",
+            ["Tudo", "Apenas PT01", "Apenas PT02"],
+            horizontal=True
+        )
+
+        plant_filter_export = {"Apenas PT01": "PT01", "Apenas PT02": "PT02"}.get(export_scope)
+
+        apply_filter_display = st.checkbox("Aplicar filtro às tabelas apresentadas", value=False)
+        plant_filter_display = plant_filter_export if apply_filter_display else None
+
+        st.session_state.mrp_export_scope = export_scope
+        st.session_state.mrp_plant_export = plant_filter_export
+        st.session_state.mrp_plant_display = plant_filter_display
+
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("⬅️ Voltar (Ficheiros)", use_container_width=True):
+                st.session_state.mrp_step = 1
+                st.rerun()
+
+        with c2:
+            if st.button("➡️ Continuar para Validação", use_container_width=True):
+                st.session_state.mrp_step = 3
+                st.rerun()
+
+    # ==========================================================
+    # PASSO 3 — VALIDAR
+    # ==========================================================
+    if st.session_state.mrp_step == 3:
+
+        st.markdown("### ⚙️ Passo 3 — Executar Validação MRP")
+
+        st.info("Clique para validar os ficheiros carregados.")
+
+        if st.button("▶️ Validar agora", type="primary"):
+
+            files = rehydrate_persisted_mapping("mrp_files_persisted")
+
+            mara_file = files.get("mara")
+            marc_file = files.get("marc")
+            zplm_marc = files.get("zplm_marc")
+
+            plant_filter_export = st.session_state.mrp_plant_export
+            plant_filter_display = st.session_state.mrp_plant_display
+
+            with st.spinner("A validar regras MRP..."):
+
+                excel_display, errors_df, summary_df = run_mrp_validation(
                     mara_file=mara_file,
                     marc_file=marc_file,
                     zplm_marc_file=zplm_marc,
-                    plant_filter=plant_filter_export
+                    plant_filter=plant_filter_display
                 )
-            else:
-                excel_export = excel_display
 
-        st.success("Validação MRP concluída!")
+                if plant_filter_export != plant_filter_display:
+                    excel_export, _, _ = run_mrp_validation(
+                        mara_file=mara_file,
+                        marc_file=marc_file,
+                        zplm_marc_file=zplm_marc,
+                        plant_filter=plant_filter_export
+                    )
+                else:
+                    excel_export = excel_display
 
-        # Guardar histórico
-        if save_history:
-            payload = build_mrp_log_payload(
-                user=effective_executor,
-                plant_filter=plant_filter_export,
-                mara_file=mara_file,
-                marc_file=marc_file,
-                zplm_marc_file=zplm_marc,
-                errors_df=errors_df,
-                summary_df=summary_df
+            st.session_state.mrp_errors_df = errors_df
+            st.session_state.mrp_summary_df = summary_df
+            st.session_state.mrp_excel_export = excel_export
+
+            if save_history:
+                payload = build_mrp_log_payload(
+                    user=effective_executor,
+                    plant_filter=plant_filter_export,
+                    mara_file=mara_file,
+                    marc_file=marc_file,
+                    zplm_marc_file=zplm_marc,
+                    errors_df=errors_df,
+                    summary_df=summary_df
+                )
+                save_run_log(payload)
+
+            st.session_state.mrp_step = 4
+            st.rerun()
+
+    # ==========================================================
+    # PASSO 4 — RESULTADOS
+    # ==========================================================
+    if st.session_state.mrp_step == 4:
+
+        st.markdown("### 📊 Passo 4 — Resultados")
+
+        errors_df = st.session_state.mrp_errors_df
+        summary_df = st.session_state.mrp_summary_df
+        excel_export = st.session_state.mrp_excel_export
+
+        # KPI CARDS
+        c = st.columns(3)
+        with c[0]:
+            st.markdown(
+                f"""
+<div class="card">
+<h4>Total de Erros</h4>
+<div class="big">{errors_df.shape[0]}</div>
+</div>
+                """,
+                unsafe_allow_html=True
             )
-            save_run_log(payload)
-            st.info("📁 Execução MRP guardada no histórico.")
+        with c[1]:
+            total_fields = int(errors_df["Field"].nunique()) if "Field" in errors_df else 0
+            st.markdown(
+                f"""
+<div class="card">
+<h4>Fields distintos</h4>
+<div class="big">{total_fields}</div>
+</div>
+                """,
+                unsafe_allow_html=True
+            )
+        with c[2]:
+            total_mats = int(errors_df["Material"].nunique()) if "Material" in errors_df else 0
+            st.markdown(
+                f"""
+<div class="card">
+<h4>Materiais com erro</h4>
+<div class="big">{total_mats}</div>
+</div>
+                """,
+                unsafe_allow_html=True
+            )
 
-        # Apresentação
+        # Tabelas
         st.header("All Errors")
         st.dataframe(errors_df, use_container_width=True)
 
         st.header("Adjusted Summary")
         st.dataframe(summary_df, use_container_width=True)
 
-        # Dashboards (execução atual)
+        # DASHBOARD
         st.markdown("## 📈 Dashboard — MRP Validation")
         render_mrp_run_kpis(errors_df)
         render_mrp_run_charts(errors_df)
 
-        # Evolução temporal (histórico MRP)
-        with st.expander("📉 Evolução temporal (Histórico MRP)"):
-            logs = list_run_logs("mrp", limit=50)
-            render_mrp_history_charts(logs)
+        # HISTÓRICO
+        with st.expander("🕑 Histórico MRP (últimas 10 execuções)"):
+            logs = list_run_logs("mrp", limit=10)
+            if logs:
+                hist_df = pd.DataFrame([
+                    {
+                        "Quando": log["timestamp"],
+                        "Quem": log["user"],
+                        "Filtro": log["plant_filter"],
+                        "Erros": log["metrics"]["total_errors"]
+                    }
+                    for log in logs
+                ])
+                st.dataframe(hist_df, use_container_width=True)
+            else:
+                st.write("Sem histórico.")
 
-        # Download
-        suffix = plant_filter_export if plant_filter_export else "ALL"
+        # DOWNLOAD
+        suffix = st.session_state.mrp_plant_export if st.session_state.mrp_plant_export else "ALL"
         st.download_button(
-            "Download Excel (MRP)",
+            f"⬇️ Download MRP_Validation_Adjusted_Report_{suffix}.xlsx",
             data=excel_export.getvalue(),
             file_name=f"MRP_Validation_Adjusted_Report_{suffix}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        # Histórico (últimas 10 execuções)
-        with st.expander("🕘 Histórico MRP (últimas 10 execuções)"):
-            logs = list_run_logs("mrp", limit=10)
+        # NOVA EXECUÇÃO
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("🔄 Nova Validação", use_container_width=True):
+                st.session_state.mrp_step = 1
+                st.rerun()
+
+        with c2:
+            if st.button("🧹 Limpar uploads e recomeçar", use_container_width=True):
+                st.session_state["mrp_files_persisted"] = {}
+                st.session_state.mrp_step = 1
+                st.rerun()
+
+# ==========================================================
+# PAGE 4 — SAP MATERIAL VALIDATION PROGRESS — PREMIUM WIZARD
+# ==========================================================
+elif choice == "SAP Material Validation Progress":
+
+    st.subheader("📈 SAP Material Validation Progress")
+
+    inject_css("assets/styles.css")
+
+    # ------------------------------
+    # IDENTIDADE
+    # ------------------------------
+    effective_executor = identity_input("Quem executa?", "progress_exec")
+    save_history = st.checkbox("Guardar esta execução no histórico", value=True)
+
+    # ------------------------------
+    # ESTADO DO WIZARD
+    # ------------------------------
+    if "progress_step" not in st.session_state:
+        st.session_state.progress_step = 1
+
+    # ------------------------------
+    # WIZARD VISUAL (4 passos)
+    # ------------------------------
+    def render_progress_wizard(current_step: int):
+        steps = ["Modo", "Ficheiros", "Validar", "Resultados"]
+        cols = st.columns(len(steps))
+        for idx, col in enumerate(cols, start=1):
+            with col:
+                if current_step == idx:
+                    klass = "active"
+                elif current_step > idx:
+                    klass = "done"
+                else:
+                    klass = "pending"
+
+                st.markdown(
+                    f"""
+<div class="wizard-step">
+    <div class="step-circle {klass}">{idx}</div>
+    <div class="step-label">{steps[idx-1]}</div>
+</div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+        completion = (current_step - 1) / (len(steps) - 1)
+        st.markdown(
+            f'<div class="progress-line" style="width:{completion*100}%"></div>',
+            unsafe_allow_html=True,
+        )
+
+    render_progress_wizard(st.session_state.progress_step)
+
+    # ==========================================================
+    # PASSO 1 — MODO (AUTO vs MANUAL)
+    # ==========================================================
+    if st.session_state.progress_step == 1:
+
+        st.markdown("### 🧭 Passo 1 — Escolher Modo")
+
+        mode = st.radio("Modo de comparação:", ["Auto (arquivado)", "Manual (2 uploads)"], horizontal=True)
+        st.session_state.progress_mode = mode
+
+        if mode == "Auto (arquivado)":
+            st.markdown("### 🌍 Âmbito (para escolher os relatórios arquivados)")
+            prog_scope = st.radio("Âmbito:", ["ALL", "PT01", "PT02"], horizontal=True)
+            st.session_state.prog_scope = prog_scope
+
+        if st.button("➡️ Continuar para Ficheiros", use_container_width=True):
+            st.session_state.progress_step = 2
+            st.rerun()
+
+    # ==========================================================
+    # PASSO 2 — FICHEIROS
+    # ==========================================================
+    if st.session_state.progress_step == 2:
+
+        mode = st.session_state.progress_mode
+        st.markdown("### 📂 Passo 2 — Ficheiros")
+
+        # ------------------------------
+        # MODO AUTO
+        # ------------------------------
+        if mode == "Auto (arquivado)":
+
+            prog_scope = st.session_state.prog_scope
+
+            curr_path, prev_path, avail = pick_last_two_reports(prog_scope)
+
+            with st.expander("🔍 Relatórios encontrados automaticamente"):
+                st.write(f"**Disponíveis para {prog_scope}**: {avail}")
+                st.write(f"**Atual:** {curr_path if curr_path else '—'}")
+                st.write(f"**Anterior:** {prev_path if prev_path else '—'}")
+
+                if avail == 1:
+                    st.info("Foi encontrado **1** relatório. Precisa de mais um para comparar.")
+
+                if avail == 0:
+                    st.warning("Ainda não há relatórios arquivados para este âmbito.")
+
+            st.session_state.progress_curr_path = curr_path
+            st.session_state.progress_prev_path = prev_path
+
+            disabled = not (curr_path and prev_path)
+
+        # ------------------------------
+        # MODO MANUAL
+        # ------------------------------
+        else:
+            st.markdown("Carregue **2 ficheiros** (qualquer ordem). Eu detecto o mais novo automaticamente.")
+
+            uploads = st.file_uploader(
+                "Atual + Anterior (sem renomear!)",
+                type="xlsx",
+                accept_multiple_files=True,
+                key="progress_manual_uploader",
+            )
+
+            curr_file, prev_file, notes = pick_current_previous_from_uploads(uploads or [])
+
+            with st.expander("🔍 Detecção automática"):
+                if notes:
+                    for n in notes:
+                        st.info(n)
+
+                st.write(f"**Atual:** {getattr(curr_file, 'name', '—')}")
+                st.write(f"**Anterior:** {getattr(prev_file, 'name', '—')}")
+
+            st.session_state.manual_curr = curr_file
+            st.session_state.manual_prev = prev_file
+
+            disabled = not (curr_file and prev_file)
+
+        # ------------------------------
+        # BOTÕES
+        # ------------------------------
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("⬅️ Voltar", use_container_width=True):
+                st.session_state.progress_step = 1
+                st.rerun()
+        with c2:
+            if st.button("➡️ Continuar para Validação", disabled=disabled, use_container_width=True):
+                st.session_state.progress_step = 3
+                st.rerun()
+
+    # ==========================================================
+    # PASSO 3 — VALIDAR
+    # ==========================================================
+    if st.session_state.progress_step == 3:
+
+        st.markdown("### ⚙️ Passo 3 — Comparar Relatórios")
+
+        if st.button("▶️ Executar Diferenças", type="primary"):
+
+            from sap_validation_engine import compare_adjusted_reports
+
+            mode = st.session_state.progress_mode
+
+            if mode == "Auto (arquivado)":
+                curr_path = st.session_state.progress_curr_path
+                prev_path = st.session_state.progress_prev_path
+
+                with open(curr_path, "rb") as f:
+                    curr_bytes = io.BytesIO(f.read())
+                with open(prev_path, "rb") as f:
+                    prev_bytes = io.BytesIO(f.read())
+
+            else:
+                curr_bytes = st.session_state.manual_curr
+                prev_bytes = st.session_state.manual_prev
+
+            with st.spinner("A comparar relatórios (Diff)…"):
+                excel_diff, diff_dfs = compare_adjusted_reports(curr_bytes, prev_bytes)
+
+            st.session_state.progress_diff_excel = excel_diff
+            st.session_state.progress_diff_dfs = diff_dfs
+            st.session_state.progress_current_name = (
+                curr_path if mode == "Auto (arquivado)" else getattr(curr_bytes, "name", "current.xlsx")
+            )
+            st.session_state.progress_previous_name = (
+                prev_path if mode == "Auto (arquivado)" else getattr(prev_bytes, "name", "previous.xlsx")
+            )
+
+            if save_history:
+                payload = build_progress_log_payload(
+                    user=effective_executor,
+                    current_name=os.path.basename(st.session_state.progress_current_name),
+                    previous_name=os.path.basename(st.session_state.progress_previous_name),
+                    diff_dfs=diff_dfs
+                )
+                save_run_log(payload)
+
+            st.session_state.progress_step = 4
+            st.rerun()
+
+    # ==========================================================
+    # PASSO 4 — RESULTADOS
+    # ==========================================================
+    if st.session_state.progress_step == 4:
+
+        st.markdown("### 📊 Passo 4 — Resultados")
+
+        diff_dfs = st.session_state.progress_diff_dfs
+
+        # ------------------------------
+        # TABS
+        # ------------------------------
+        labels = ["Erros Novos", "Erros Resolvidos", "Erros Alterados", "Novos Materiais", "Views Perdidas"]
+        keys = ["New Errors", "Resolved Errors", "Changed Errors", "New Materials", "Views Lost"]
+
+        tabs = st.tabs(labels)
+        for tab, key in zip(tabs, keys):
+            with tab:
+                st.dataframe(diff_dfs.get(key, pd.DataFrame()), use_container_width=True)
+
+        # ------------------------------
+        # DASHBOARDS
+        # ------------------------------
+        st.markdown("## 📈 Dashboard — Progress (Diff)")
+        render_progress_kpis(diff_dfs)
+        render_progress_charts(diff_dfs)
+
+        # ------------------------------
+        # DOWNLOAD
+        # ------------------------------
+        st.markdown("---")
+        st.download_button(
+            "⬇️ Download SAP_Validation_Progress.xlsx",
+            data=st.session_state.progress_diff_excel.getvalue(),
+            file_name="SAP_Validation_Progress.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        # ------------------------------
+        # HISTÓRICO
+        # ------------------------------
+        with st.expander("🕑 Histórico Progress (últimas 10 execuções)"):
+            logs = list_run_logs("progress", limit=10)
             if logs:
-                hist_df = pd.DataFrame([{
-                    "Quando": log["timestamp"],
-                    "Quem": log["user"],
-                    "Filtro": log["plant_filter"],
-                    "Erros": log["metrics"]["total_errors"]
-                } for log in logs])
+                hist_df = pd.DataFrame([
+                    {
+                        "Quando": log["timestamp"],
+                        "Quem": log["user"],
+                        "New": log["metrics"]["new_errors"],
+                        "Resolved": log["metrics"]["resolved_errors"],
+                        "Changed": log["metrics"]["changed_errors"],
+                        "New Mats": log["metrics"]["new_materials"],
+                        "Views Lost": log["metrics"]["views_lost"],
+                    }
+                    for log in logs
+                ])
                 st.dataframe(hist_df, use_container_width=True)
             else:
                 st.write("Sem histórico.")
 
-# ======================================================================================
-#                                     PAGE 4
-#                          SAP MATERIAL VALIDATION PROGRESS
-# ======================================================================================
-else:
-    import os, io
-    import pandas as pd
-
-    st.subheader("📈 SAP Material Validation Progress")
-
-    # Identidade
-    effective_executor = identity_input("Quem executa?", "prog_exec")
-    save_history = st.checkbox("Guardar esta execução no histórico", value=True)
-
-    # 🔁 NOVO: Modo Auto
-    auto_mode = st.toggle("Auto (usar últimos relatórios guardados)", value=True)
-    
-    # Filtro de planta para Auto (para casarmos 'ALL', 'PT01' ou 'PT02' com o relatório arquivado)
-    st.markdown("### 🧭 Âmbito (Auto)")
-    prog_scope = st.radio("Âmbito:", ["ALL", "PT01", "PT02"], horizontal=True, index=0)
-    
-    def pick_last_two_reports(plant_scope: str):
-        """
-        Prioridade:
-        1) usar os logs 'sap' com report_path (filtrados por scope)
-        2) fallback: varrer ./reports/sap/** pelo sufixo e usar dois mais recentes
-        Retorna: (curr_path, prev_path, count)
-        """
-        import os, glob
-
-        scope = (plant_scope or "ALL").upper()
-
-        # 1) Tenta pelos logs
-        logs = list_run_logs("sap", limit=200) or []
-        cand = []
-        for log in logs:
-            if str(log.get("plant_filter", "ALL")).upper() != scope:
-                continue
-            path = log.get("report_path")
-            if path and os.path.exists(path):
-                cand.append((log.get("timestamp", ""), os.path.abspath(path)))
-
-        # Se há 2 ou mais logs válidos → usar
-        if len(cand) >= 2:
-            cand.sort(key=lambda x: x[0], reverse=True)
-            return cand[0][1], cand[1][1], len(cand)
-
-        # 2) Fallback: varrer o vault
-        base = os.path.join(".", "reports", "sap")
-        month_dirs = [d for d in (os.listdir(base) if os.path.exists(base) else [])]
-        paths = []
-        for m in month_dirs:
-            paths.extend(glob.glob(os.path.join(base, m, f"*SAP_Validation_Adjusted_Report_{scope}.xlsx")))
-
-        # Ordenar por timestamp embutido no nome
-        paths = sorted(paths, reverse=True)
-
-        if len(paths) >= 2:
-            return os.path.abspath(paths[0]), os.path.abspath(paths[1]), len(paths)
-
-        if len(paths) == 1:
-            return os.path.abspath(paths[0]), None, 1
-
-        # Nenhum encontrado
-        return None, None, 0
-
-    # -------------------- Uploaders --------------------
-    if auto_mode:  
-        curr_path, prev_path, avail = pick_last_two_reports(prog_scope)
-
-        with st.expander("🔍 Relatórios selecionados automaticamente"):
-            st.write(f"**Disponíveis p/ {prog_scope}**: {avail}")
-            st.write(f"**Atual** → {curr_path if curr_path else '❌ não encontrado'}")
-            st.write(f"**Anterior** → {prev_path if prev_path else '❌ não encontrado'}")
-            if avail == 1:
-                st.info("Foi encontrado **1 relatório**. Gere mais **1** para poder comparar.")
-            if avail == 0:
-                st.warning("Ainda **não há relatórios** arquivados para este âmbito.")
-
-        run_disabled = not (curr_path and prev_path)
-        if st.button("▶ Run Progress (Auto)", type="primary", disabled=run_disabled):
-
-            if not curr_path or not prev_path:
-                st.error("⚠ Não foi possível encontrar dois relatórios arquivados para o âmbito selecionado.")
-                st.stop()
-
-            # Abrir como BytesIO (compatível com compare_adjusted_reports)
-            with open(curr_path, "rb") as f:
-                curr_bytes = io.BytesIO(f.read())
-            with open(prev_path, "rb") as f:
-                prev_bytes = io.BytesIO(f.read())
-
-            from sap_validation_engine import compare_adjusted_reports
-            with st.spinner("A comparar relatórios (Auto)..."):
-                excel_diff, diff_dfs = compare_adjusted_reports(curr_bytes, prev_bytes)
-
-            st.success("Progresso (Auto) concluído!")
-
-            # Guardar histórico (nome = basename dos caminhos)
-            if save_history:
-                payload = build_progress_log_payload(
-                    user=effective_executor,
-                    current_name=os.path.basename(curr_path),
-                    previous_name=os.path.basename(prev_path),
-                    diff_dfs=diff_dfs
-                )
-                save_run_log(payload)
-                st.info("📁 Progresso (Auto) guardado.")
-
-            # Tabs (mesmo bloco do Manual)
-            labels = ["Erros Novos", "Erros Resolvidos", "Erros Alterados", "Novos Materiais", "Views Perdidas"]
-            keys   = ["New Errors", "Resolved Errors", "Changed Errors", "New Materials", "Views Lost"]
-            tabs = st.tabs(labels)
-            for tab, key in zip(tabs, keys):
-                with tab:
-                    st.dataframe(diff_dfs.get(key, pd.DataFrame()), use_container_width=True)
-
-            # Dashboards + Download (iguais ao Manual)
-            st.markdown("## 📈 Dashboard — Progress (Diff)")
-            render_progress_kpis(diff_dfs)
-            render_progress_charts(diff_dfs)
-            st.markdown("---")
-            st.download_button(
-                "Download SAP_Validation_Progress.xlsx",
-                data=excel_diff.getvalue(),
-                file_name="SAP_Validation_Progress.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-            # Histórico (iguais ao Manual)
-            with st.expander("🕘 Histórico Progress (últimas 10 execuções)"):
-                logs = list_run_logs("progress", limit=10)
-                if logs:
-                    hist_df = pd.DataFrame([{
-                        "Quando": log["timestamp"],
-                        "Quem": log["user"],
-                        "New": log["metrics"]["new_errors"],
-                        "Resolved": log["metrics"]["resolved_errors"],
-                        "Changed": log["metrics"]["changed_errors"],
-                        "New Mats": log["metrics"]["new_materials"],
-                        "Views Lost": log["metrics"]["views_lost"],
-                    } for log in logs])
-                    st.dataframe(hist_df, use_container_width=True)
-                else:
-                    st.write("Sem histórico.")
-    else:
-        # ============ MODO MANUAL (agora com deteção automática por timestamp) ============
-        uploads = st.file_uploader(
-            "Largar os ficheiros (pelo menos 2) – sem renomear; eu detecto Atual/Anterior pelo timestamp do nome",
-            type="xlsx",
-            accept_multiple_files=True
-        )
-
-        # Mostrar os ficheiros que o utilizador colocou
-        with st.expander("🔍 Ficheiros carregados (Manual)"):
-            if uploads:
-                for f in uploads:
-                    st.write(f"• {f.name}")
-            else:
-                st.write("Ainda sem ficheiros carregados.")
-
-        # Selecionar (Atual, Anterior) automaticamente
-        curr_file, prev_file, notes = pick_current_previous_from_uploads(uploads or [])
-
-        with st.expander("🧭 Seleção automática (Manual)"):
-            if notes:
-                for n in notes:
-                    st.info(n)
-            st.write(f"**Atual (mais recente)** → {getattr(curr_file, 'name', '❌ não selecionado')}")
-            st.write(f"**Anterior** → {getattr(prev_file, 'name', '❌ não selecionado')}")
-
-        # Botão com proteção (precisa de 2)
-        run_disabled_manual = not (curr_file and prev_file)
-        if st.button("▶ Run Progress (Manual)", type="primary", disabled=run_disabled_manual):
-            from sap_validation_engine import compare_adjusted_reports
-            with st.spinner("A comparar relatórios (Manual)..."):
-                excel_diff, diff_dfs = compare_adjusted_reports(curr_file, prev_file)
-
-            st.success("Progresso (Manual) concluído!")
-
-            # Guardar histórico
-            if save_history:
-                payload = build_progress_log_payload(
-                    user=effective_executor,
-                    current_name=getattr(curr_file, "name", "current.xlsx"),
-                    previous_name=getattr(prev_file, "name", "previous.xlsx"),
-                    diff_dfs=diff_dfs
-                )
-                save_run_log(payload)
-                st.info("📁 Progresso guardado.")
-
-            # Tabs
-            labels = ["Erros Novos", "Erros Resolvidos", "Erros Alterados", "Novos Materiais", "Views Perdidas"]
-            keys   = ["New Errors", "Resolved Errors", "Changed Errors", "New Materials", "Views Lost"]
-            tabs = st.tabs(labels)
-            for tab, key in zip(tabs, keys):
-                with tab:
-                    st.dataframe(diff_dfs.get(key, pd.DataFrame()), use_container_width=True)
-
-            # Dashboards (comparação atual)
-            st.markdown("## 📈 Dashboard — Progress (Diff)")
-            render_progress_kpis(diff_dfs)
-            render_progress_charts(diff_dfs)
-
-            # Download
-            st.markdown("---")
-            st.download_button(
-                "Download SAP_Validation_Progress.xlsx",
-                data=excel_diff.getvalue(),
-                file_name="SAP_Validation_Progress.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-            # Histórico (últimas 10 execuções)
-            with st.expander("🕘 Histórico Progress (últimas 10 execuções)"):
-                logs = list_run_logs("progress", limit=10)
-                if logs:
-                    hist_df = pd.DataFrame([{
-                        "Quando": log["timestamp"],
-                        "Quem": log["user"],
-                        "New": log["metrics"]["new_errors"],
-                        "Resolved": log["metrics"]["resolved_errors"],
-                        "Changed": log["metrics"]["changed_errors"],
-                        "New Mats": log["metrics"]["new_materials"],
-                        "Views Lost": log["metrics"]["views_lost"],
-                    } for log in logs])
-                    st.dataframe(hist_df, use_container_width=True)
-                else:
-                    st.write("Sem histórico.")
+        # ------------------------------
+        # NOVA EXECUÇÃO
+        # ------------------------------
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("🔄 Nova comparação", use_container_width=True):
+                st.session_state.progress_step = 1
+                st.rerun()
+        with c2:
+            if st.button("🧹 Limpar tudo e recomeçar", use_container_width=True):
+                for k in [
+                    "progress_curr_path", "progress_prev_path",
+                    "progress_manual_curr", "progress_manual_prev",
+                    "progress_diff_dfs", "progress_diff_excel"
+                ]:
+                    st.session_state.pop(k, None)
+                st.session_state.progress_step = 1
+                st.rerun()
