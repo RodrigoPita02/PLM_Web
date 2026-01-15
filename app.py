@@ -25,6 +25,36 @@ from sap_validation_engine import (
     build_mrp_log_payload
 )
 
+# ==========================================================
+# CSS GLOBAL INJECTION
+# ==========================================================
+
+from pathlib import Path
+import streamlit as st
+
+def inject_css(css_path: str):
+    """
+    Injeta um ficheiro CSS externo no Streamlit.
+    Caminho relativo ao diretório onde está o app.py.
+    """
+    try:
+        base = Path(__file__).resolve().parent
+        css_file = base / css_path
+
+        if css_file.exists():
+            css = css_file.read_text(encoding="utf-8")
+            st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+        else:
+            st.warning(f"⚠️ CSS não encontrado: {css_file}")
+    except Exception as e:
+        st.error(f"Erro ao carregar CSS: {e}")
+
+# ==========================================================
+# CONFIGURAÇÃO INICIAL
+# ==========================================================
+st.set_page_config(page_title="SAP & ATL Validation Hub", layout="wide")
+st.title("🧰 Validation Hub")
+inject_css("assets/styles.css")
 
 # ==========================================================
 # HELPERS PARA MODO MANUAL (Progress) – DETEÇÃO DE "Atual" e "Anterior"
@@ -84,6 +114,62 @@ def pick_current_previous_from_uploads(files: list) -> tuple:
         diagnostics.append("ℹ️ Menos de dois ficheiros com timestamp válido; separei pela ordem de upload para completar os 2.")
 
     return curr, prev, diagnostics
+
+# ==========================================================
+# Persistência robusta de ficheiros (evita perder uploads)
+# ==========================================================
+import io
+
+def persist_uploaded_mapping(files_map: dict, state_key: str = "sap_files_persisted") -> dict:
+    """
+    Converte o dicionário de UploadedFile -> {key: UploadedFile}
+    num dicionário persistente -> {key: {"name": str, "bytes": bytes}}
+    e guarda no st.session_state[state_key].
+    """
+    if not files_map:
+        st.session_state[state_key] = {}
+        return {}
+
+    persisted = {}
+    for k, f in files_map.items():
+        if f is None:
+            continue
+        # obter bytes de forma segura
+        try:
+            content = f.getvalue()
+        except Exception:
+            try:
+                f.seek(0)
+                content = f.read()
+            except Exception:
+                continue
+        persisted[k] = {
+            "name": getattr(f, "name", f"{k}.xlsx"),
+            "bytes": content,
+        }
+    st.session_state[state_key] = persisted
+    return persisted
+
+
+def rehydrate_persisted_mapping(state_key: str = "sap_files_persisted") -> dict:
+    """
+    Recria objetos file-like (BytesIO) com atributo .name
+    a partir do dicionário persistido em st.session_state[state_key].
+    Retorna {key: bytesIO_com_name}.
+    """
+    stored = st.session_state.get(state_key, {}) or {}
+    out = {}
+    for k, meta in stored.items():
+        if not meta:
+            continue
+        bio = io.BytesIO(meta.get("bytes", b""))
+        # anexar nome para ser compatível com o resto do código (logs etc.)
+        try:
+            bio.name = meta.get("name", f"{k}.xlsx")
+        except Exception:
+            pass
+        out[k] = bio
+    return out
 
 # ==========================================================
 # NOVO: Classificador Universal de Ficheiros (Multi‑Upload)
@@ -199,11 +285,6 @@ LABELS_PT = {
     "previous": "Relatório Anterior (Progress)",
 }
 
-# ==========================================================
-# CONFIGURAÇÃO INICIAL
-# ==========================================================
-st.set_page_config(page_title="SAP & ATL Validation Hub", layout="wide")
-st.title("🧰 Validation Hub")
 
 # ==========================================================
 # SIDEBAR MENU
@@ -211,7 +292,12 @@ st.title("🧰 Validation Hub")
 st.sidebar.header("Menu")
 choice = st.sidebar.radio(
     "Escolher relatório:",
-    ["SAP Material Validation", "PLM Workflow (ATL)", "MRP Validation", "SAP Material Validation Progress"],
+    [
+        "SAP Material Validation",
+        "PLM Workflow (ATL)",
+        "MRP Validation",
+        "SAP Material Validation Progress"
+    ],
     index=0
 )
 
@@ -251,80 +337,206 @@ def identity_input(label: str, key: str):
 
     return st.session_state["executor_name"]
 
-
 # ======================================================================================
-#                                        PAGE 1
-#                             SAP MATERIAL VALIDATION
+# PAGE 1
+# SAP MATERIAL VALIDATION (WIZARD + PERSISTÊNCIA DE UPLOADS)
 # ======================================================================================
 if choice == "SAP Material Validation":
+
+    import os
+    import pandas as pd
+    import streamlit as st
+
     st.subheader("📦 SAP Material Validation Tool")
 
-    # -------------------- Identidade do utilizador --------------------
+    # CSS global (ficheiro externo)
+    inject_css("assets/styles.css")
+
+    # ------------------------------
+    # IDENTIDADE E PREFERÊNCIAS
+    # ------------------------------
     effective_executor = identity_input("Quem executa?", "sap_exec")
     save_history = st.checkbox("Guardar esta execução no histórico", value=True)
 
-    # -------------------- Uploaders --------------------
-    uploads = st.file_uploader(
-        "Largar todos os ficheiros necessários aqui",
-        type="xlsx",
-        accept_multiple_files=True
-    )
-    files = classify_uploaded_files(uploads)
+    # ------------------------------
+    # ESTADO DO WIZARD
+    # ------------------------------
+    if "sap_step" not in st.session_state:
+        st.session_state.sap_step = 1
 
-    # Expander — mostra apenas os ficheiros relevantes à página atual
-    with st.expander("🔍 Ficheiros identificados automaticamente (página atual)"):
-        for key in required_keys_for_page(choice):
-            val = files.get(key)
-            label = LABELS_PT.get(key, key)
-            st.write(f"**{label}** → {val.name if val else '❌ não encontrado'}")
+    # Wizard visual (premium)
+    
+    def render_wizard(current_step: int):
+        steps = ["Ficheiros", "Âmbito", "Validar", "Resultados"]
+        cols = st.columns(len(steps))
 
-    sap_file    = files.get("sap")
-    mara_file   = files.get("mara")
-    marc_file   = files.get("marc")
-    mvke_file   = files.get("mvke")
-    zplm_marc   = files.get("zplm_marc")
-    zplm_mara   = files.get("zplm_mara")
+        for idx, col in enumerate(cols, start=1):
+            with col:
+                if current_step == idx:
+                    klass = "active"
+                elif current_step > idx:
+                    klass = "done"
+                else:
+                    klass = "pending"
 
-    # -------------------- FILTRO DE PLANTA --------------------
-    st.markdown("### 🧭 Âmbito de Exportação")
-    export_scope = st.radio(
-        "Âmbito do download:",
-        ["Tudo", "Apenas PT01", "Apenas PT02"],
-        index=0, horizontal=True
-    )
-    plant_filter_export = {"Apenas PT01": "PT01", "Apenas PT02": "PT02"}.get(export_scope)
+                st.markdown(
+                    f"""
+                    <div class="wizard-step">
+                        <div class="step-circle {klass}">{idx}</div>
+                        <div class="step-label">{steps[idx-1]}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
 
-    apply_filter_display = st.checkbox("Aplicar filtro às tabelas apresentadas", value=False)
-    plant_filter_display = plant_filter_export if apply_filter_display else None
+        completion = (current_step - 1) / (len(steps)-1)
+        st.markdown(
+            f'<div class="progress-line" style="width:{completion*100}%"></div>',
+            unsafe_allow_html=True
+        )
 
-    # -------------------- RUN --------------------
-    if st.button("▶ Run Validation", type="primary"):
-        missing = [sap_file, mara_file, marc_file, mvke_file]
-        if any(f is None for f in missing):
-            st.error("⚠ Faltam ficheiros.")
-            st.stop()
+    render_wizard(st.session_state.sap_step)
 
-        ok_sheet, sheets = has_sheet(sap_file, "SAPUI5 Export")
-        if not ok_sheet:
-            st.error(f"A folha 'SAPUI5 Export' não existe. Folhas encontradas: {sheets}")
-            st.stop()
+    # ------------------------------
+    # GUARDAS / HELPERS DE ESTADO
+    # ------------------------------
+    # Se alguém saltar para passo > 1 sem ter ficheiros persistidos, voltamos ao 1
+    required_keys = ["sap", "mara", "marc", "mvke"]
+    persisted_now = st.session_state.get("sap_files_persisted", {}) or {}
+    if st.session_state.sap_step > 1 and any(k not in persisted_now for k in required_keys):
+        st.session_state.sap_step = 1
+        st.rerun()
 
-        with st.spinner("A validar materiais..."):
-            # Execução para display
-            excel_display, errors_df, summary_df = run_full_validation(
-                sap_file=sap_file,
-                mara_file=mara_file,
-                marc_file=marc_file,
-                mvke_file=mvke_file,
-                zplm_marc_file=zplm_marc,
-                zplm_mara_file=zplm_mara,
-                previous_report=None,
-                plant_filter=plant_filter_display
-            )
+    # AUXILIAR: valida se a folha SAPUI5 Export existe (se já tiveres esta função no app, podes reaproveitar)
+    def has_sheet(uploaded, sheet_name: str):
+        try:
+            xl = pd.ExcelFile(uploaded)
+            return sheet_name in xl.sheet_names, xl.sheet_names
+        except Exception as e:
+            return False, [f"Erro ao abrir: {e}"]
 
-            # Execução para exportação
-            if plant_filter_export != plant_filter_display:
-                excel_export, _, _ = run_full_validation(
+    # ==========================================================================
+    # PASSO 1 — FICHEIROS
+    # ==========================================================================
+    if st.session_state.sap_step == 1:
+
+        st.markdown("### 📂 Passo 1 — Carregar Ficheiros")
+
+        uploads = st.file_uploader(
+            "Largar todos os ficheiros necessários aqui",
+            type="xlsx",
+            accept_multiple_files=True,
+            key="sap_multi_uploader"  # chave estável evita resets visuais
+        )
+
+        # Classificar uploads mais recentes
+        files = classify_uploaded_files(uploads)
+
+        # Se houve uploads agora, persistimos (bytes + name) para não perder nos reruns
+        if uploads:
+            persist_uploaded_mapping(files, state_key="sap_files_persisted")
+
+        # Mostrar deteção do upload atual
+        with st.expander("🔍 Ficheiros identificados (último upload)"):
+            for key in required_keys_for_page(choice):
+                f = files.get(key)
+                label = LABELS_PT.get(key, key)
+                st.write(f"**{label}** → {f.name if f else '—'}")
+
+        # Mostrar o que está persistido na sessão (o que realmente conta para avançar)
+        with st.expander("💾 Ficheiros guardados na sessão (persistidos)"):
+            persisted = st.session_state.get("sap_files_persisted", {}) or {}
+            if persisted:
+                for k, meta in persisted.items():
+                    label = LABELS_PT.get(k, k)
+                    st.write(f"**{label}** → {meta.get('name', f'{k}.xlsx')}")
+            else:
+                st.write("Ainda não existem ficheiros persistidos.")
+
+        # Botões (baseado no que está PERSISTIDO, não no upload atual)
+        persisted = st.session_state.get("sap_files_persisted", {}) or {}
+        disabled = any(k not in persisted for k in required_keys)
+
+        c1, c2 = st.columns([1,1])
+        with c2:
+            if st.button("➡️ Continuar para Âmbito", disabled=disabled, use_container_width=True):
+                st.session_state.sap_step = 2
+                st.rerun()
+
+        # Utilitário: Limpar ficheiros persistidos (opcional)
+        with st.expander("🧹 Limpar ficheiros carregados"):
+            if st.button("Limpar uploads persistidos"):
+                st.session_state["sap_files_persisted"] = {}
+                st.success("Ficheiros persistidos foram limpos.")
+                st.rerun()
+
+    # ==========================================================================
+    # PASSO 2 — ÂMBITO
+    # ==========================================================================
+    if st.session_state.sap_step == 2:
+
+        st.markdown("### 🌍 Passo 2 — Selecionar Âmbito")
+
+        export_scope = st.radio(
+            "Âmbito do download:",
+            ["Tudo", "Apenas PT01", "Apenas PT02"],
+            index=0, horizontal=True
+        )
+        plant_filter_export = {"Apenas PT01": "PT01", "Apenas PT02": "PT02"}.get(export_scope)
+
+        apply_filter_display = st.checkbox("Aplicar filtro às tabelas apresentadas", value=False)
+        plant_filter_display = plant_filter_export if apply_filter_display else None
+
+        # Guardar no estado
+        st.session_state.sap_export_scope = export_scope
+        st.session_state.sap_plant_export = plant_filter_export
+        st.session_state.sap_plant_display = plant_filter_display
+
+        # Botões
+        c1, c2 = st.columns([1,1])
+        with c1:
+            if st.button("⬅️ Voltar (Ficheiros)", use_container_width=True):
+                st.session_state.sap_step = 1
+                st.rerun()
+        with c2:
+            if st.button("➡️ Continuar para Validação", use_container_width=True):
+                st.session_state.sap_step = 3
+                st.rerun()
+
+    # ==========================================================================
+    # PASSO 3 — VALIDAR
+    # ==========================================================================
+    if st.session_state.sap_step == 3:
+
+        st.markdown("### ⚙️ Passo 3 — Executar Validação")
+        st.info("Clique no botão abaixo para validar os ficheiros carregados.")
+
+        if st.button("▶ Validar agora", type="primary"):
+
+            # Rehidratar ficheiros persistidos como BytesIO (com .name)
+            files = rehydrate_persisted_mapping(state_key="sap_files_persisted")
+            sap_file   = files.get("sap")
+            mara_file  = files.get("mara")
+            marc_file  = files.get("marc")
+            mvke_file  = files.get("mvke")
+            zplm_marc  = files.get("zplm_marc")
+            zplm_mara  = files.get("zplm_mara")
+
+            plant_filter_export = st.session_state.sap_plant_export
+            plant_filter_display = st.session_state.sap_plant_display
+
+            # Sanity check da folha SAPUI5 Export
+            ok_sheet, sheets = has_sheet(sap_file, "SAPUI5 Export")
+            if not ok_sheet:
+                st.error(f"A folha 'SAPUI5 Export' não existe. Folhas encontradas: {sheets}")
+                st.stop()
+
+            from sap_validation_engine import run_full_validation
+
+            with st.spinner("A validar materiais..."):
+
+                # Execução para visualização (display)
+                excel_display, errors_df, summary_df = run_full_validation(
                     sap_file=sap_file,
                     mara_file=mara_file,
                     marc_file=marc_file,
@@ -332,72 +544,130 @@ if choice == "SAP Material Validation":
                     zplm_marc_file=zplm_marc,
                     zplm_mara_file=zplm_mara,
                     previous_report=None,
-                    plant_filter=plant_filter_export
+                    plant_filter=plant_filter_display
                 )
-            else:
-                excel_export = excel_display
 
-        st.success("Validação concluída!")
+                # Execução para exportação (se necessário)
+                if plant_filter_export != plant_filter_display:
+                    excel_export, _, _ = run_full_validation(
+                        sap_file=sap_file,
+                        mara_file=mara_file,
+                        marc_file=marc_file,
+                        mvke_file=mvke_file,
+                        zplm_marc_file=zplm_marc,
+                        zplm_mara_file=zplm_mara,
+                        previous_report=None,
+                        plant_filter=plant_filter_export
+                    )
+                else:
+                    excel_export = excel_display
 
-        # -------------------- Guardar Histórico --------------------
-        # Guardar relatório SAP no vault
-        suffix = plant_filter_export if plant_filter_export else "ALL"
-        from sap_validation_engine import save_report_to_vault
-        report_path = save_report_to_vault(excel_export, report_type="sap", plant_suffix=suffix)
+            # Guardar resultados para o Passo 4
+            st.session_state.sap_errors_df    = errors_df
+            st.session_state.sap_summary_df   = summary_df
+            st.session_state.sap_excel_export = excel_export
 
-        # Guardar log SAP com o caminho correto
-        if save_history:
-            payload = build_sap_log_payload(
-                user=effective_executor,
-                plant_filter=plant_filter_export,
-                sap_file=sap_file, mara_file=mara_file, marc_file=marc_file, mvke_file=mvke_file,
-                errors_df=errors_df, summary_df=summary_df,
-                report_path=report_path,  # ESSENCIAL 🔥🔥🔥
+            # Guardar no vault + Logs
+            suffix = plant_filter_export if plant_filter_export else "ALL"
+            from sap_validation_engine import save_report_to_vault, build_sap_log_payload, save_run_log
+            report_path = save_report_to_vault(excel_export, report_type="sap", plant_suffix=suffix)
+            st.session_state.sap_report_path = report_path
+
+            if save_history:
+                payload = build_sap_log_payload(
+                    user=effective_executor,
+                    plant_filter=plant_filter_export,
+                    sap_file=sap_file, mara_file=mara_file, marc_file=marc_file, mvke_file=mvke_file,
+                    errors_df=errors_df, summary_df=summary_df,
+                    report_path=report_path
+                )
+                save_run_log(payload)
+
+            st.session_state.sap_step = 4
+            st.rerun()
+
+    # ==========================================================================
+    # PASSO 4 — RESULTADOS
+    # ==========================================================================
+    if st.session_state.sap_step == 4:
+
+        st.markdown("### 📊 Passo 4 — Resultados")
+
+        errors_df    = st.session_state.sap_errors_df
+        summary_df   = st.session_state.sap_summary_df
+        excel_export = st.session_state.sap_excel_export
+        report_path  = st.session_state.sap_report_path
+
+        # KPI Cards (usam classes do CSS externo)
+        c = st.columns(3)
+        with c[0]:
+            st.markdown(
+                f'<div class="card"><h4>Total de Erros</h4><div class="big">{errors_df.shape[0]}</div></div>',
+                unsafe_allow_html=True
             )
-            save_run_log(payload)
-            st.info("📁 Execução guardada no histórico (arquivada).")
+        with c[1]:
+            total_fields = int(errors_df["Field"].nunique()) if "Field" in errors_df.columns else 0
+            st.markdown(
+                f'<div class="card"><h4>Fields distintos</h4><div class="big">{total_fields}</div></div>',
+                unsafe_allow_html=True
+            )
+        with c[2]:
+            total_mats = int(errors_df["Material"].nunique()) if "Material" in errors_df.columns else 0
+            st.markdown(
+                f'<div class="card"><h4>Materiais com erro</h4><div class="big">{total_mats}</div></div>',
+                unsafe_allow_html=True
+            )
 
-
-        # -------------------- Apresentação --------------------
+        # Tabelas
         st.header("All Errors")
         st.dataframe(errors_df, use_container_width=True)
 
         st.header("Adjusted Summary")
         st.dataframe(summary_df, use_container_width=True)
 
-        # ---- Dashboards (execução atual) ----
+        # Dashboards
         st.markdown("## 📈 Dashboard — SAP Material Validation")
         render_sap_run_kpis(errors_df)
         render_sap_run_charts(errors_df)
 
-        # ---- Evolução (histórico SAP) ----
-        with st.expander("📉 Evolução temporal (Histórico SAP)"):
-            logs = list_run_logs("sap", limit=50)
-            render_sap_history_charts(logs)
-
-        download_name = os.path.basename(report_path)
-
-        # Download
+        # Download com nome igual ao do ficheiro arquivado
+        download_name = os.path.basename(report_path) if report_path else "SAP_Validation_Adjusted_Report_ALL.xlsx"
         st.download_button(
-            "Download Excel",
+            "⬇️ Download Excel",
             data=excel_export.getvalue(),
             file_name=download_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        # Histórico
+        # Histórico SAP
         with st.expander("🕘 Histórico SAP (últimas 10 execuções)"):
             logs = list_run_logs("sap", limit=10)
             if logs:
-                hist_df = pd.DataFrame([{
-                    "Quando": log["timestamp"],
-                    "Quem": log["user"],
-                    "Filtro": log["plant_filter"],
-                    "Erros": log["metrics"]["total_errors"]
-                } for log in logs])
+                hist_df = pd.DataFrame([
+                    {
+                        "Quando": log.get("timestamp"),
+                        "Quem": log.get("user"),
+                        "Filtro": log.get("plant_filter"),
+                        "Erros": log.get("metrics", {}).get("total_errors", 0),
+                    }
+                    for log in logs
+                ])
                 st.dataframe(hist_df, use_container_width=True)
             else:
                 st.write("Sem histórico.")
+
+        # Nova execução
+        c1, c2 = st.columns([1,1])
+        with c1:
+            if st.button("🔁 Nova Validação", use_container_width=True):
+                # Opcional: manter uploads persistidos ou limpar
+                st.session_state.sap_step = 1
+                st.rerun()
+        with c2:
+            if st.button("🧹 Limpar uploads persistidos e recomeçar", use_container_width=True):
+                st.session_state["sap_files_persisted"] = {}
+                st.session_state.sap_step = 1
+                st.rerun()
 
 # ======================================================================================
 #                                     PAGE 2

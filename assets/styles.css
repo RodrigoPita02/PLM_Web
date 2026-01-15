@@ -1,0 +1,421 @@
+
+/* ============================================================================
+   VISTEON PREMIUM CORPORATE THEME (FULL APP)
+   Gradient + Glass + Glow • Light & Dark Mode
+   ========================================================================== */
+
+/* ============================================================
+   STREAMLIT THEME INTEGRATION (LIGHT / DARK / SYSTEM)
+   ============================================================ */
+
+/* 1) LIGHT MODE explícito do Streamlit */
+html[data-theme="light"] {
+    --app-bg: #ffffff !important;
+    --app-bg-secondary: #f5f7fa !important;
+    --app-fg: #1f2937 !important;
+    --app-fg-muted: #6b7280 !important;
+    --app-border: rgba(0,0,0,.12) !important;
+
+    --primary: var(--vs-orange) !important;
+    --primary-hover: var(--vs-orange-light) !important;
+    --primary-dark: var(--vs-orange-dark) !important;
+
+    --menu-bg: #f3f4f6 !important;
+    --menu-item-bg: #ffffff !important;
+    --menu-item-hover: #ececec !important;
+    --menu-item-active: rgba(255,106,19,.18) !important;
+    --menu-border: #e5e7eb !important;
+    --menu-text: #1f2937 !important;
+    --menu-text-muted: #6b7280 !important;
+
+    --card-bg-1: #fafafa !important;
+    --card-bg-2: #ffffff !important;
+}
+
+/* 2) DARK MODE explícito do Streamlit */
+html[data-theme="dark"] {
+    --app-bg: #0b0b0b !important;
+    --app-bg-secondary: #131313 !important;
+    --app-fg: #f3f4f6 !important;
+    --app-fg-muted: #9ca3af !important;
+    --app-border: rgba(255,255,255,.12) !important;
+
+    --primary: #FF6A13 !important;
+    --primary-hover: #ff7f38 !important;
+    --primary-dark: #d8560f !important;
+
+    --menu-bg: #0b0b0b !important;
+    --menu-item-bg: #1a1a1a !important;
+    --menu-item-hover: #252525 !important;
+    --menu-item-active: rgba(255,106,19,.25) !important;
+    --menu-border: rgba(255,255,255,.12) !important;
+    --menu-text: #e5e5e5 !important;
+    --menu-text-muted: #9ca3af !important;
+    --menu-radio: #FF6A13 !important;
+
+    --card-bg-1: #161616 !important;
+    --card-bg-2: #1f1f1f !important;
+}
+
+/* 3) SYSTEM MODE (segue o prefers-color-scheme) */
+@media (prefers-color-scheme: dark) {
+    html:not([data-theme="light"]):not([data-theme="dark"]) {
+        --app-bg: #0b0b0b;
+        --app-bg-secondary: #131313;
+        --app-fg: #f3f4f6;
+        --app-fg-muted: #9ca3af;
+        --app-border: rgba(255,255,255,.12);
+
+        --primary: #FF6A13;
+        --primary-hover: #ff7f38;
+        --primary-dark: #e65f18;
+
+        --menu-bg: #0b0b0b;
+        --menu-item-bg: #1a1a1a;
+        --menu-item-hover: #252525;
+        --menu-item-active: rgba(255,106,19,.25);
+        --menu-border: rgba(255,255,255,.12);
+        --menu-text: #e5e5e5;
+        --menu-text-muted: #9ca3af;
+
+        --card-bg-1: #161616;
+        --card-bg-2: #1f1f1f;
+    }
+}
+
+/* =============================================================================
+   1) BASE VARIABLES (LIGHT MODE)
+   ========================================================================== */
+:root {
+  --vs-orange: #FF6A13;
+  --vs-orange-light: #ff7f38;
+  --vs-orange-dark: #d8560f;
+
+  --vs-black: #0b0b0b;
+  --vs-gray-dark: #1a1a1a;
+  --vs-gray: #2c2c2c;
+  --vs-gray-light: #d1d5db;
+
+  /* Main app colors */
+  --app-bg: #ffffff;
+  --app-bg-secondary: #f5f7fa;
+  --app-fg: #1f2937;
+  --app-fg-muted: #6b7280;
+  --app-border: rgba(0,0,0,.12);
+
+  /* Highlights */
+  --primary: var(--vs-orange);
+  --primary-hover: var(--vs-orange-light);
+  --primary-dark: var(--vs-orange-dark);
+  --accent: #2563eb;
+  --glow: rgba(255,106,19,.35);
+
+  /* Sidebar + Menu */
+  --menu-bg: #f3f4f6;
+  --menu-item-bg: #ffffff;
+  --menu-item-hover: #ececec;
+  --menu-item-active: rgba(255,106,19,.18);
+  --menu-border: #e5e7eb;
+  --menu-text: #1f2937;
+  --menu-text-muted: #6b7280;
+  --menu-radio: var(--vs-orange);
+
+  /* Cards */
+  --card-bg-1: #fafafa;
+  --card-bg-2: #ffffff;
+}
+
+/* =============================================================================
+   2) DARK MODE VARIABLES (AUTO + STREAMLIT THEME)
+   ========================================================================== */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --app-bg: #0b0b0b;
+    --app-bg-secondary: #131313;
+    --app-fg: #f3f4f6;
+    --app-fg-muted: #9ca3af;
+    --app-border: rgba(255,255,255,.12);
+
+    --primary: var(--vs-orange);
+    --primary-hover: #ff7f38;
+    --primary-dark: #e65f18;
+    --glow: rgba(255,106,19,.45);
+
+    --menu-bg: #0b0b0b;
+    --menu-item-bg: #1a1a1a;
+    --menu-item-hover: #252525;
+    --menu-item-active: rgba(255,106,19,.25);
+    --menu-border: rgba(255,255,255,.12);
+    --menu-text: #e5e5e5;
+    --menu-text-muted: #9ca3af;
+
+    --card-bg-1: #161616;
+    --card-bg-2: #1f1f1f;
+  }
+    /* DARK MODE — Streamlit theme override */
+    html[data-theme="dark"] {
+        --app-bg: #0b0b0b !important;
+        --app-bg-secondary: #131313 !important;
+        --app-fg: #f3f4f6 !important;
+        --app-fg-muted: #9ca3af !important;
+        --app-border: rgba(255,255,255,.12) !important;
+
+        --primary: #FF6A13 !important;
+        --primary-hover: #ff7f38 !important;
+        --primary-dark: #d8560f !important;
+        --glow: rgba(255,106,19,.45) !important;
+
+        --menu-bg: #0b0b0b !important;
+        --menu-item-bg: #1a1a1a !important;
+        --menu-item-hover: #252525 !important;
+        --menu-item-active: rgba(255,106,19,.25) !important;
+        --menu-border: rgba(255,255,255,.12) !important;
+        --menu-text: #e5e5e5 !important;
+        --menu-text-muted: #9ca3af !important;
+        --menu-radio: #FF6A13 !important;
+
+        --card-bg-1: #161616 !important;
+        --card-bg-2: #1f1f1f !important;
+    }
+}
+
+/* =============================================================================
+   3) GLOBAL APP BACKGROUND + TYPOGRAPHY
+   ========================================================================== */
+body, .stApp, .main, section.main {
+  background-color: var(--app-bg) !important;
+  color: var(--app-fg) !important;
+  transition: background-color .3s ease, color .3s ease;
+}
+
+.block-container {
+  background-color: var(--app-bg) !important;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: var(--app-fg) !important;
+}
+
+/* =============================================================================
+   4) SIDEBAR — VISTEON GRADIENT + MENU FULL-WIDTH (STYLE C)
+   ========================================================================== */
+section[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, var(--menu-bg), var(--app-bg)) !important;
+  border-right: 1px solid var(--menu-border);
+  padding: 26px 18px;
+}
+
+section[data-testid="stSidebar"] .stRadio > label {
+  color: var(--menu-text-muted) !important;
+  font-weight: 700 !important;
+  font-size: 15px !important;
+}
+
+/* FULL-WIDTH MENU ITEMS */
+section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label {
+  width: 100% !important;
+  display: flex !important;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px !important;
+  border-radius: 12px;
+  border: 1px solid var(--menu-border) !important;
+  background-color: var(--menu-item-bg) !important;
+  color: var(--menu-text) !important;
+  transition: all .25s ease;
+  font-size: 15px !important;
+}
+
+/* Hover */
+section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label:hover {
+  background-color: var(--menu-item-hover) !important;
+  transform: translateX(5px);
+}
+
+/* Selected */
+section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label:has(input:checked) {
+  background-color: var(--menu-item-active) !important;
+  border-color: var(--menu-radio) !important;
+  box-shadow: 0 0 12px var(--glow);
+  transform: translateX(4px) scale(1.02);
+}
+
+/* Radio circle */
+section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:first-child {
+  width: 18px !important;
+  height: 18px !important;
+  border: 2px solid var(--menu-radio) !important;
+  border-radius: 50%;
+}
+
+/* =============================================================================
+   5) BUTTONS — GRADIENT VISTEON
+   ========================================================================== */
+.stButton > button {
+  background: linear-gradient(90deg, var(--primary), var(--primary-dark));
+  color: white !important;
+  padding: 10px 22px;
+  border-radius: 10px;
+  border: none;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 3px 12px rgba(0,0,0,.25);
+  transition: all .25s ease;
+}
+
+.stButton > button:hover {
+  transform: translateY(-2px);
+  background: linear-gradient(90deg, var(--primary-hover), var(--primary-dark));
+  box-shadow: 0 6px 18px rgba(0,0,0,.35);
+}
+
+/* =============================================================================
+   6) WIZARD — GLASS + GLOW (ANIMAÇÃO 2)
+   ========================================================================== */
+.wizard-step {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 0;
+}
+
+.step-circle {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  backdrop-filter: blur(10px);
+  background: rgba(255,255,255,.1);
+  border: 2px solid var(--primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--app-fg);
+  font-weight: 700;
+  transition: all .3s ease;
+  box-shadow: 0 0 12px var(--glow);
+}
+
+.step-circle.active {
+  background: var(--primary);
+  color: white;
+  transform: scale(1.08);
+}
+
+/* badges (passos concluídos) */
+.step-circle.done {
+  background: var(--ok);
+  color: orange !important;  /* PRETO EM LIGHT MODE */
+}
+
+.step-circle.pending {
+  background: var(--app-bg-secondary);
+  color: var(--app-fg-muted);
+}
+
+.step-label {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* progress bar */
+.progress-line {
+  height: 5px;
+  border-radius: 999px;
+  margin-top: 10px;
+
+  /* 100% LARANJA VISTEON */
+  background: linear-gradient(90deg, var(--vs-orange), var(--vs-orange-dark)) !important;
+
+  box-shadow: 0 0 10px var(--glow);
+  transition: width .3s ease;
+}
+
+/* =============================================================================
+   7) KPI CARDS
+   ========================================================================== */
+.card {
+  background: linear-gradient(135deg, var(--card-bg-1), var(--card-bg-2));
+  border-radius: 14px;
+  padding: 16px;
+  border: 1px solid var(--app-border);
+  box-shadow: 0 2px 12px rgba(0,0,0,.25);
+  transition: all .25s ease;
+}
+
+.card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 18px rgba(0,0,0,.35);
+}
+
+.card h4 {
+  color: var(--app-fg-muted);
+  margin: 0 0 6px 0;
+}
+
+.card .big {
+  color: var(--app-fg);
+  font-size: 26px;
+  font-weight: 800;
+}
+
+/* =============================================================================
+   8) TABS
+   ========================================================================== */
+.stTabs [data-baseweb="tab-list"] {
+  border-bottom: 2px solid var(--app-border) !important;
+  margin-bottom: 12px;
+}
+
+.stTabs [data-baseweb="tab"] {
+  padding: 10px 20px !important;
+  color: var(--app-fg-muted) !important;
+  font-weight: 600 !important;
+  font-size: 15px !important;
+}
+
+.stTabs [aria-selected="true"] {
+  color: var(--primary) !important;
+  border-bottom: 3px solid var(--primary) !important;
+}
+
+/* =============================================================================
+   9) EXPANDER
+   ========================================================================== */
+.st-expander {
+  background-color: var(--app-bg-secondary) !important;
+  border: 1px solid var(--app-border) !important;
+  border-radius: 12px !important;
+  transition: background-color .2s ease;
+}
+
+/* =============================================================================
+   10) FILE UPLOADER — PREMIUM
+   ========================================================================== */
+.stFileUploader > div {
+  border: 2px dashed var(--primary);
+  border-radius: 14px;
+  background: rgba(255,106,19,.05);
+  padding: 20px;
+  transition: all .3s ease;
+}
+
+.stFileUploader > div:hover {
+  background: rgba(255,106,19,.15);
+  transform: translateY(-2px);
+}
+
+/* =============================================================================
+   11) TABLES / DATAFRAMES
+   ========================================================================== */
+.stDataFrame, .stTable {
+  background-color: var(--app-bg-secondary) !important;
+  color: var(--app-fg) !important;
+}
+
+.stDataFrame thead th {
+  background-color: var(--app-bg-secondary) !important;
+  color: var(--app-fg) !important;
+  font-weight: 700 !important;
+}
