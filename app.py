@@ -28,7 +28,6 @@ from sap_validation_engine import (
 # ==========================================================
 # CSS GLOBAL INJECTION
 # ==========================================================
-
 from pathlib import Path
 import streamlit as st
 
@@ -223,7 +222,6 @@ def rehydrate_persisted_mapping(state_key: str = "sap_files_persisted") -> dict:
 # ==========================================================
 # NOVO: Classificador Universal de Ficheiros (Multi‑Upload)
 # ==========================================================
-
 def classify_uploaded_files(files):
     """
     Recebe uma lista de ficheiros carregados e classifica-os automaticamente
@@ -334,7 +332,6 @@ LABELS_PT = {
     "previous": "Relatório Anterior (Progress)",
 }
 
-
 # ==========================================================
 # SIDEBAR MENU
 # ==========================================================
@@ -342,10 +339,10 @@ st.sidebar.header("Menu")
 choice = st.sidebar.radio(
     "Escolher relatório:",
     [
-        "SAP Material Validation",
-        "PLM Workflow (ATL)",
-        "MRP Validation",
-        "SAP Material Validation Progress"
+        "📦 SAP Material Validation",
+        "🚗 PLM Workflow (A & TL)",
+        "🧮 MRP Validation",
+        "📈 SAP Material Validation Progress"
     ],
     index=0
 )
@@ -375,13 +372,13 @@ def identity_input(label: str, key: str):
     executor_name = st.text_input(
         label,
         value=st.session_state["executor_name"],
-        placeholder="Introduza o seu nome…",
+        placeholder="CDS ID...",
         key=key
     )
     st.session_state["executor_name"] = executor_name.strip()
 
     if not st.session_state["executor_name"]:
-        st.warning("⚠ Por favor indique o seu nome para continuar.")
+        st.warning("⚠ Please enter your CDS ID to continue")
         st.stop()
 
     return st.session_state["executor_name"]
@@ -390,7 +387,7 @@ def identity_input(label: str, key: str):
 # PAGE 1
 # SAP MATERIAL VALIDATION (WIZARD + PERSISTÊNCIA DE UPLOADS)
 # ======================================================================================
-if choice == "SAP Material Validation":
+if choice == "📦 SAP Material Validation":
 
     import os
     import pandas as pd
@@ -404,8 +401,8 @@ if choice == "SAP Material Validation":
     # ------------------------------
     # IDENTIDADE E PREFERÊNCIAS
     # ------------------------------
-    effective_executor = identity_input("Quem executa?", "sap_exec")
-    save_history = st.checkbox("Guardar esta execução no histórico", value=True)
+    effective_executor = identity_input("Who performs?", "sap_exec")
+    save_history = st.checkbox("Save this execution in history", value=True)
 
     # ------------------------------
     # ESTADO DO WIZARD
@@ -416,7 +413,7 @@ if choice == "SAP Material Validation":
     # Wizard visual (premium)
     
     def render_wizard(current_step: int):
-        steps = ["Ficheiros", "Âmbito", "Validar", "Resultados"]
+        steps = ["Files", "Scope", "Validate", "Results"]
         cols = st.columns(len(steps))
 
         for idx, col in enumerate(cols, start=1):
@@ -469,10 +466,10 @@ if choice == "SAP Material Validation":
     # ==========================================================================
     if st.session_state.sap_step == 1:
 
-        st.markdown("### 📂 Passo 1 — Carregar Ficheiros")
+        st.markdown("### 📂 Step 1 — Load Files")
 
         uploads = st.file_uploader(
-            "Largar todos os ficheiros necessários aqui",
+            "Drop all necessary files here",
             type="xlsx",
             accept_multiple_files=True,
             key="sap_multi_uploader"  # chave estável evita resets visuais
@@ -486,21 +483,21 @@ if choice == "SAP Material Validation":
             persist_uploaded_mapping(files, state_key="sap_files_persisted")
 
         # Mostrar deteção do upload atual
-        with st.expander("🔍 Ficheiros identificados (último upload)"):
+        with st.expander("🔍 Files identified (last upload)"):
             for key in required_keys_for_page(choice):
                 f = files.get(key)
                 label = LABELS_PT.get(key, key)
                 st.write(f"**{label}** → {f.name if f else '—'}")
 
         # Mostrar o que está persistido na sessão (o que realmente conta para avançar)
-        with st.expander("💾 Ficheiros guardados na sessão (persistidos)"):
+        with st.expander("💾 Files saved in the session (persisted)"):
             persisted = st.session_state.get("sap_files_persisted", {}) or {}
             if persisted:
                 for k, meta in persisted.items():
                     label = LABELS_PT.get(k, k)
                     st.write(f"**{label}** → {meta.get('name', f'{k}.xlsx')}")
             else:
-                st.write("Ainda não existem ficheiros persistidos.")
+                st.write("There are no persisted files yet.")
 
         # Botões (baseado no que está PERSISTIDO, não no upload atual)
         persisted = st.session_state.get("sap_files_persisted", {}) or {}
@@ -508,15 +505,15 @@ if choice == "SAP Material Validation":
 
         c1, c2 = st.columns([1,1])
         with c2:
-            if st.button("➡️ Continuar para Âmbito", disabled=disabled, use_container_width=True):
+            if st.button("➡️ Continue to Scope", disabled=disabled, use_container_width=True):
                 st.session_state.sap_step = 2
                 st.rerun()
 
         # Utilitário: Limpar ficheiros persistidos (opcional)
-        with st.expander("🧹 Limpar ficheiros carregados"):
-            if st.button("Limpar uploads persistidos"):
+        with st.expander("🧹 Clear uploaded files"):
+            if st.button("Clear persistent uploads"):
                 st.session_state["sap_files_persisted"] = {}
-                st.success("Ficheiros persistidos foram limpos.")
+                st.success("Persistent files have been cleared")
                 st.rerun()
 
     # ==========================================================================
@@ -524,16 +521,16 @@ if choice == "SAP Material Validation":
     # ==========================================================================
     if st.session_state.sap_step == 2:
 
-        st.markdown("### 🌍 Passo 2 — Selecionar Âmbito")
+        st.markdown("### 🌍 Step 2 — Select Scope")
 
         export_scope = st.radio(
-            "Âmbito do download:",
-            ["Tudo", "Apenas PT01", "Apenas PT02"],
+            "Scope of download:",
+            ["All", "Only PT01", "Only PT02"],
             index=0, horizontal=True
         )
-        plant_filter_export = {"Apenas PT01": "PT01", "Apenas PT02": "PT02"}.get(export_scope)
+        plant_filter_export = {"Only PT01": "PT01", "Only PT02": "PT02"}.get(export_scope)
 
-        apply_filter_display = st.checkbox("Aplicar filtro às tabelas apresentadas", value=False)
+        apply_filter_display = st.checkbox("Apply filter to displayed tables", value=False)
         plant_filter_display = plant_filter_export if apply_filter_display else None
 
         # Guardar no estado
@@ -544,11 +541,11 @@ if choice == "SAP Material Validation":
         # Botões
         c1, c2 = st.columns([1,1])
         with c1:
-            if st.button("⬅️ Voltar (Ficheiros)", use_container_width=True):
+            if st.button("⬅️ Back (Files)", use_container_width=True):
                 st.session_state.sap_step = 1
                 st.rerun()
         with c2:
-            if st.button("➡️ Continuar para Validação", use_container_width=True):
+            if st.button("➡️ Continue to Validation", use_container_width=True):
                 st.session_state.sap_step = 3
                 st.rerun()
 
@@ -557,10 +554,10 @@ if choice == "SAP Material Validation":
     # ==========================================================================
     if st.session_state.sap_step == 3:
 
-        st.markdown("### ⚙️ Passo 3 — Executar Validação")
-        st.info("Clique no botão abaixo para validar os ficheiros carregados.")
+        st.markdown("### ⚙️ Step 3 — Run Validation")
+        st.info("Click the button below to validate the uploaded files.")
 
-        if st.button("▶ Validar agora", type="primary"):
+        if st.button("▶ Validate now", type="primary"):
 
             # Rehidratar ficheiros persistidos como BytesIO (com .name)
             files = rehydrate_persisted_mapping(state_key="sap_files_persisted")
@@ -577,12 +574,12 @@ if choice == "SAP Material Validation":
             # Sanity check da folha SAPUI5 Export
             ok_sheet, sheets = has_sheet(sap_file, "SAPUI5 Export")
             if not ok_sheet:
-                st.error(f"A folha 'SAPUI5 Export' não existe. Folhas encontradas: {sheets}")
+                st.error(f"The sheet 'SAPUI5 Export' does not exist. Sheets found: {sheets}")
                 st.stop()
 
             from sap_validation_engine import run_full_validation
 
-            with st.spinner("A validar materiais..."):
+            with st.spinner("Validating materials..."):
 
                 # Execução para visualização (display)
                 excel_display, errors_df, summary_df = run_full_validation(
@@ -640,7 +637,7 @@ if choice == "SAP Material Validation":
     # ==========================================================================
     if st.session_state.sap_step == 4:
 
-        st.markdown("### 📊 Passo 4 — Resultados")
+        st.markdown("### 📊 Step 4 — Results")
 
         errors_df    = st.session_state.sap_errors_df
         summary_df   = st.session_state.sap_summary_df
@@ -651,19 +648,19 @@ if choice == "SAP Material Validation":
         c = st.columns(3)
         with c[0]:
             st.markdown(
-                f'<div class="card"><h4>Total de Erros</h4><div class="big">{errors_df.shape[0]}</div></div>',
+                f'<div class="card"><h4>Total Errors</h4><div class="big">{errors_df.shape[0]}</div></div>',
                 unsafe_allow_html=True
             )
         with c[1]:
             total_fields = int(errors_df["Field"].nunique()) if "Field" in errors_df.columns else 0
             st.markdown(
-                f'<div class="card"><h4>Fields distintos</h4><div class="big">{total_fields}</div></div>',
+                f'<div class="card"><h4>Distinctive Fields</h4><div class="big">{total_fields}</div></div>',
                 unsafe_allow_html=True
             )
         with c[2]:
             total_mats = int(errors_df["Material"].nunique()) if "Material" in errors_df.columns else 0
             st.markdown(
-                f'<div class="card"><h4>Materiais com erro</h4><div class="big">{total_mats}</div></div>',
+                f'<div class="card"><h4>Materials with Errors</h4><div class="big">{total_mats}</div></div>',
                 unsafe_allow_html=True
             )
 
@@ -671,7 +668,7 @@ if choice == "SAP Material Validation":
         st.header("All Errors")
         st.dataframe(errors_df, use_container_width=True)
 
-        st.header("Adjusted Summary")
+        st.header("Summary")
         st.dataframe(summary_df, use_container_width=True)
 
         # Dashboards
@@ -694,26 +691,26 @@ if choice == "SAP Material Validation":
             if logs:
                 hist_df = pd.DataFrame([
                     {
-                        "Quando": log.get("timestamp"),
-                        "Quem": log.get("user"),
-                        "Filtro": log.get("plant_filter"),
-                        "Erros": log.get("metrics", {}).get("total_errors", 0),
+                        "When": log.get("timestamp"),
+                        "Who": log.get("user"),
+                        "Filter": log.get("plant_filter"),
+                        "Errors": log.get("metrics", {}).get("total_errors", 0),
                     }
                     for log in logs
                 ])
                 st.dataframe(hist_df, use_container_width=True)
             else:
-                st.write("Sem histórico.")
+                st.write("No history.")
 
         # Nova execução
         c1, c2 = st.columns([1,1])
         with c1:
-            if st.button("🔁 Nova Validação", use_container_width=True):
+            if st.button("🔁 New Validation", use_container_width=True):
                 # Opcional: manter uploads persistidos ou limpar
                 st.session_state.sap_step = 1
                 st.rerun()
         with c2:
-            if st.button("🧹 Limpar uploads persistidos e recomeçar", use_container_width=True):
+            if st.button("🧹 Clear persisted uploads and start over", use_container_width=True):
                 st.session_state["sap_files_persisted"] = {}
                 st.session_state.sap_step = 1
                 st.rerun()
@@ -722,7 +719,7 @@ if choice == "SAP Material Validation":
 # ==========================================================
 # PAGE 2 — PLM WORKFLOW (ATL) — PREMIUM WIZARD
 # ==========================================================
-elif choice == "PLM Workflow (ATL)":
+elif choice == "🚗 PLM Workflow (A & TL)":
 
     st.subheader("🚗 PLM Workflow (ATL)")
 
@@ -731,8 +728,8 @@ elif choice == "PLM Workflow (ATL)":
     # ------------------------------
     # IDENTIDADE (igual Página 1)
     # ------------------------------
-    effective_executor = identity_input("Quem executa?", "atl_exec")
-    save_history = st.checkbox("Guardar esta execução no histórico", value=True)
+    effective_executor = identity_input("Who performs?", "atl_exec")
+    save_history = st.checkbox("Save this execution in history", value=True)
 
     # ------------------------------
     # ESTADO DO WIZARD
@@ -744,7 +741,7 @@ elif choice == "PLM Workflow (ATL)":
     # WIZARD VISUAL
     # ------------------------------
     def render_atl_wizard(current_step: int):
-        steps = ["Ficheiros", "Âmbito", "Validar", "Resultados"]
+        steps = ["Files", "Scope", "Validate", "Results"]
         cols = st.columns(len(steps))
         for idx, col in enumerate(cols, start=1):
             with col:
@@ -805,10 +802,10 @@ elif choice == "PLM Workflow (ATL)":
     # ==========================================================
     if st.session_state.atl_step == 1:
 
-        st.markdown("### 📂 Passo 1 — Carregar Ficheiros")
+        st.markdown("### 📂 Step 1 — Load Files")
 
         uploads = st.file_uploader(
-            "Largar Automotive + TimingLetter + Timing Letter",
+            "Drop Automotive + TimingLetter + Timing Letter",
             type="xlsx",
             accept_multiple_files=True,
             key="atl_multi_uploader"
@@ -819,32 +816,32 @@ elif choice == "PLM Workflow (ATL)":
         if uploads:
             persist_uploaded_mapping(files, state_key="atl_files_persisted")
 
-        with st.expander("🔍 Ficheiros identificados (Upload atual)"):
+        with st.expander("🔍 Files identified (Current upload)"):
             for key in ["auto", "plm", "timing"]:
                 f = files.get(key)
                 st.write(f"**{key}** → {f.name if f else '—'}")
 
-        with st.expander("💾 Ficheiros guardados na sessão (persistidos)"):
+        with st.expander("💾 Files saved in session (persisted)"):
             persisted = st.session_state.get("atl_files_persisted", {}) or {}
             if persisted:
                 for k, meta in persisted.items():
                     st.write(f"**{k}** → {meta.get('name','')}")
             else:
-                st.write("Ainda não existem ficheiros persistidos.")
+                st.write("There are no persisted files yet.")
 
         persisted = st.session_state.get("atl_files_persisted", {}) or {}
         disabled = any(k not in persisted for k in ["auto", "plm", "timing"])
 
         c1, c2 = st.columns([1, 1])
         with c2:
-            if st.button("➡️ Continuar para Âmbito", disabled=disabled, use_container_width=True):
+            if st.button("➡️ Continue to Scope", disabled=disabled, use_container_width=True):
                 st.session_state.atl_step = 2
                 st.rerun()
 
-        with st.expander("🧹 Limpar uploads persistidos"):
-            if st.button("Limpar uploads ATL"):
+        with st.expander("🧹 Clear persistent uploads"):
+            if st.button("Clear ATL uploads"):
                 st.session_state["atl_files_persisted"] = {}
-                st.success("Limpado.")
+                st.success("Cleared.")
                 st.rerun()
 
     # ==========================================================
@@ -852,12 +849,12 @@ elif choice == "PLM Workflow (ATL)":
     # ==========================================================
     if st.session_state.atl_step == 2:
 
-        st.markdown("### 🌍 Passo 2 — Escolher Âmbito")
+        st.markdown("### 🌍 Step 2 — Choose Scope")
 
-        atl_scope = st.radio("Âmbito:", ["Tudo", "Apenas PT01", "Apenas PT02"], horizontal=True)
-        atl_filter_export = {"Apenas PT01": "PT01", "Apenas PT02": "PT02"}.get(atl_scope)
+        atl_scope = st.radio("Scope:", ["All", "Only PT01", "Only PT02"], horizontal=True)
+        atl_filter_export = {"Only PT01": "PT01", "Only PT02": "PT02"}.get(atl_scope)
 
-        apply_filter_display = st.checkbox("Aplicar filtro às tabelas apresentadas", value=False)
+        apply_filter_display = st.checkbox("Apply filter to the displayed tables", value=False)
         atl_filter_display = atl_filter_export if apply_filter_display else None
 
         st.session_state.atl_scope = atl_scope
@@ -866,12 +863,12 @@ elif choice == "PLM Workflow (ATL)":
 
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("⬅️ Voltar (Ficheiros)", use_container_width=True):
+            if st.button("⬅️ Back (Files)", use_container_width=True):
                 st.session_state.atl_step = 1
                 st.rerun()
 
         with c2:
-            if st.button("➡️ Continuar para Validação", use_container_width=True):
+            if st.button("➡️ Continue to Validation", use_container_width=True):
                 st.session_state.atl_step = 3
                 st.rerun()
 
@@ -880,9 +877,9 @@ elif choice == "PLM Workflow (ATL)":
     # ==========================================================
     if st.session_state.atl_step == 3:
 
-        st.markdown("### ⚙️ Passo 3 — Executar ATL")
+        st.markdown("### ⚙️ Step 3 — Run ATL")
 
-        if st.button("▶️ Executar Workflow ATL", type="primary"):
+        if st.button("▶️ Run Workflow ATL", type="primary"):
 
             files = rehydrate_persisted_mapping("atl_files_persisted")
 
@@ -891,10 +888,10 @@ elif choice == "PLM Workflow (ATL)":
             timing_file = files.get("timing")
 
             if any(f is None for f in [auto_file, plm_file, timing_file]):
-                st.error("⚠️ Faltam ficheiros obrigatórios.")
+                st.error("⚠️ Required files are missing.")
                 st.stop()
 
-            with st.spinner("A processar Workflow ATL..."):
+            with st.spinner("Processing Workflow ATL..."):
                 excel_all, df_pt01, df_pt02 = run_plm_workflow_combined(
                     auto_file=auto_file,
                     plm_file=plm_file,
@@ -922,7 +919,7 @@ elif choice == "PLM Workflow (ATL)":
     # ==========================================================
     if st.session_state.atl_step == 4:
 
-        st.markdown("### 📊 Passo 4 — Resultados")
+        st.markdown("### 📊 Step 4 — Results")
 
         df_pt01 = st.session_state.atl_pt01
         df_pt02 = st.session_state.atl_pt02
@@ -970,14 +967,14 @@ elif choice == "PLM Workflow (ATL)":
         # ------------------------------
         # HISTÓRICO
         # ------------------------------
-        with st.expander("🕑 Histórico ATL (últimas 10 execuções)"):
+        with st.expander("🕑 History ATL (Last 10 runs)"):
             logs = list_run_logs("atl", limit=10)
             if logs:
                 hist_df = pd.DataFrame([
                     {
-                        "Quando": log["timestamp"],
-                        "Quem": log["user"],
-                        "Âmbito": log["plant_scope"],
+                        "When": log["timestamp"],
+                        "Who": log["user"],
+                        "Scope": log["plant_scope"],
                         "PT01 rows": log["metrics"]["PT01_rows"],
                         "PT02 rows": log["metrics"]["PT02_rows"]
                     }
@@ -985,19 +982,19 @@ elif choice == "PLM Workflow (ATL)":
                 ])
                 st.dataframe(hist_df, use_container_width=True)
             else:
-                st.write("Sem histórico.")
+                st.write("No History.")
 
         # ------------------------------
         # NOVA EXECUÇÃO
         # ------------------------------
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("🔄 Nova Execução ATL", use_container_width=True):
+            if st.button("🔄 New Run ATL", use_container_width=True):
                 st.session_state.atl_step = 1
                 st.rerun()
 
         with c2:
-            if st.button("🧹 Limpar uploads persistidos e voltar ao início", use_container_width=True):
+            if st.button("🧹 Clear persistent uploads and return to the beginning.", use_container_width=True):
                 st.session_state["atl_files_persisted"] = {}
                 st.session_state.atl_step = 1
                 st.rerun()
@@ -1006,7 +1003,7 @@ elif choice == "PLM Workflow (ATL)":
 # ==========================================================
 # PAGE 3 — MRP VALIDATION — PREMIUM WIZARD
 # ==========================================================
-elif choice == "MRP Validation":
+elif choice == "🧮 MRP Validation":
 
     st.subheader("🧮 MRP Validation")
 
@@ -1015,8 +1012,8 @@ elif choice == "MRP Validation":
     # ------------------------------
     # IDENTIDADE (consistente com outras páginas)
     # ------------------------------
-    effective_executor = identity_input("Quem executa?", "mrp_exec")
-    save_history = st.checkbox("Guardar esta execução no histórico", value=True)
+    effective_executor = identity_input("Who performs?", "mrp_exec")
+    save_history = st.checkbox("Save this execution in history", value=True)
 
     # ------------------------------
     # ESTADO DO WIZARD
@@ -1028,7 +1025,7 @@ elif choice == "MRP Validation":
     # WIZARD VISUAL
     # ------------------------------
     def render_mrp_wizard(current_step: int):
-        steps = ["Ficheiros", "Âmbito", "Validar", "Resultados"]
+        steps = ["Files", "Scope", "Validate", "Results"]
         cols = st.columns(len(steps))
         for idx, col in enumerate(cols, start=1):
             with col:
@@ -1089,10 +1086,10 @@ elif choice == "MRP Validation":
     # ==========================================================
     if st.session_state.mrp_step == 1:
 
-        st.markdown("### 📂 Passo 1 — Carregar Ficheiros")
+        st.markdown("### 📂 Step 1 — Load Files")
 
         uploads = st.file_uploader(
-            "Largar MARA + MARC + (opcional) ZPLM MARC",
+            "Drop MARA + MARC + (optional) ZPLM MARC",
             type="xlsx",
             accept_multiple_files=True,
             key="mrp_multi_uploader"
@@ -1103,32 +1100,32 @@ elif choice == "MRP Validation":
         if uploads:
             persist_uploaded_mapping(files, state_key="mrp_files_persisted")
 
-        with st.expander("🔍 Ficheiros identificados (Upload atual)"):
+        with st.expander("🔍 Files identified (Current Upload)"):
             for key in ["mara", "marc", "zplm_marc"]:
                 f = files.get(key)
                 st.write(f"**{key}** → {f.name if f else '—'}")
 
-        with st.expander("💾 Persistidos na sessão"):
+        with st.expander("💾 Files saved in session (persisted)"):
             persisted = st.session_state.get("mrp_files_persisted", {}) or {}
             if persisted:
                 for k, meta in persisted.items():
                     st.write(f"**{k}** → {meta.get('name')}")
             else:
-                st.write("Nada persistido ainda.")
+                st.write("There are no persisted files yet.")
 
         persisted = st.session_state.get("mrp_files_persisted", {}) or {}
         disabled = any(k not in persisted for k in ["mara", "marc"])
 
         c1, c2 = st.columns([1, 1])
         with c2:
-            if st.button("➡️ Continuar para Âmbito", disabled=disabled, use_container_width=True):
+            if st.button("➡️ Continue to Scope", disabled=disabled, use_container_width=True):
                 st.session_state.mrp_step = 2
                 st.rerun()
 
-        with st.expander("🧹 Limpar uploads persistidos"):
-            if st.button("Limpar uploads MRP"):
+        with st.expander("🧹 Clear persistent uploads"):
+            if st.button("Clear MRP Uploads"):
                 st.session_state["mrp_files_persisted"] = {}
-                st.success("Limpado.")
+                st.success("Cleared.")
                 st.rerun()
 
     # ==========================================================
@@ -1136,17 +1133,17 @@ elif choice == "MRP Validation":
     # ==========================================================
     if st.session_state.mrp_step == 2:
 
-        st.markdown("### 🌍 Passo 2 — Âmbito da Validação")
+        st.markdown("### 🌍 Step 2 — Choose Scope")
 
         export_scope = st.radio(
-            "Âmbito do download:",
-            ["Tudo", "Apenas PT01", "Apenas PT02"],
+            "Scope:",
+            ["All", "Only PT01", "Only PT02"],
             horizontal=True
         )
 
-        plant_filter_export = {"Apenas PT01": "PT01", "Apenas PT02": "PT02"}.get(export_scope)
+        plant_filter_export = {"Only PT01": "PT01", "Only PT02": "PT02"}.get(export_scope)
 
-        apply_filter_display = st.checkbox("Aplicar filtro às tabelas apresentadas", value=False)
+        apply_filter_display = st.checkbox("Apply filter to the displayedd tables", value=False)
         plant_filter_display = plant_filter_export if apply_filter_display else None
 
         st.session_state.mrp_export_scope = export_scope
@@ -1155,12 +1152,12 @@ elif choice == "MRP Validation":
 
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("⬅️ Voltar (Ficheiros)", use_container_width=True):
+            if st.button("⬅️ Back (Files)", use_container_width=True):
                 st.session_state.mrp_step = 1
                 st.rerun()
 
         with c2:
-            if st.button("➡️ Continuar para Validação", use_container_width=True):
+            if st.button("➡️ Continue to Validation", use_container_width=True):
                 st.session_state.mrp_step = 3
                 st.rerun()
 
@@ -1169,11 +1166,11 @@ elif choice == "MRP Validation":
     # ==========================================================
     if st.session_state.mrp_step == 3:
 
-        st.markdown("### ⚙️ Passo 3 — Executar Validação MRP")
+        st.markdown("### ⚙️ Step 3 — Run MRP Validation")
 
-        st.info("Clique para validar os ficheiros carregados.")
+        st.info("Run all MRP Validation Files")
 
-        if st.button("▶️ Validar agora", type="primary"):
+        if st.button("▶️ Execute MRP validation", type="primary"):
 
             files = rehydrate_persisted_mapping("mrp_files_persisted")
 
@@ -1184,7 +1181,7 @@ elif choice == "MRP Validation":
             plant_filter_export = st.session_state.mrp_plant_export
             plant_filter_display = st.session_state.mrp_plant_display
 
-            with st.spinner("A validar regras MRP..."):
+            with st.spinner("Validating MRP files..."):
 
                 excel_display, errors_df, summary_df = run_mrp_validation(
                     mara_file=mara_file,
@@ -1227,7 +1224,7 @@ elif choice == "MRP Validation":
     # ==========================================================
     if st.session_state.mrp_step == 4:
 
-        st.markdown("### 📊 Passo 4 — Resultados")
+        st.markdown("### 📊 Step 4 — Results")
 
         errors_df = st.session_state.mrp_errors_df
         summary_df = st.session_state.mrp_summary_df
@@ -1239,7 +1236,7 @@ elif choice == "MRP Validation":
             st.markdown(
                 f"""
 <div class="card">
-<h4>Total de Erros</h4>
+<h4>Total Errors</h4>
 <div class="big">{errors_df.shape[0]}</div>
 </div>
                 """,
@@ -1250,7 +1247,7 @@ elif choice == "MRP Validation":
             st.markdown(
                 f"""
 <div class="card">
-<h4>Fields distintos</h4>
+<h4>Distinct Fields</h4>
 <div class="big">{total_fields}</div>
 </div>
                 """,
@@ -1261,7 +1258,7 @@ elif choice == "MRP Validation":
             st.markdown(
                 f"""
 <div class="card">
-<h4>Materiais com erro</h4>
+<h4>Materiais with errors</h4>
 <div class="big">{total_mats}</div>
 </div>
                 """,
@@ -1272,7 +1269,7 @@ elif choice == "MRP Validation":
         st.header("All Errors")
         st.dataframe(errors_df, use_container_width=True)
 
-        st.header("Adjusted Summary")
+        st.header("Summary")
         st.dataframe(summary_df, use_container_width=True)
 
         # DASHBOARD
@@ -1281,21 +1278,21 @@ elif choice == "MRP Validation":
         render_mrp_run_charts(errors_df)
 
         # HISTÓRICO
-        with st.expander("🕑 Histórico MRP (últimas 10 execuções)"):
+        with st.expander("🕑 MRP History (Last 10 runs)"):
             logs = list_run_logs("mrp", limit=10)
             if logs:
                 hist_df = pd.DataFrame([
                     {
-                        "Quando": log["timestamp"],
-                        "Quem": log["user"],
-                        "Filtro": log["plant_filter"],
-                        "Erros": log["metrics"]["total_errors"]
+                        "When": log["timestamp"],
+                        "Who": log["user"],
+                        "Filter": log["plant_filter"],
+                        "Errors": log["metrics"]["total_errors"]
                     }
                     for log in logs
                 ])
                 st.dataframe(hist_df, use_container_width=True)
             else:
-                st.write("Sem histórico.")
+                st.write("No history.")
 
         # DOWNLOAD
         suffix = st.session_state.mrp_plant_export if st.session_state.mrp_plant_export else "ALL"
@@ -1309,12 +1306,12 @@ elif choice == "MRP Validation":
         # NOVA EXECUÇÃO
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("🔄 Nova Validação", use_container_width=True):
+            if st.button("🔄 New Validation", use_container_width=True):
                 st.session_state.mrp_step = 1
                 st.rerun()
 
         with c2:
-            if st.button("🧹 Limpar uploads e recomeçar", use_container_width=True):
+            if st.button("🧹 Clear persistent uploads and return to the beginning", use_container_width=True):
                 st.session_state["mrp_files_persisted"] = {}
                 st.session_state.mrp_step = 1
                 st.rerun()
@@ -1322,7 +1319,7 @@ elif choice == "MRP Validation":
 # ==========================================================
 # PAGE 4 — SAP MATERIAL VALIDATION PROGRESS — PREMIUM WIZARD
 # ==========================================================
-elif choice == "SAP Material Validation Progress":
+elif choice == "📈 SAP Material Validation Progress":
 
     st.subheader("📈 SAP Material Validation Progress")
 
@@ -1331,8 +1328,8 @@ elif choice == "SAP Material Validation Progress":
     # ------------------------------
     # IDENTIDADE
     # ------------------------------
-    effective_executor = identity_input("Quem executa?", "progress_exec")
-    save_history = st.checkbox("Guardar esta execução no histórico", value=True)
+    effective_executor = identity_input("Who performs?", "progress_exec")
+    save_history = st.checkbox("Save this exectution in history", value=True)
 
     # ------------------------------
     # ESTADO DO WIZARD
@@ -1344,7 +1341,7 @@ elif choice == "SAP Material Validation Progress":
     # WIZARD VISUAL (4 passos)
     # ------------------------------
     def render_progress_wizard(current_step: int):
-        steps = ["Modo", "Ficheiros", "Validar", "Resultados"]
+        steps = ["Mode", "Files", "Validate", "Results"]
         cols = st.columns(len(steps))
         for idx, col in enumerate(cols, start=1):
             with col:
@@ -1378,17 +1375,17 @@ elif choice == "SAP Material Validation Progress":
     # ==========================================================
     if st.session_state.progress_step == 1:
 
-        st.markdown("### 🧭 Passo 1 — Escolher Modo")
+        st.markdown("### 🧭 Step 1 — Choose Mode")
 
-        mode = st.radio("Modo de comparação:", ["Auto (arquivado)", "Manual (2 uploads)"], horizontal=True)
+        mode = st.radio("Comparison Mode:", ["Auto", "Manual"], horizontal=True)
         st.session_state.progress_mode = mode
 
-        if mode == "Auto (arquivado)":
-            st.markdown("### 🌍 Âmbito (para escolher os relatórios arquivados)")
-            prog_scope = st.radio("Âmbito:", ["ALL", "PT01", "PT02"], horizontal=True)
+        if mode == "Auto":
+            st.markdown("### 🌍 Scope (Previous Reports)")
+            prog_scope = st.radio("Scope:", ["ALL", "PT01", "PT02"], horizontal=True)
             st.session_state.prog_scope = prog_scope
 
-        if st.button("➡️ Continuar para Ficheiros", use_container_width=True):
+        if st.button("➡️ Continue to Files", use_container_width=True):
             st.session_state.progress_step = 2
             st.rerun()
 
@@ -1398,27 +1395,27 @@ elif choice == "SAP Material Validation Progress":
     if st.session_state.progress_step == 2:
 
         mode = st.session_state.progress_mode
-        st.markdown("### 📂 Passo 2 — Ficheiros")
+        st.markdown("### 📂 Step 2 — Files")
 
         # ------------------------------
         # MODO AUTO
         # ------------------------------
-        if mode == "Auto (arquivado)":
+        if mode == "Auto":
 
             prog_scope = st.session_state.prog_scope
 
             curr_path, prev_path, avail = pick_last_two_reports(prog_scope)
 
-            with st.expander("🔍 Relatórios encontrados automaticamente"):
-                st.write(f"**Disponíveis para {prog_scope}**: {avail}")
-                st.write(f"**Atual:** {curr_path if curr_path else '—'}")
-                st.write(f"**Anterior:** {prev_path if prev_path else '—'}")
+            with st.expander("🔍 Reports found automatically"):
+                st.write(f"**Available for {prog_scope}**: {avail}")
+                st.write(f"**Most Recent:** {curr_path if curr_path else '—'}")
+                st.write(f"**Previous:** {prev_path if prev_path else '—'}")
 
                 if avail == 1:
-                    st.info("Foi encontrado **1** relatório. Precisa de mais um para comparar.")
+                    st.info("**1** Report available. Need one more to compare.")
 
                 if avail == 0:
-                    st.warning("Ainda não há relatórios arquivados para este âmbito.")
+                    st.warning("No reports available to compare.")
 
             st.session_state.progress_curr_path = curr_path
             st.session_state.progress_prev_path = prev_path
@@ -1429,10 +1426,10 @@ elif choice == "SAP Material Validation Progress":
         # MODO MANUAL
         # ------------------------------
         else:
-            st.markdown("Carregue **2 ficheiros** (qualquer ordem). Eu detecto o mais novo automaticamente.")
+            st.markdown("Load **2 files** (any order). I'll detect the newest automatically.")
 
             uploads = st.file_uploader(
-                "Atual + Anterior (sem renomear!)",
+                "Current + Previous (no renaming!)",
                 type="xlsx",
                 accept_multiple_files=True,
                 key="progress_manual_uploader",
@@ -1440,13 +1437,13 @@ elif choice == "SAP Material Validation Progress":
 
             curr_file, prev_file, notes = pick_current_previous_from_uploads(uploads or [])
 
-            with st.expander("🔍 Detecção automática"):
+            with st.expander("🔍 Automatic detection"):
                 if notes:
                     for n in notes:
                         st.info(n)
 
-                st.write(f"**Atual:** {getattr(curr_file, 'name', '—')}")
-                st.write(f"**Anterior:** {getattr(prev_file, 'name', '—')}")
+                st.write(f"**Most Recent:** {getattr(curr_file, 'name', '—')}")
+                st.write(f"**Previous:** {getattr(prev_file, 'name', '—')}")
 
             st.session_state.manual_curr = curr_file
             st.session_state.manual_prev = prev_file
@@ -1458,11 +1455,11 @@ elif choice == "SAP Material Validation Progress":
         # ------------------------------
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("⬅️ Voltar", use_container_width=True):
+            if st.button("⬅️ Back", use_container_width=True):
                 st.session_state.progress_step = 1
                 st.rerun()
         with c2:
-            if st.button("➡️ Continuar para Validação", disabled=disabled, use_container_width=True):
+            if st.button("➡️ Continue to Validation", disabled=disabled, use_container_width=True):
                 st.session_state.progress_step = 3
                 st.rerun()
 
@@ -1471,15 +1468,15 @@ elif choice == "SAP Material Validation Progress":
     # ==========================================================
     if st.session_state.progress_step == 3:
 
-        st.markdown("### ⚙️ Passo 3 — Comparar Relatórios")
+        st.markdown("### ⚙️ Step 3 — Compare Reports")
 
-        if st.button("▶️ Executar Diferenças", type="primary"):
+        if st.button("▶️ Execute Differences", type="primary"):
 
             from sap_validation_engine import compare_adjusted_reports
 
             mode = st.session_state.progress_mode
 
-            if mode == "Auto (arquivado)":
+            if mode == "Auto":
                 curr_path = st.session_state.progress_curr_path
                 prev_path = st.session_state.progress_prev_path
 
@@ -1492,16 +1489,16 @@ elif choice == "SAP Material Validation Progress":
                 curr_bytes = st.session_state.manual_curr
                 prev_bytes = st.session_state.manual_prev
 
-            with st.spinner("A comparar relatórios (Diff)…"):
+            with st.spinner("Comparing reports"):
                 excel_diff, diff_dfs = compare_adjusted_reports(curr_bytes, prev_bytes)
 
             st.session_state.progress_diff_excel = excel_diff
             st.session_state.progress_diff_dfs = diff_dfs
             st.session_state.progress_current_name = (
-                curr_path if mode == "Auto (arquivado)" else getattr(curr_bytes, "name", "current.xlsx")
+                curr_path if mode == "Auto" else getattr(curr_bytes, "name", "current.xlsx")
             )
             st.session_state.progress_previous_name = (
-                prev_path if mode == "Auto (arquivado)" else getattr(prev_bytes, "name", "previous.xlsx")
+                prev_path if mode == "Auto" else getattr(prev_bytes, "name", "previous.xlsx")
             )
 
             if save_history:
@@ -1521,14 +1518,14 @@ elif choice == "SAP Material Validation Progress":
     # ==========================================================
     if st.session_state.progress_step == 4:
 
-        st.markdown("### 📊 Passo 4 — Resultados")
+        st.markdown("### 📊 Step 4 — Results")
 
         diff_dfs = st.session_state.progress_diff_dfs
 
         # ------------------------------
         # TABS
         # ------------------------------
-        labels = ["Erros Novos", "Erros Resolvidos", "Erros Alterados", "Novos Materiais", "Views Perdidas"]
+        labels = ["New Errors", "Resolved Errors", "Changed Errors", "New Materials", "Views Lost"]
         keys = ["New Errors", "Resolved Errors", "Changed Errors", "New Materials", "Views Lost"]
 
         tabs = st.tabs(labels)
@@ -1539,7 +1536,7 @@ elif choice == "SAP Material Validation Progress":
         # ------------------------------
         # DASHBOARDS
         # ------------------------------
-        st.markdown("## 📈 Dashboard — Progress (Diff)")
+        st.markdown("## 📈 Dashboard — Progress")
         render_progress_kpis(diff_dfs)
         render_progress_charts(diff_dfs)
 
@@ -1557,13 +1554,13 @@ elif choice == "SAP Material Validation Progress":
         # ------------------------------
         # HISTÓRICO
         # ------------------------------
-        with st.expander("🕑 Histórico Progress (últimas 10 execuções)"):
+        with st.expander("🕑 Progress History (last 10 executions)"):
             logs = list_run_logs("progress", limit=10)
             if logs:
                 hist_df = pd.DataFrame([
                     {
-                        "Quando": log["timestamp"],
-                        "Quem": log["user"],
+                        "When": log["timestamp"],
+                        "Who": log["user"],
                         "New": log["metrics"]["new_errors"],
                         "Resolved": log["metrics"]["resolved_errors"],
                         "Changed": log["metrics"]["changed_errors"],
@@ -1574,18 +1571,18 @@ elif choice == "SAP Material Validation Progress":
                 ])
                 st.dataframe(hist_df, use_container_width=True)
             else:
-                st.write("Sem histórico.")
+                st.write("No History.")
 
         # ------------------------------
         # NOVA EXECUÇÃO
         # ------------------------------
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("🔄 Nova comparação", use_container_width=True):
+            if st.button("🔄 New comparison", use_container_width=True):
                 st.session_state.progress_step = 1
                 st.rerun()
         with c2:
-            if st.button("🧹 Limpar tudo e recomeçar", use_container_width=True):
+            if st.button("🧹 Clear all and restart validation", use_container_width=True):
                 for k in [
                     "progress_curr_path", "progress_prev_path",
                     "progress_manual_curr", "progress_manual_prev",

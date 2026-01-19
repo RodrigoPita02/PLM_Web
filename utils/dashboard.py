@@ -39,7 +39,7 @@ def render_sap_run_kpis(errors_df: pd.DataFrame) -> None:
       - Nº de erros justificados por View em falta
     """
     if errors_df is None or errors_df.empty:
-        st.info("Sem dados para KPIs.")
+        st.info("No data for KPIs")
         return
 
     total_errors = int(errors_df.shape[0])
@@ -50,11 +50,10 @@ def render_sap_run_kpis(errors_df: pd.DataFrame) -> None:
         if 'Justified_By_Missing_View' in errors_df.columns else 0
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total de Erros", f"{total_errors:,}")
-    c2.metric("Fields com erro (distinct)", f"{total_fields:,}")
-    c3.metric("Materiais com erro (distinct)", f"{total_materials:,}")
-    c4.metric("Erros justificados (View em falta)", f"{missing_views_count:,}")
-
+    c1.metric("Total Errors", f"{total_errors:,}")
+    c2.metric("Fields with errors (distinct)", f"{total_fields:,}")
+    c3.metric("Materials with errors (distinct)", f"{total_materials:,}")
+    c4.metric("Justified errors (missing View)", f"{missing_views_count:,}")
 
 def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
     """
@@ -68,7 +67,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
     if errors_df is None or errors_df.empty:
         return
 
-    st.markdown("### 📊 Gráficos — Execução Atual (SAP)")
+    st.markdown("### 📊 Charts — Current Execution (SAP)")
 
     # Top-N configurável via coluna auxiliar (se existir), senão 20
     top_n = int(errors_df['_TOP_N'].iloc[0]) if '_TOP_N' in errors_df.columns else 20
@@ -79,41 +78,41 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
             errors_df['Field']
             .value_counts()
             .rename_axis('Field')
-            .reset_index(name='Erros')
+            .reset_index(name='Errors')
             .head(top_n)
         )
         if PLOTLY_AVAILABLE:
-            fig = px.bar(top_fields, x='Field', y='Erros',
-                         title=f"Top {top_n} Fields com mais erros", text='Erros')
+            fig = px.bar(top_fields, x='Field', y='Errors',
+                         title=f"Top {top_n} Fields with more errors", text='Errors')
             fig.update_traces(textposition='outside')
             fig.update_layout(xaxis_tickangle=-45)
             st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
-            ax.bar(top_fields['Field'], top_fields['Erros'], color="#1f77b4")
-            ax.set_title(f"Top {top_n} Fields com mais erros")
-            ax.set_xlabel("Field"); ax.set_ylabel("Erros")
+            ax.bar(top_fields['Field'], top_fields['Errors'], color="#1f77b4")
+            ax.set_title(f"Top {top_n} Fields with more errors")
+            ax.set_xlabel("Field"); ax.set_ylabel("Errors")
             plt.xticks(rotation=45, ha='right')
             st.pyplot(fig)
 
     # --- Erros por Planta ---
     if 'Plant' in errors_df.columns:
         by_plant = (
-            errors_df['Plant'].astype(str).str.strip().replace({'': 'Sem Planta'})
+            errors_df['Plant'].astype(str).str.strip().replace({'': 'Without Plant'})
             .value_counts()
             .rename_axis('Plant')
-            .reset_index(name='Erros')
+            .reset_index(name='Errors')
         )
         if PLOTLY_AVAILABLE:
-            fig = px.bar(by_plant, x='Plant', y='Erros',
-                         title="Erros por Planta", text='Erros', color='Plant')
+            fig = px.bar(by_plant, x='Plant', y='Errors',
+                         title="Errors by Plant", text='Errors', color='Plant')
             fig.update_traces(textposition='outside')
             st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
-            ax.bar(by_plant['Plant'], by_plant['Erros'], color="#ff7f0e")
-            ax.set_title("Erros por Planta")
-            ax.set_xlabel("Planta"); ax.set_ylabel("Erros")
+            ax.bar(by_plant['Plant'], by_plant['Errors'], color="#ff7f0e")
+            ax.set_title("Errors by Plant")
+            ax.set_xlabel("Plant"); ax.set_ylabel("Errors")
             st.pyplot(fig)
 
     # --- Top N Materiais ---
@@ -122,20 +121,20 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
             errors_df['Material'].astype(str).str.strip()
             .value_counts()
             .rename_axis('Material')
-            .reset_index(name='Erros')
+            .reset_index(name='Errors')
             .head(top_n)
         )
         if PLOTLY_AVAILABLE:
-            fig = px.bar(by_mat, x='Material', y='Erros',
-                         title=f"Top {top_n} Materiais com mais erros", text='Erros')
+            fig = px.bar(by_mat, x='Material', y='Errors',
+                         title=f"Top {top_n} Materials with the most errors", text='Errors')
             fig.update_traces(textposition='outside')
             fig.update_layout(xaxis_tickangle=-45)
             st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
-            ax.bar(by_mat['Material'], by_mat['Erros'], color="#2ca02c")
-            ax.set_title(f"Top {top_n} Materiais com mais erros")
-            ax.set_xlabel("Material"); ax.set_ylabel("Erros")
+            ax.bar(by_mat['Material'], by_mat['Errors'], color="#2ca02c")
+            ax.set_title(f"Top {top_n} Materials with the most errors")
+            ax.set_xlabel("Material"); ax.set_ylabel("Errors")
             plt.xticks(rotation=45, ha='right')
             st.pyplot(fig)
 
@@ -148,19 +147,19 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
                 mv['View']
                 .value_counts()
                 .rename_axis('View')
-                .reset_index(name='Erros')
+                .reset_index(name='Errors')
             )
             if PLOTLY_AVAILABLE:
-                fig = px.bar(by_view, x='View', y='Erros',
-                             title="Erros (View em falta) por código de View",
-                             text='Erros', color='View')
+                fig = px.bar(by_view, x='View', y='Errors',
+                             title="Errors (Missing View) due to View code",
+                             text='Errors', color='View')
                 fig.update_traces(textposition='outside')
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 fig, ax = plt.subplots(figsize=(8, 4))
-                ax.bar(by_view['View'], by_view['Erros'], color="#d62728")
-                ax.set_title("Erros (View em falta) por código de View")
-                ax.set_xlabel("View"); ax.set_ylabel("Erros")
+                ax.bar(by_view['View'], by_view['Errors'], color="#d62728")
+                ax.set_title("Errors (Missing View) due to View code")
+                ax.set_xlabel("View"); ax.set_ylabel("Errors")
                 st.pyplot(fig)
 
 
@@ -170,7 +169,7 @@ def render_sap_history_charts(logs: list[dict]) -> None:
     segregado por filtro de planta.
     """
     if not logs:
-        st.info("Sem histórico SAP para gráficos.")
+        st.info("No SAP history for charts..")
         return
 
     df = pd.DataFrame([{
@@ -186,18 +185,18 @@ def render_sap_history_charts(logs: list[dict]) -> None:
     except Exception:
         df['ts'] = df['timestamp']
 
-    st.markdown("### ⏱️ Evolução Temporal (Histórico SAP)")
+    st.markdown("### ⏱️ Temporal Evolution (SAP History)")
     dsorted = df.sort_values('ts')
     if PLOTLY_AVAILABLE:
         fig = px.line(dsorted, x='ts', y='total_errors', color='plant_filter',
-                      markers=True, title="Total de Erros ao longo do tempo (por filtro de planta)")
+                      markers=True, title="Total Errors over time (by plant filter)")
         st.plotly_chart(fig, use_container_width=True)
     else:
         fig, ax = plt.subplots(figsize=(8, 4))
         for plant, grp in dsorted.groupby('plant_filter'):
             ax.plot(grp['ts'], grp['total_errors'], marker='o', label=plant)
-        ax.set_title("Total de Erros ao longo do tempo (por filtro de planta)")
-        ax.set_xlabel("Tempo"); ax.set_ylabel("Erros")
+        ax.set_title("Total Errors over time (by plant filter)")
+        ax.set_xlabel("Time"); ax.set_ylabel("Errors")
         ax.legend()
         st.pyplot(fig)
 
@@ -227,10 +226,10 @@ def render_atl_run_kpis(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
     avg_pt02 = _avg_aging(df_pt02)
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("PT01 — linhas", f"{pt01_rows:,}")
-    c2.metric("PT02 — linhas", f"{pt02_rows:,}")
-    c3.metric("PT01 — Aging médio (dias)", avg_pt01)
-    c4.metric("PT02 — Aging médio (dias)", avg_pt02)
+    c1.metric("PT01 — Lines", f"{pt01_rows:,}")
+    c2.metric("PT02 — Lines", f"{pt02_rows:,}")
+    c3.metric("PT01 — Aging Average (days)", avg_pt01)
+    c4.metric("PT02 — Aging Average (days)", avg_pt02)
 
 
 def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
@@ -240,7 +239,7 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
       - Contagem por Approval Status
       - Contagem por Categorias (X) — ex.: Pricing, Purchasing, MPL, etc.
     """
-    st.markdown("### 📊 Gráficos — Execução Atual (ATL)")
+    st.markdown("### 📊 Charts — Current Execution (ATL)")
 
     # Unir dataframes e marcar a planta
     dfs = []
@@ -250,7 +249,7 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
         d = df_pt02.copy(); d['Plant'] = 'PT02'; dfs.append(d)
 
     if not dfs:
-        st.info("Sem dados ATL para gráficos.")
+        st.info("No ATL data available for graphs.")
         return
 
     df_all = pd.concat(dfs, ignore_index=True)
@@ -258,14 +257,14 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
     # Histograma de Aging
     if 'Aging' in df_all.columns:
         if PLOTLY_AVAILABLE:
-            fig = px.histogram(df_all, x='Aging', color='Plant', nbins=30, title="Distribuição de Aging (dias)")
+            fig = px.histogram(df_all, x='Aging', color='Plant', nbins=30, title="Aging Distribution (days)")
             st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             for plant, grp in df_all.groupby('Plant'):
                 ax.hist(pd.to_numeric(grp['Aging'], errors='coerce').dropna(), bins=30, alpha=0.6, label=plant)
-            ax.set_title("Distribuição de Aging (dias)")
-            ax.set_xlabel("Aging (dias)"); ax.set_ylabel("Contagem")
+            ax.set_title("Aging Distribution (days)")
+            ax.set_xlabel("Aging (days)"); ax.set_ylabel("Count")
             ax.legend()
             st.pyplot(fig)
 
@@ -274,14 +273,14 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
         by_status = df_all.groupby(['Plant', 'Approval Status']).size().reset_index(name='count')
         if PLOTLY_AVAILABLE:
             fig = px.bar(by_status, x='Approval Status', y='count', color='Plant', barmode='group',
-                         title="Contagem por Approval Status")
+                         title="Approval Status Count")
             st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             for plant, grp in by_status.groupby('Plant'):
                 ax.bar(grp['Approval Status'], grp['count'], alpha=0.7, label=plant)
-            ax.set_title("Contagem por Approval Status")
-            ax.set_xlabel("Approval Status"); ax.set_ylabel("Contagem")
+            ax.set_title("Approval Status Count")
+            ax.set_xlabel("Approval Status"); ax.set_ylabel("Count")
             ax.legend()
             st.pyplot(fig)
 
@@ -291,20 +290,20 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
                 if c in df_all.columns]
     if cat_cols:
         melted = df_all.melt(id_vars=['Plant'], value_vars=cat_cols,
-                             var_name='Categoria', value_name='Marcado')
-        melted['Marcado'] = melted['Marcado'].astype(str).str.upper().eq('X')
-        by_cat = melted.groupby(['Plant', 'Categoria', 'Marcado']).size().reset_index(name='count')
-        by_cat = by_cat[by_cat['Marcado']]
+                             var_name='Category', value_name='Checked')
+        melted['Checked'] = melted['Checked'].astype(str).str.upper().eq('X')
+        by_cat = melted.groupby(['Plant', 'Category', 'Checked']).size().reset_index(name='count')
+        by_cat = by_cat[by_cat['Checked']]
         if PLOTLY_AVAILABLE:
-            fig = px.bar(by_cat, x='Categoria', y='count', color='Plant', barmode='group',
-                         title="Atividades marcadas por Categoria (X)")
+            fig = px.bar(by_cat, x='Category', y='count', color='Plant', barmode='group',
+                         title="Activities Checked by Category (X)")
             st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             for plant, grp in by_cat.groupby('Plant'):
-                ax.bar(grp['Categoria'], grp['count'], alpha=0.7, label=plant)
-            ax.set_title("Atividades marcadas por Categoria (X)")
-            ax.set_xlabel("Categoria"); ax.set_ylabel("Contagem")
+                ax.bar(grp['Category'], grp['count'], alpha=0.7, label=plant)
+            ax.set_title("Activities Checked by Category (X)")
+            ax.set_xlabel("Category"); ax.set_ylabel("Count")
             ax.legend()
             plt.xticks(rotation=45, ha='right')
             st.pyplot(fig)
@@ -316,7 +315,7 @@ def render_atl_history_charts(logs: list[dict]) -> None:
       - Curvas PT01 / PT02 com contagem de linhas ao longo do tempo.
     """
     if not logs:
-        st.info("Sem histórico ATL para gráficos.")
+        st.info("No ATL history for charts.")
         return
 
     df = pd.DataFrame([{
@@ -331,18 +330,18 @@ def render_atl_history_charts(logs: list[dict]) -> None:
     except Exception:
         df['ts'] = df['timestamp']
 
-    st.markdown("### ⏱️ Evolução Temporal (Histórico ATL)")
+    st.markdown("### ⏱️ Temporal Evolution (ATL History)")
     dsorted = df.sort_values('ts')
     if PLOTLY_AVAILABLE:
         fig = px.line(dsorted, x='ts', y=['PT01_rows', 'PT02_rows'],
-                      markers=True, title="Linhas por Planta ao longo do tempo")
+                      markers=True, title="Lines by Plant over Time")
         st.plotly_chart(fig, use_container_width=True)
     else:
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.plot(dsorted['ts'], dsorted['PT01_rows'], marker='o', label='PT01')
         ax.plot(dsorted['ts'], dsorted['PT02_rows'], marker='o', label='PT02')
-        ax.set_title("Linhas por Planta ao longo do tempo")
-        ax.set_xlabel("Tempo"); ax.set_ylabel("Linhas")
+        ax.set_title("Lines by Plant over Time")
+        ax.set_xlabel("Time"); ax.set_ylabel("Lines")
         ax.legend()
         st.pyplot(fig)
 
@@ -361,11 +360,11 @@ def render_progress_kpis(diff_dfs: dict[str, pd.DataFrame]) -> None:
         return int(df.shape[0])
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Erros Novos", _n("New Errors"))
-    c2.metric("Erros Resolvidos", _n("Resolved Errors"))
-    c3.metric("Erros Alterados", _n("Changed Errors"))
-    c4.metric("Novos Materiais", _n("New Materials"))
-    c5.metric("Views Perdidas", _n("Views Lost"))
+    c1.metric("New Errors", _n("New Errors"))
+    c2.metric("Resolved Errors", _n("Resolved Errors"))
+    c3.metric("Changed Errors", _n("Changed Errors"))
+    c4.metric("New Materials", _n("New Materials"))
+    c5.metric("Views Lost", _n("Views Lost"))
 
 
 def render_progress_charts(diff_dfs: dict[str, pd.DataFrame]) -> None:
@@ -374,12 +373,12 @@ def render_progress_charts(diff_dfs: dict[str, pd.DataFrame]) -> None:
       - Barras New vs Resolved vs Changed
       - Views Perdidas por código
     """
-    st.markdown("### 📊 Gráficos — Comparação de Relatórios")
+    st.markdown("### 📊 Charts — Reports Comparison")
 
     # Barras New/Resolved/Changed
     df_bars = pd.DataFrame({
-        "Tipo": ["New Errors", "Resolved Errors", "Changed Errors"],
-        "Quantidade": [
+        "Type": ["New Errors", "Resolved Errors", "Changed Errors"],
+        "Amount": [
             diff_dfs.get("New Errors", pd.DataFrame()).shape[0],
             diff_dfs.get("Resolved Errors", pd.DataFrame()).shape[0],
             diff_dfs.get("Changed Errors", pd.DataFrame()).shape[0],
@@ -387,15 +386,15 @@ def render_progress_charts(diff_dfs: dict[str, pd.DataFrame]) -> None:
     })
 
     if PLOTLY_AVAILABLE:
-        fig = px.bar(df_bars, x="Tipo", y="Quantidade", text='Quantidade',
-                     title="Erros — Novos vs Resolvidos vs Alterados")
+        fig = px.bar(df_bars, x="Type", y="Amount", text='Amount',
+                     title="Errors — New Errors vs Resolved vs Changed")
         fig.update_traces(textposition='outside')
         st.plotly_chart(fig, use_container_width=True)
     else:
         fig, ax = plt.subplots(figsize=(8, 4))
-        ax.bar(df_bars["Tipo"], df_bars["Quantidade"], color="#9467bd")
-        ax.set_title("Erros — Novos vs Resolvidos vs Alterados")
-        ax.set_xlabel("Tipo"); ax.set_ylabel("Quantidade")
+        ax.bar(df_bars["Type"], df_bars["Amount"], color="#9467bd")
+        ax.set_title("Errors — New Errors vs Resolved vs Changed")
+        ax.set_xlabel("Type"); ax.set_ylabel("Amount")
         st.pyplot(fig)
 
     # Views Perdidas por código
@@ -405,18 +404,18 @@ def render_progress_charts(diff_dfs: dict[str, pd.DataFrame]) -> None:
             df_views_lost['View_Lost']
             .value_counts()
             .rename_axis('View')
-            .reset_index(name='Quantidade')
+            .reset_index(name='Amount')
         )
         if PLOTLY_AVAILABLE:
-            fig = px.bar(by_view, x='View', y='Quantidade', text='Quantidade',
-                         title="Views Perdidas por código")
+            fig = px.bar(by_view, x='View', y='Amount', text='Amount',
+                         title="Lost Views by Code")
             fig.update_traces(textposition='outside')
             st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
-            ax.bar(by_view['View'], by_view['Quantidade'], color="#8c564b")
-            ax.set_title("Views Perdidas por código")
-            ax.set_xlabel("View"); ax.set_ylabel("Quantidade")
+            ax.bar(by_view['View'], by_view['Amount'], color="#8c564b")
+            ax.set_title("VLost Views by Code")
+            ax.set_xlabel("View"); ax.set_ylabel("Amount")
             st.pyplot(fig)
 
 # =========================
@@ -430,7 +429,7 @@ def render_mrp_run_kpis(errors_df: pd.DataFrame) -> None:
     - Materiais distintos com erro
     """
     if errors_df is None or errors_df.empty:
-        st.info("Sem dados para KPIs (MRP).")
+        st.info("No data for KPIs (MRP).")
         return
 
     total_errors = int(errors_df.shape[0])
@@ -438,9 +437,9 @@ def render_mrp_run_kpis(errors_df: pd.DataFrame) -> None:
     total_materials = int(errors_df['Material'].nunique()) if 'Material' in errors_df.columns else 0
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Total de Erros (MRP)", f"{total_errors:,}")
-    c2.metric("Fields com erro (distinct)", f"{total_fields:,}")
-    c3.metric("Materiais com erro (distinct)", f"{total_materials:,}")
+    c1.metric("Total Errors (MRP)", f"{total_errors:,}")
+    c2.metric("Fields with Error (distinct)", f"{total_fields:,}")
+    c3.metric("Materials with Errors (distinct)", f"{total_materials:,}")
 
 
 def render_mrp_run_charts(errors_df: pd.DataFrame) -> None:
@@ -453,7 +452,7 @@ def render_mrp_run_charts(errors_df: pd.DataFrame) -> None:
     if errors_df is None or errors_df.empty:
         return
 
-    st.markdown("### 📊 Gráficos — Execução Atual (MRP)")
+    st.markdown("### 📊 Charts — Present Execution (MRP)")
     top_n = int(errors_df['_TOP_N'].iloc[0]) if '_TOP_N' in errors_df.columns else 20
 
     # Top-N por Field
@@ -462,41 +461,41 @@ def render_mrp_run_charts(errors_df: pd.DataFrame) -> None:
             errors_df['Field']
             .value_counts()
             .rename_axis('Field')
-            .reset_index(name='Erros')
+            .reset_index(name='Errors')
             .head(top_n)
         )
         if PLOTLY_AVAILABLE:
-            fig = px.bar(top_fields, x='Field', y='Erros',
-                         title=f"Top {top_n} Fields com mais erros (MRP)", text='Erros')
+            fig = px.bar(top_fields, x='Field', y='Errors',
+                         title=f"Top {top_n} Fields with more Errors (MRP)", text='Errors')
             fig.update_traces(textposition='outside')
             fig.update_layout(xaxis_tickangle=-45)
             st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
-            ax.bar(top_fields['Field'], top_fields['Erros'], color="#1f77b4")
-            ax.set_title(f"Top {top_n} Fields com mais erros (MRP)")
-            ax.set_xlabel("Field"); ax.set_ylabel("Erros")
+            ax.bar(top_fields['Field'], top_fields['Errors'], color="#1f77b4")
+            ax.set_title(f"Top {top_n} Fields with more Errors (MRP)")
+            ax.set_xlabel("Field"); ax.set_ylabel("Errors")
             plt.xticks(rotation=45, ha='right')
             st.pyplot(fig)
 
     # Erros por Plant
     if 'Plant' in errors_df.columns:
         by_plant = (
-            errors_df['Plant'].astype(str).str.strip().replace({'': 'Sem Planta'})
+            errors_df['Plant'].astype(str).str.strip().replace({'': 'No Plant'})
             .value_counts()
             .rename_axis('Plant')
-            .reset_index(name='Erros')
+            .reset_index(name='Errors')
         )
         if PLOTLY_AVAILABLE:
-            fig = px.bar(by_plant, x='Plant', y='Erros',
-                         title="Erros por Planta (MRP)", text='Erros', color='Plant')
+            fig = px.bar(by_plant, x='Plant', y='Errors',
+                         title="Errors by Plant (MRP)", text='Errors', color='Plant')
             fig.update_traces(textposition='outside')
             st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
-            ax.bar(by_plant['Plant'], by_plant['Erros'], color="#ff7f0e")
-            ax.set_title("Erros por Planta (MRP)")
-            ax.set_xlabel("Planta"); ax.set_ylabel("Erros")
+            ax.bar(by_plant['Plant'], by_plant['Errors'], color="#ff7f0e")
+            ax.set_title("Errors by Plant (MRP)")
+            ax.set_xlabel("Plant"); ax.set_ylabel("Errors")
             st.pyplot(fig)
 
     # Top-N por Material
@@ -505,20 +504,20 @@ def render_mrp_run_charts(errors_df: pd.DataFrame) -> None:
             errors_df['Material'].astype(str).str.strip()
             .value_counts()
             .rename_axis('Material')
-            .reset_index(name='Erros')
+            .reset_index(name='Errors')
             .head(top_n)
         )
         if PLOTLY_AVAILABLE:
-            fig = px.bar(by_mat, x='Material', y='Erros',
-                         title=f"Top {top_n} Materiais com mais erros (MRP)", text='Erros')
+            fig = px.bar(by_mat, x='Material', y='Errors',
+                         title=f"Top {top_n} Materials with more Errors (MRP)", text='Errors')
             fig.update_traces(textposition='outside')
             fig.update_layout(xaxis_tickangle=-45)
             st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
-            ax.bar(by_mat['Material'], by_mat['Erros'], color="#2ca02c")
-            ax.set_title(f"Top {top_n} Materiais com mais erros (MRP)")
-            ax.set_xlabel("Material"); ax.set_ylabel("Erros")
+            ax.bar(by_mat['Material'], by_mat['Errors'], color="#2ca02c")
+            ax.set_title(f"Top {top_n} Materials with more Errors (MRP)")
+            ax.set_xlabel("Material"); ax.set_ylabel("Errors")
             plt.xticks(rotation=45, ha='right')
             st.pyplot(fig)
 
@@ -529,7 +528,7 @@ def render_mrp_history_charts(logs: list[dict]) -> None:
     - Linha do total de erros ao longo do tempo por filtro de planta.
     """
     if not logs:
-        st.info("Sem histórico MRP para gráficos.")
+        st.info("No MRP history for charts.")
         return
 
     df = pd.DataFrame([{
@@ -544,17 +543,17 @@ def render_mrp_history_charts(logs: list[dict]) -> None:
     except Exception:
         df['ts'] = df['timestamp']
 
-    st.markdown("### ⏱️ Evolução Temporal (Histórico MRP)")
+    st.markdown("### ⏱️ OverTime evolution (MRP History)")
     dsorted = df.sort_values('ts')
     if PLOTLY_AVAILABLE:
         fig = px.line(dsorted, x='ts', y='total_errors', color='plant_filter',
-                      markers=True, title="Total de Erros ao longo do tempo (MRP)")
+                      markers=True, title="Total Errors over time (MRP)")
         st.plotly_chart(fig, use_container_width=True)
     else:
         fig, ax = plt.subplots(figsize=(8, 4))
         for plant, grp in dsorted.groupby('plant_filter'):
             ax.plot(grp['ts'], grp['total_errors'], marker='o', label=plant)
-        ax.set_title("Total de Erros ao longo do tempo (MRP)")
-        ax.set_xlabel("Tempo"); ax.set_ylabel("Erros")
+        ax.set_title("Total Errors over time (MRP)")
+        ax.set_xlabel("Time"); ax.set_ylabel("Errors")
         ax.legend()
         st.pyplot(fig)

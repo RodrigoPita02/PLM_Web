@@ -3,7 +3,7 @@ import io
 import os
 from datetime import datetime
 from openpyxl import load_workbook
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from rolesviews_data import get_rolesviews_bytesio  # <-- importa o helper
 
 # ==========================================================
@@ -148,20 +148,29 @@ def ensure_basic_data_k(marc_df):
     marc_df[col] = marc_df[col].apply(add_k)
     return marc_df
 
-
-
 # ------------------------
 # Validações SAPUI5 Export
 # ------------------------
 
-
 def validar_campo_obrigatorio(df, coluna, resultados):
-    """Valida se uma coluna obrigatória tem valores em branco."""
+    # ➤ NOVO: exceção para Description quando PSMS = 70 ou 75
+    if coluna == "Description" and "Plant Specific Material Status" in df.columns:
+        df['_PSMS'] = df['Plant Specific Material Status'].apply(
+            lambda x: int(float(str(x))) if str(x).strip() not in ['', 'nan'] else None
+        )
+
     if coluna in df.columns:
         missing = df[df[coluna].isnull()]
+
         for idx in missing.index:
+            # ➤ NOVO: ignorar erro se PSMS for 70 ou 75
+            if coluna == "Description" and "_PSMS" in df.columns:
+                psms = df.at[idx, '_PSMS']
+                if psms in (70, 75):
+                    continue  # ignorar o erro
+
             resultados.append({
-                'Line': idx + 2,  # +2: índice base + cabeçalho
+                'Line': idx + 2,
                 'Field': coluna,
                 'Error': 'Mandatory field blank',
                 'Material': str(df.at[idx, 'Material']).strip() if 'Material' in df.columns else '',
@@ -2316,25 +2325,28 @@ def postprocess_with_views_roles_and_classification(
             if v not in present and is_view_required(mt, pt, v):
                 view_missing_count[v] += 1
 
+    
     coverage_data = []
     for letter, count in view_missing_count.items():
-        coverage_data.append({
-            'View': letter,
-            'View_Description': view_to_desc.get(letter, ''),
-            'Materiais without View': count,
-            'Link': f'=HYPERLINK("#Missing_{letter}!A1","Check Details")'
-        })
+        if count > 0:
+            coverage_data.append({
+                'View': letter,
+                'View_Description': view_to_desc.get(letter, ''),
+                'Materiais without View': count,
+                'Link': f'=HYPERLINK("#Missing_{letter}!A1","Check Details")'
+            })
     coverage_df = pd.DataFrame(coverage_data)
 
     # -----------------------------------------------
     # 9) Abas Missing_<View> com detalhe por material/planta
     # -----------------------------------------------
+
     view_tabs_dict = {}
     for v in expected_letters:
         rows = []
         for _, r in marc_filtered.iterrows():
-            mt  = str(mt_map.get(str(r['Material']).strip(), '')).strip().upper()
-            pt  = str(pt_map.get((str(r['Material']).strip(), str(r['Plant']).strip()), '')).strip().upper() if pt_map else ''
+            mt = str(mt_map.get(str(r['Material']).strip(), '')).strip().upper()
+            pt = str(pt_map.get((str(r['Material']).strip(), str(r['Plant']).strip()), '')).strip().upper() if pt_map else ''
             present = set(r.get('Letters_Present', []) or [])
             if v not in present and is_view_required(mt, pt, v):
                 rows.append({
@@ -2344,7 +2356,9 @@ def postprocess_with_views_roles_and_classification(
                     'View_Description': view_to_desc.get(v, ''),
                     'Fields_Expected': ','.join(view_to_fields.get(v, []))
                 })
-        view_tabs_dict[v] = pd.DataFrame(rows)
+        # 👉 NOVO: só adicionar se houver linhas
+        if rows:
+            view_tabs_dict[v] = pd.DataFrame(rows)
 
     # -----------------------------------------------
     # 10) Saída
@@ -2546,7 +2560,117 @@ def run_full_validation(
             sheet = f"Missing_{view_code}"[:31]  # Excel limita a 31 chars
             df_view.to_excel(writer, sheet_name=sheet, index=False)
 
+        
+    
+    def _style_adjusted_summary_sheet(xlsx_bytes: io.BytesIO) -> io.BytesIO:
+        from openpyxl import load_workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+        xlsx_bytes.seek(0)
+        wb = load_workbook(xlsx_bytes)
+
+        if "Adjusted Summary" not in wb.sheetnames:
+            out = io.BytesIO()
+            wb.save(out)
+            out.seek(0)
+            return out
+
+        ws = wb["Adjusted Summary"]
+
+        # Pintar tab azul bebé
+        ws.sheet_properties.tabColor = "AEC6FF"
+
+        # Estilos dos títulos
+        title_fill = PatternFill(start_color="E8F0FF", end_color="E8F0FF", fill_type="solid")
+        title_font = Font(bold=True)
+        title_align = Alignment(horizontal="center", vertical="center")
+        thin = Side(style="thin", color="BBD0FF")
+        title_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        # -------------------------------------------------------------------
+        # 1) DETETAR PRIMEIRA TABELA (Field Errors)
+        # -------------------------------------------------------------------
+        first_header_row = None
+        first_empty_after_table1 = None
+
+        # a) Encontrar a primeira linha NÃO vazia = cabeçalho da tabela 1
+        for r in range(1, ws.max_row + 1):
+            if any(ws.cell(row=r, column=c).value not in (None, "") for c in range(1, ws.max_column + 1)):
+                first_header_row = r
+                break
+
+        if first_header_row is None:
+            # Nada para estilizar
+            out = io.BytesIO()
+            wb.save(out)
+            out.seek(0)
+            return out
+
+        # b) Encontrar a primeira linha totalmente vazia depois da tabela 1
+        for r in range(first_header_row + 1, ws.max_row + 1):
+            if all(ws.cell(row=r, column=c).value in (None, "") for c in range(1, ws.max_column + 1)):
+                first_empty_after_table1 = r
+                break
+
+        # -------------------------------------------------------------------
+        # 2) DETETAR SEGUNDA TABELA (Coverage)
+        # -------------------------------------------------------------------
+        second_header_row = None
+
+        if first_empty_after_table1:
+            for r in range(first_empty_after_table1 + 1, ws.max_row + 1):
+                if any(ws.cell(row=r, column=c).value not in (None, "") for c in range(1, ws.max_column + 1)):
+                    second_header_row = r
+                    break
+
+        # -------------------------------------------------------------------
+        # 3) Criar TÍTULO 1 (Field Errors)
+        # -------------------------------------------------------------------
+        title_row_1 = first_header_row - 1
+        last_col_1 = max(
+            c for c in range(1, ws.max_column + 1)
+            if ws.cell(row=first_header_row, column=c).value not in (None, "")
+        )
+
+        if title_row_1 >= 1:
+            ws.merge_cells(start_row=title_row_1, start_column=1,
+                        end_row=title_row_1, end_column=last_col_1)
+            cell = ws.cell(row=title_row_1, column=1)
+            cell.value = "Field Errors"
+            cell.fill = title_fill
+            cell.font = title_font
+            cell.alignment = title_align
+            cell.border = title_border
+
+        # -------------------------------------------------------------------
+        # 4) Criar TÍTULO 2 (Materials Without View)
+        # -------------------------------------------------------------------
+        if second_header_row:
+            title_row_2 = second_header_row - 1
+            last_col_2 = max(
+                c for c in range(1, ws.max_column + 1)
+                if ws.cell(row=second_header_row, column=c).value not in (None, "")
+            )
+
+            ws.merge_cells(start_row=title_row_2, start_column=1,
+                        end_row=title_row_2, end_column=last_col_2)
+            cell2 = ws.cell(row=title_row_2, column=1)
+            cell2.value = "Materials Without View"
+            cell2.fill = title_fill
+            cell2.font = title_font
+            cell2.alignment = title_align
+            cell2.border = title_border
+
+        # -------------------------------------------------------------------
+        # Guardar Excel formatado
+        # -------------------------------------------------------------------
+        out = io.BytesIO()
+        wb.save(out)
+        out.seek(0)
+        return out
+
     file_bytes.seek(0)
+    file_bytes = _style_adjusted_summary_sheet(file_bytes)
 
     # ------------------
     # Summary para exibir no Streamlit

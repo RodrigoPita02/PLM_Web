@@ -1,0 +1,16 @@
+{
+  "type": "mrp",
+  "timestamp": "2026-01-19T12:53:30",
+  "user": "RPITA",
+  "plant_filter": "ALL",
+  "metrics": {
+    "total_errors": 47636,
+    "fields_with_error": 4,
+    "materials_with_error": 12173
+  },
+  "files": {
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "zplm_marc": "ZPLM MARC.xlsx"
+  }
+}
