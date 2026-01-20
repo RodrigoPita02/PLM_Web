@@ -166,8 +166,6 @@ def pick_last_two_reports(plant_scope: str):
 # ==========================================================
 # Persistência robusta de ficheiros (evita perder uploads)
 # ==========================================================
-import io
-
 def persist_uploaded_mapping(files_map: dict, state_key: str = "sap_files_persisted") -> dict:
     """
     Converte o dicionário de UploadedFile -> {key: UploadedFile}
@@ -235,6 +233,7 @@ def classify_uploaded_files(files):
         "mvke": None,
         "zplm_marc": None,
         "zplm_mara": None,
+        "qmat": None,
 
         # ATL Workflow
         "auto": None,
@@ -271,6 +270,10 @@ def classify_uploaded_files(files):
         if "zplm" in name and "mara" in name:
             mapping["zplm_mara"] = f
             continue
+        if "qmat" in name:
+            mapping["qmat"] = f
+            continue
+
 
         # ATL
         if "automotive" in name:
@@ -293,25 +296,38 @@ def classify_uploaded_files(files):
 
     return mapping
 
-
 # ==========================================================
 # NOVO: Quais ficheiros são relevantes por página
 # ==========================================================
 def required_keys_for_page(page_choice: str) -> list[str]:
-    if page_choice == "SAP Material Validation":
-        return ["sap", "mara", "marc", "mvke", "zplm_marc", "zplm_mara"]
+    if page_choice == "📦 SAP Material Validation":
+        return [
+            "Item Browse Report.xlsx",
+            "MARA.xlsx",
+            "MARC.xlsx",
+            "MVKE.xlsx",
+            "ZPLM MARC.xlsx",
+            "ZPLM MARA.xlsx",
+            "QMAT.xlsx",
+        ]
 
-    if page_choice == "MRP Validation":
-        return ["mara", "marc", "zplm_marc"]
+    if page_choice == "🧮 MRP Validation":
+        return ["MARA.xlsx", "MARC.xlsx", "ZPLM MARA.xlsx"]
 
-    if page_choice == "PLM Workflow (ATL)":
-        return ["auto", "plm", "timing"]
+    if page_choice == "🚗 PLM Workflow (A & TL)":
+        return [
+            "PLM Automotive Validation.xlsx",
+            "PLM TimingLetter Validation.xlsx",
+            "Timing Letters.xlsx",
+        ]
 
-    if page_choice == "SAP Material Validation Progress":
-        return ["current", "previous"]
+    if page_choice == "📈 SAP Material Validation Progress":
+        return [
+            "(date)_SAP_Validation_Adjusted_Report_ALL.xlsx",
+            "(Date)_SAP_Validation_Adjusted_Report_ALL.xlsx",
+        ]
 
     return []
-
 
 # ==========================================================
 # Nomes bonitos para exibir no Expander
@@ -323,6 +339,7 @@ LABELS_PT = {
     "mvke": "MVKE.xlsx",
     "zplm_marc": "ZPLM MARC.xlsx",
     "zplm_mara": "ZPLM MARA.xlsx",
+    "qmat": "QMAT.xlsx",
 
     "auto": "PLM Automotive Validation.xlsx",
     "plm": "PLM TimingLetter Validation.xlsx",
@@ -332,12 +349,23 @@ LABELS_PT = {
     "previous": "Relatório Anterior (Progress)",
 }
 
+# --- Helper: converter display name -> internal key ---
+DISPLAY_TO_INTERNAL = {
+    v.lower(): k for k, v in LABELS_PT.items()
+}
+
+def display_to_internal_key(display_name: str):
+    """Recebe o nome bonito (ex 'MARA.xlsx') e devolve 'mara'."""
+    if not display_name:
+        return None
+    return DISPLAY_TO_INTERNAL.get(display_name.strip().lower())
+
 # ==========================================================
 # SIDEBAR MENU
 # ==========================================================
-st.sidebar.header("Menu")
+st.sidebar.header("Report Selection")
 choice = st.sidebar.radio(
-    "Escolher relatório:",
+    "Choose your Report:",
     [
         "📦 SAP Material Validation",
         "🚗 PLM Workflow (A & TL)",
@@ -447,7 +475,7 @@ if choice == "📦 SAP Material Validation":
     # GUARDAS / HELPERS DE ESTADO
     # ------------------------------
     # Se alguém saltar para passo > 1 sem ter ficheiros persistidos, voltamos ao 1
-    required_keys = ["sap", "mara", "marc", "mvke"]
+    required_keys = ["sap", "mara", "marc", "mvke", "zplm_marc", "zplm_mara", "qmat"]
     persisted_now = st.session_state.get("sap_files_persisted", {}) or {}
     if st.session_state.sap_step > 1 and any(k not in persisted_now for k in required_keys):
         st.session_state.sap_step = 1
@@ -483,11 +511,12 @@ if choice == "📦 SAP Material Validation":
             persist_uploaded_mapping(files, state_key="sap_files_persisted")
 
         # Mostrar deteção do upload atual
-        with st.expander("🔍 Files identified (last upload)"):
-            for key in required_keys_for_page(choice):
-                f = files.get(key)
-                label = LABELS_PT.get(key, key)
-                st.write(f"**{label}** → {f.name if f else '—'}")
+        
+        with st.expander("🔍 Files identified (Current upload)"):
+            for display_name in required_keys_for_page(choice):
+                internal = display_to_internal_key(display_name)
+                f = files.get(internal) if internal else None
+                st.write(f"**{display_name}** → {getattr(f, 'name', '—')}")
 
         # Mostrar o que está persistido na sessão (o que realmente conta para avançar)
         with st.expander("💾 Files saved in the session (persisted)"):
@@ -567,6 +596,7 @@ if choice == "📦 SAP Material Validation":
             mvke_file  = files.get("mvke")
             zplm_marc  = files.get("zplm_marc")
             zplm_mara  = files.get("zplm_mara")
+            qmat_file  = files.get("qmat")
 
             plant_filter_export = st.session_state.sap_plant_export
             plant_filter_display = st.session_state.sap_plant_display
@@ -589,6 +619,7 @@ if choice == "📦 SAP Material Validation":
                     mvke_file=mvke_file,
                     zplm_marc_file=zplm_marc,
                     zplm_mara_file=zplm_mara,
+                    qmat_file=qmat_file,
                     previous_report=None,
                     plant_filter=plant_filter_display
                 )
@@ -602,6 +633,7 @@ if choice == "📦 SAP Material Validation":
                         mvke_file=mvke_file,
                         zplm_marc_file=zplm_marc,
                         zplm_mara_file=zplm_mara,
+                        qmat_file=qmat_file,
                         previous_report=None,
                         plant_filter=plant_filter_export
                     )
@@ -815,11 +847,12 @@ elif choice == "🚗 PLM Workflow (A & TL)":
 
         if uploads:
             persist_uploaded_mapping(files, state_key="atl_files_persisted")
-
+   
         with st.expander("🔍 Files identified (Current upload)"):
-            for key in ["auto", "plm", "timing"]:
-                f = files.get(key)
-                st.write(f"**{key}** → {f.name if f else '—'}")
+            for display_name in required_keys_for_page(choice):
+                internal = display_to_internal_key(display_name)
+                f = files.get(internal) if internal else None
+                st.write(f"**{display_name}** → {getattr(f, 'name', '—')}")
 
         with st.expander("💾 Files saved in session (persisted)"):
             persisted = st.session_state.get("atl_files_persisted", {}) or {}
@@ -1101,9 +1134,10 @@ elif choice == "🧮 MRP Validation":
             persist_uploaded_mapping(files, state_key="mrp_files_persisted")
 
         with st.expander("🔍 Files identified (Current Upload)"):
-            for key in ["mara", "marc", "zplm_marc"]:
-                f = files.get(key)
-                st.write(f"**{key}** → {f.name if f else '—'}")
+            for display_name in required_keys_for_page(choice):
+                internal = display_to_internal_key(display_name)
+                f = files.get(internal) if internal else None
+                st.write(f"**{display_name}** → {getattr(f, 'name', '—')}")
 
         with st.expander("💾 Files saved in session (persisted)"):
             persisted = st.session_state.get("mrp_files_persisted", {}) or {}
@@ -1436,14 +1470,12 @@ elif choice == "📈 SAP Material Validation Progress":
             )
 
             curr_file, prev_file, notes = pick_current_previous_from_uploads(uploads or [])
-
-            with st.expander("🔍 Automatic detection"):
-                if notes:
-                    for n in notes:
-                        st.info(n)
-
-                st.write(f"**Most Recent:** {getattr(curr_file, 'name', '—')}")
-                st.write(f"**Previous:** {getattr(prev_file, 'name', '—')}")
+            
+            with st.expander("🔍 Files identified (Current upload)"):
+                for display_name in required_keys_for_page(choice):
+                    internal = display_to_internal_key(display_name)
+                    f = curr_file if internal == "current" else prev_file if internal == "previous" else None
+                    st.write(f"**{display_name}** → {getattr(f, 'name', '—')}")
 
             st.session_state.manual_curr = curr_file
             st.session_state.manual_prev = prev_file

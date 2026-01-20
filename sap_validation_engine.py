@@ -442,21 +442,44 @@ def validar_consumption_mode(df, resultados):
     if 'Consumption Mode' not in df.columns:
         print("⚠️ column 'Consumption Mode' not found.")
         return
+
+    has_mt = 'Material Type' in df.columns
+
     for idx, row in df.iterrows():
         erros_linha = []
+
         raw = row['Consumption Mode']
-        val = normalize_code(raw, as_int=True)  # '2.0' -> '2', '02' -> '2'
-        if val == '':
-            erros_linha.append('Mandatory field blank')
-        elif val != '2':
-            erros_linha.append(f"Invalid value: '{raw}' (should be '2')")
+        val = normalize_code(raw, as_int=True)  # normaliza 0.0 -> 0, etc.
+
+        material = str(row['Material']).strip() if 'Material' in df.columns else ''
+        plant = str(row['Plant']).strip() if 'Plant' in df.columns else ''
+        mt = str(row['Material Type']).strip().upper() if has_mt else ''
+
+        # --- CASO FERT ---
+        if mt == 'FERT':
+
+            # Para FERT: 0 ou vazio são aceitáveis
+            if val not in ('', '0'):
+                erros_linha.append(
+                    f"Invalid value: '{raw}' (Material Type FERT requires Consumption Mode = '0' or empty)"
+                )
+
+        else:
+            # --- REGRA ANTIGA PARA OUTROS MATERIAIS ---
+            if val == '':
+                erros_linha.append('Mandatory field blank')
+            elif val != '2':
+                erros_linha.append(
+                    f"Invalid value: '{raw}' (should be '2' for non-FERT materials)"
+                )
+
         if erros_linha:
             resultados.append({
                 'Line': idx + 2,
                 'Field': 'Consumption Mode',
                 'Error': '\n'.join(erros_linha),
-                'Material': str(row['Material']).strip() if 'Material' in df.columns else '',
-                'Plant': str(row['Plant']).strip() if 'Plant' in df.columns else ''
+                'Material': material,
+                'Plant': plant
             })
 
 def validar_division(df, resultados):
@@ -620,26 +643,85 @@ def validar_repetitive_manufacturing(df, resultados):
                 'Plant': str(row['Plant']).strip() if 'Plant' in df.columns else ''
             })
 
-def validar_item_category_group(df, resultados):
-    """Valida se o Field 'Item Category Group' não está vazio e só aceita 'NORM' or 'Multiple'."""
-    if 'Item Category Group' not in df.columns:
-        print("⚠️ Column 'Item Category Group' not found.")
+def validar_item_category_group(df, resultados, mvke_df):
+    """
+    Regras finais:
+
+    - A partir do SAPUI5 Export, obter materiais com Material Type ∈ {FERT, HALB, ROH}.
+    - Para cada material:
+         * Se NÃO existir na MVKE → ignorar (sem erro)
+         * Se EXISTIR na MVKE:
+             - TODAS as linhas para esse material têm de ter Item Category Group = 'NORM'
+             - Se existir qualquer valor diferente → ERRO
+    """
+
+    # SAPUI5 colunas obrigatórias
+    if 'Material' not in df.columns or 'Material Type' not in df.columns:
+        print("⚠️ Missing columns in SAPUI5 Export for Item Category Group validation.")
         return
-    valores_validos = ['NORM', 'Multiple']
-    for idx, row in df.iterrows():
-        erros_linha = []
-        item_group = str(row['Item Category Group']).strip()
-        if pd.isna(row['Item Category Group']) or item_group == '':
-            erros_linha.append('Mandatory field blank')
-        elif item_group not in valores_validos:
-            erros_linha.append(f"Invalid value: '{item_group}' (allowed: NORM or Multiple)")
-        if erros_linha:
+
+    # MVKE obrigatório
+    if mvke_df is None or mvke_df.empty:
+        print("⚠️ MVKE empty or missing — skipping Item Category Group validation.")
+        return
+
+    # Normalizar MVKE
+    mvke = mvke_df.copy()
+    mvke.columns = [c.strip() for c in mvke.columns]
+
+    # encontrar colunas
+    col_mat = None
+    col_icg = None
+
+    for c in ['Material', 'MATNR']:
+        if c in mvke.columns:
+            col_mat = c
+            break
+
+    for c in ['Item Category Group', 'Item Cat Group', 'MVGR1', 'KDMAT']:
+        if c in mvke.columns:
+            col_icg = c
+            break
+
+    if col_mat is None or col_icg is None:
+        print("⚠️ MVKE missing Material or Item Category Group columns — skipping validation.")
+        return
+
+    mvke['MAT_norm'] = mvke[col_mat].astype(str).str.strip()
+    mvke['ICG_norm'] = mvke[col_icg].astype(str).str.strip().str.upper()
+
+    # mapear Material -> set de valores encontrados
+    mvke_map = {}
+    for mat, grp in mvke.groupby('MAT_norm'):
+        mvke_map[mat] = set(grp['ICG_norm'])
+
+    # filtrar FERT / HALB / ROH
+    sap_subset = df.loc[
+        df['Material Type'].astype(str).str.strip().str.upper().isin(['FERT', 'HALB', 'ROH'])
+    ]
+
+    for idx, row in sap_subset.iterrows():
+        material = str(row['Material']).strip()
+        plant = str(row.get('Plant', '')).strip()
+
+        # se não existir na MVKE --> ignorar
+        if material not in mvke_map:
+            continue
+
+        icg_set = mvke_map[material]
+
+        # regra final:
+        # TODOS os valores devem ser NORM — se houver qualquer outro → erro
+        if icg_set != {'NORM'}:
             resultados.append({
                 'Line': idx + 2,
-                'Field': 'Item Category Group',
-                'Error': ' \n '.join(erros_linha),
-                'Material': str(row['Material']).strip() if 'Material' in df.columns else '',
-                'Plant': str(row['Plant']).strip() if 'Plant' in df.columns else ''
+                'Field': 'Item Category Group (MVKE)',
+                'Error': (
+                    f"Invalid in MVKE: For material '{material}' all entries must have "
+                    f"Item Category Group = 'NORM' (found: {sorted(icg_set)})"
+                ),
+                'Material': material,
+                'Plant': plant
             })
 
 def validar_jit_delivery_sched(df, resultados):
@@ -855,6 +937,7 @@ def validar_period_type(df, resultados):
                 'Material': str(row['Material']).strip() if 'Material' in df.columns else '',
                 'Plant': str(row['Plant']).strip() if 'Plant' in df.columns else ''
             })
+            
 def validar_planning_calendar(df, resultados):
     """
     Validação de Planning Calendar quando PSMS ∈ [10, 70], considerando:
@@ -1571,69 +1654,94 @@ def validar_enterproj_number(df, resultados):
                     'Plant': ''  # Ignora a fábrica
                 })
 
-def validar_inspection_type(df, resultados):
+
+def validar_inspection_type_qmat(sap_df, marc_df, qmat_df, resultados):
     """
-    Regras:
-      - Campo não pode estar vazio.
-      - FERT: NÃO pode ser '08'; permitido '1708'.
-      - HALB/ROH: permitido '08' e '1708'.
-      - (Outros Material Type, se existirem): permitido '1708' (fallback).
+    Validação QMAT — Inspection Type
+
+    Rule 2: Inspection type '08'
+      - Material Type in {ROH, HALB}
+      - Para cada entrada MARC (Material/Plant)
+        -> consultar QMAT (Material/Plant)
+        -> se existir Inspection Type '08'
+           -> Active flag NÃO pode ser 'X'
+
+    Rule 3: Inspection type '1708'
+      - Material Type in {ROH, HALB, FERT}
+      - mesmo processo que acima
     """
-    required_cols = ['Inspection Type', 'Material Type']
-    if not set(required_cols).issubset(df.columns):
-        print("⚠️ Columns 'Inspection Type' and 'Material Type' not found.")
+
+    if qmat_df is None or qmat_df.empty:
+        print("⚠️ QMAT.xlsx em falta, validação QMAT ignorada.")
         return
 
-    def is_code(val, target):
-        """Compara códigos aceitando variantes com/sem zero à esquerda (ex.: '8' == '08')."""
-        if val is None:
-            return False
-        v = str(val).strip()
-        t = str(target).strip()
-        # Se ambos forem numéricos, comparamos como inteiros
-        try:
-            return int(v) == int(t)
-        except ValueError:
-            return v == t
+    qmat = qmat_df.copy()
+    qmat.columns = [c.strip().upper() for c in qmat.columns]
 
-    for idx, row in df.iterrows():
-        erros = []
-        raw_insp = row['Inspection Type']
-        # Normaliza: '1708.0' -> '1708'; '08.0'/'8' -> '8'
-        insp = normalize_code(raw_insp, as_int=True)
-        mt = str(row['Material Type']).strip() if not pd.isna(row['Material Type']) else ''
+    # detectar colunas
+    col_mat = next((c for c in ["MATERIAL", "MATNR"] if c in qmat.columns), None)
+    col_plant = next((c for c in ["PLANT", "WERKS"] if c in qmat.columns), None)
+    col_insp = next((c for c in ["INSPECTION TYPE", "QMTXT", "ART"] if c in qmat.columns), None)
+    col_active = next((c for c in ["INSPTYPE-MATL ACTIVE", "ACTIVE", "STATUS"] if c in qmat.columns), None)
 
-        # 1) Não pode estar vazio
-        if insp == '' or insp is None:
-            erros.append('Mandatory field blank')
+    if not all([col_mat, col_plant, col_insp, col_active]):
+        print("⚠️ QMAT com colunas insuficientes. Ignorado.")
+        return
 
-        else:
-            if mt == 'FERT':
-                # 2a) FERT não pode ter 08
-                if is_code(insp, '8') or is_code(insp, '08'):
-                    erros.append(f"Invalid value: '{raw_insp}' (08 is not allowed for FERT)")
-                # 2b) FERT deve aceitar 1708
-                elif not is_code(insp, '1708'):
-                    erros.append(f"Invalid value: '{raw_insp}' (allowed for FERT: 1708)")
+    qmat["MAT"] = qmat[col_mat].astype(str).str.strip()
+    qmat["PLT"] = qmat[col_plant].astype(str).str.strip()
+    qmat["INSP"] = qmat[col_insp].astype(str).str.strip().str.upper()
+    qmat["ACT"] = qmat[col_active].astype(str).str.strip().str.upper()
 
-            elif mt in ['HALB', 'ROH']:
-                # 3) HALB/ROH aceitam 08 e 1708
-                if not (is_code(insp, '8') or is_code(insp, '08') or is_code(insp, '1708')):
-                    erros.append(f"Invalid value: '{raw_insp}' (allowed for {mt}: 08 or 1708)")
+    # mapear material -> tipo de material (SAPUI5)
+    mt_map = dict(zip(
+        sap_df['Material'].astype(str).str.strip(),
+        sap_df['Material Type'].astype(str).str.strip().str.upper()
+    ))
 
-            else:
-                # 4) Fallback para outros Material Type (se existirem): só 1708
-                if not is_code(insp, '1708'):
-                    erros.append(f"Invalid value: '{raw_insp}' (allowed: 1708)")
+    marc = marc_df.copy()
+    marc.columns = [c.strip() for c in marc.columns]
 
-        if erros:
-            resultados.append({
-                'Line': idx + 2,
-                'Field': 'Inspection Type',
-                'Error': ' \n'.join(erros),
-                'Material': str(row['Material']).strip() if 'Material' in df.columns else '',
-                'Plant': str(row['Plant']).strip() if 'Plant' in df.columns else ''
-            })
+    for idx, row in marc.iterrows():
+        material = str(row.get("Material", "")).strip()
+        plant    = str(row.get("Plant", "")).strip()
+        mt       = mt_map.get(material, "")
+
+        # RULE 2 — Inspection Type = 08, para HALB/ROH
+        if mt in ["HALB", "ROH"]:
+            subset = qmat[
+                (qmat["MAT"] == material) &
+                (qmat["PLT"] == plant) &
+                (qmat["INSP"] == "08")
+            ]
+
+            for _, r in subset.iterrows():
+                if r["ACT"] == "X":
+                    resultados.append({
+                        "Line": idx + 2,
+                        "Field": "Inspection Type (QMAT 08)",
+                        "Error": "Inspection Type '08' has Active flag = 'X' in QMAT",
+                        "Material": material,
+                        "Plant": plant
+                    })
+
+        # RULE 3 — Inspection Type = 1708, para FERT/HALB/ROH
+        if mt in ["FERT", "HALB", "ROH"]:
+            subset = qmat[
+                (qmat["MAT"] == material) &
+                (qmat["PLT"] == plant) &
+                (qmat["INSP"] == "1708")
+            ]
+
+            for _, r in subset.iterrows():
+                if r["ACT"] == "X":
+                    resultados.append({
+                        "Line": idx + 2,
+                        "Field": "Inspection Type (QMAT 1708)",
+                        "Error": "Inspection Type '1708' has Active flag = 'X' in QMAT",
+                        "Material": material,
+                        "Plant": plant
+                    })
 
 def validar_backflush(df, resultados):
     """Backflush: Não pode estar vazio."""
@@ -2374,6 +2482,7 @@ def run_full_validation(
     mara_file,
     marc_file,
     mvke_file,
+    qmat_file,
     roles_file=None,
     zplm_marc_file=None,
     zplm_mara_file=None,
@@ -2394,12 +2503,12 @@ def run_full_validation(
     # Carregar DataFrames
     # ------------------
 
-    import os
-
     sap_df = load_xlsx(sap_file, sheet_name="SAPUI5 Export")
     mara_df = load_xlsx(mara_file, sheet_name=0)
     marc_df = load_xlsx(marc_file, sheet_name=0)
     mvke_df = load_xlsx(mvke_file, sheet_name=0)
+
+    qmat_df = load_xlsx(qmat_file, sheet_name=0)
 
     # Fallback: se não houver roles_file, usa o Excel embutido via Base64
     if roles_file is None:
@@ -2421,6 +2530,9 @@ def run_full_validation(
         raise ValueError("MARC.xlsx não carregado.")
     if mvke_df is None:
         raise ValueError("MVKE.xlsx não carregado.")
+    if qmat_df is None:
+        raise ValueError("QMAT.xlsx não carregado.")
+
     
     # Garantir que o RolesViews embutido tem as duas folhas
     if "Roles" not in rolesviews_dict or "Views" not in rolesviews_dict:
@@ -2460,7 +2572,7 @@ def run_full_validation(
     validar_general_item_category_group(sap_df, resultados)
     validar_gross_weight(sap_df, resultados)
     validar_repetitive_manufacturing(sap_df, resultados)
-    validar_item_category_group(sap_df, resultados)
+    validar_item_category_group(sap_df, resultados, mvke_df)
     validar_jit_delivery_sched(sap_df, resultados)
     validar_loading_group(sap_df, resultados)
     validar_lot_sizing_procedure(sap_df, resultados)
@@ -2483,7 +2595,7 @@ def run_full_validation(
     validar_with_qty_structure(sap_df, resultados)
     validar_enterproj_number(sap_df, resultados)
 
-    validar_inspection_type(sap_df, resultados)
+    validar_inspection_type_qmat(sap_df, marc_df, qmat_df, resultados)
     validar_mrp_controller(sap_df, resultados)
     validar_plant_specific_material_status(sap_df, resultados)
     validar_backflush(sap_df, resultados)
