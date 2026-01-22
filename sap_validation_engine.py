@@ -774,10 +774,10 @@ def validar_lot_sizing_procedure(df, resultados):
     """
     Regras:
     - Campo obrigatório.
-    - EX só permitido para HALB ou FERT (regra base).
-    - ZK só permitido para ROH (regra base).
+    - EX só permitido para HALB ou FERT (regra base). (mudar para Plant Type FP e MP)
+    - ZK só permitido para ROH (regra base). (mudar para Plant Type PP)
     - EXCEÇÃO: para HALB cujo Material contenha o token '14K450' (ex.: 'VPAKLF-14K450-BCD'),
-      então Lot Sizing Procedure pode ser 'ZK' ou 'EX'.
+      então Lot Sizing Procedure pode ser 'ZK' ou 'EX'. (Mudar Plant Type MP)
     """
     if 'Material Type' not in df.columns or 'Lot Sizing Procedure' not in df.columns:
         print("⚠️ Columns 'Material Type' or 'Lot Sizing Procedure' not found.")
@@ -795,7 +795,7 @@ def validar_lot_sizing_procedure(df, resultados):
 
     for idx, row in df.iterrows():
         erros_linha = []
-        material_type = str(row['Material Type']).strip() if 'Material Type' in df.columns else ''
+        plant_type = str(row['Plant Type']).strip() if 'Plant Type' in df.columns else ''
         lot_sizing = '' if pd.isna(row['Lot Sizing Procedure']) else str(row['Lot Sizing Procedure']).strip()
         material = str(row['Material']).strip() if 'Material' in df.columns else ''
 
@@ -803,19 +803,19 @@ def validar_lot_sizing_procedure(df, resultados):
         if lot_sizing == '':
             erros_linha.append('Mandatory field blank')
         else:
-            # 2) Exceção HALB + token 14K450 → aceita ZK ou EX
-            is_halb_14k450 = (material_type == 'HALB' and material_has_14k450_token(material))
+            # 2) Exceção MP + token 14K450 → aceita ZK ou EX
+            is_halb_14k450 = (plant_type == 'MP' and material_has_14k450_token(material))
             if is_halb_14k450:
                 if lot_sizing not in {'EX', 'ZK'}:
                     erros_linha.append(
-                        f"Invalid value: '{lot_sizing}' (for HALB with Material containing token '14K450', allowed: ZK or EX)"
+                        f"Invalid value: '{lot_sizing}' (for Plant Type MP with Material containing token '14K450', allowed: ZK or EX)"
                     )
             else:
                 # 3) Regras padrão
-                if lot_sizing == 'EX' and material_type not in ['HALB', 'FERT']:
-                    erros_linha.append(f"Value 'EX' only allowed for HALB or FERT (current: '{material_type}')")
-                if lot_sizing == 'ZK' and material_type != 'ROH':
-                    erros_linha.append(f"Value 'ZK' only allowed for ROH (current: '{material_type}')")
+                if lot_sizing == 'EX' and plant_type not in ['FP', 'MP']:
+                    erros_linha.append(f"Value 'EX' only allowed for Plant Type FP or MP (current: '{plant_type}')")
+                if lot_sizing == 'ZK' and plant_type != 'PP':
+                    erros_linha.append(f"Value 'ZK' only allowed for Plant Type PP or exception (current: '{plant_type}')")
 
         if erros_linha:
             resultados.append({
@@ -939,46 +939,23 @@ def validar_period_type(df, resultados):
             })
             
 def validar_planning_calendar(df, resultados):
-    """
-    Validação de Planning Calendar quando PSMS ∈ [10, 70], considerando:
-    - Plant (PT01 vs PT02)
-    - Material Type (FERT, HALB, ROH)
-    - Materiais cujo nome contenha '14K450' (em qualquer posição, case-insensitive)
-
-    Regras (PSMS ∈ [10,70]):
-      PT01:
-        - FERT -> 'PT1'
-        - HALB -> 'PT1'
-        - ROH  -> não vazio e != 'PT2'
-        - Material com '14K450' -> não vazio e != 'PT2'
-      PT02:
-        - FERT -> 'PT2'
-        - HALB -> 'PT2'
-        - ROH  -> não vazio (qualquer valor presente)
-        - Material com '14K450' -> não vazio (qualquer valor presente)
-    """
     import pandas as pd
 
-    required = {'Material', 'Plant', 'Material Type', 'Planning Calendar', 'Plant Specific Material Status'}
+    required = {'Material', 'Plant', 'Plant Type', 'Planning Calendar', 'Plant Specific Material Status'}
     if not required.issubset(df.columns):
         missing = [c for c in required if c not in df.columns]
         print(f"⚠️ Missing columns for Planning Calendar validation: {missing}")
         return
 
     def parse_status(val):
-        """Converte PSMS para inteiro (aceita '10', '10.0'). Retorna None se vazio/NaN ou inválido."""
         if pd.isna(val) or str(val).strip() == '':
             return None
-        s = str(val).strip()
         try:
-            return int(float(s))
-        except Exception:
+            return int(float(str(val).strip()))
+        except:
             return None
 
     def contains_14k450(material):
-        """True se o nome do material contiver '14K450' (case-insensitive), em qualquer posição."""
-        if material is None:
-            return False
         return '14K450' in str(material).upper()
 
     for idx, row in df.iterrows():
@@ -986,9 +963,11 @@ def validar_planning_calendar(df, resultados):
 
         material = str(row.get('Material', '')).strip()
         plant    = str(row.get('Plant', '')).strip()
-        mt       = str(row.get('Material Type', '')).strip().upper()
+        mt       = str(row.get('Plant Type', '')).strip().upper()
+
         pc_raw   = row.get('Planning Calendar', None)
         pc       = '' if pd.isna(pc_raw) else str(pc_raw).strip().upper()
+
         psms     = parse_status(row.get('Plant Specific Material Status', None))
         has14k   = contains_14k450(material)
 
@@ -996,75 +975,65 @@ def validar_planning_calendar(df, resultados):
         if psms is None or not (10 <= psms <= 70):
             continue
 
-        # Regras por Plant (sem override para PSMS=25)
-        if plant == 'PT01':
-            if mt == 'FERT':
-                if pc != 'PT1':
-                    erros.append(f"For Plant PT01 and Material Type 'FERT', Planning Calendar must be 'PT1' (Current: '{pc_raw}')")
-            elif mt == 'HALB':
-                if pc != 'PT1':
-                    erros.append(f"For Plant PT01 and Material Type 'HALB', Planning Calendar must be 'PT1' (Current: '{pc_raw}')")
-            elif mt == 'ROH':
-                if pc == '':
-                    erros.append("For Plant PT01 and Material Type 'ROH', Planning Calendar must not be empty")
-                elif pc == 'PT2':
-                    erros.append("For Plant PT01 and Material Type 'ROH', Planning Calendar must not be 'PT2'")
+        # --------------------------------------------------------------
+        # OVERRIDE PARA (MP + 14K450)
+        # --------------------------------------------------------------
+        if has14k and mt == 'MP':
+            if pc == '':
+                erros.append("For Plant Type 'MP' with material containing '14K450', Planning Calendar must not be empty")
+            elif pc == 'PT2':
+                erros.append("For Plant Type 'MP' with material containing '14K450', Planning Calendar must not be 'PT2'")
 
-            # Materiais com '14K450' em PT01: não vazio e != PT2
-            if has14k:
+            if erros:
+                resultados.append({
+                    'Line': idx + 2,
+                    'Field': 'Planning Calendar',
+                    'Error': ' \n'.join(erros),
+                    'Material': material,
+                    'Plant': plant
+                })
+
+            continue  # IGNORA regras normais 100%
+
+        # --------------------------------------------------------------
+        # REGRAS NORMAIS (sem override)
+        # --------------------------------------------------------------
+        if plant == 'PT01':
+            if mt in ('FP', 'MP'):
+                if pc != 'PT1':
+                    erros.append(f"For Plant PT01 and Plant Type '{mt}', Planning Calendar must be 'PT1' (Current: '{pc_raw}')")
+
+            elif mt == 'PP':
                 if pc == '':
-                    erros.append("For Plant PT01 and Material containing '14K450', Planning Calendar must not be empty")
+                    erros.append("For Plant PT01 and Plant Type 'PP', Planning Calendar must not be empty")
                 elif pc == 'PT2':
-                    erros.append("For Plant PT01 and Material containing '14K450', Planning Calendar must not be 'PT2'")
+                    erros.append("For Plant PT01 and Plant Type 'PP', Planning Calendar must not be 'PT2'")
 
         elif plant == 'PT02':
-            if mt == 'FERT':
+            if mt in ('FP', 'MP'):
                 if pc != 'PT2':
-                    erros.append(f"For Plant PT02 and Material Type 'FERT', Planning Calendar must be 'PT2' (Current: '{pc_raw}')")
-            elif mt == 'HALB':
-                if pc != 'PT2':
-                    erros.append(f"For Plant PT02 and Material Type 'HALB', Planning Calendar must be 'PT2' (Current: '{pc_raw}')")
-            elif mt == 'ROH':
+                    erros.append(f"For Plant PT02 and Plant Type '{mt}', Planning Calendar must be 'PT2' (Current: '{pc_raw}')")
+
+            elif mt == 'PP':
                 if pc == '':
-                    erros.append("For Plant PT02 and Material Type 'ROH', Planning Calendar must not be empty")
+                    erros.append("For Plant PT02 and Plant Type 'PP', Planning Calendar must not be empty")
 
-            # Materiais com '14K450' em PT02: não vazio (qualquer valor presente é aceite)
-            if has14k and pc == '':
-                erros.append("For Plant PT02 and Material containing '14K450', Planning Calendar must not be empty")
-
-        else:
-            # Sem regra definida para outros Plants → não validar
-            pass
-
+        # Adicionar ao relatório se houver erros
         if erros:
             resultados.append({
                 'Line': idx + 2,
-                               'Field': 'Planning Calendar',
+                'Field': 'Planning Calendar',
                 'Error': ' \n'.join(erros),
                 'Material': material,
                 'Plant': plant
             })
 
 def validar_planning_time_fence(df, resultados):
-    """
-    TF semântica:
-    - Yes -> TF > 0 (qualquer positivo)
-    - No  -> TF = 0 ou vazio
-
-    Regras por Material Type:
-    - FERT -> TF > 0
-    - ROH  -> TF = 0 ou vazio
-    - HALB -> TF pode ser 0/vazio ou >0
-
-    Precedências por PSMS:
-    - PSMS = 10 -> ignora a linha (não valida TF).
-    - PSMS = 25 -> TF TEM de ser 0 (estritamente 0; vazio não é aceite aqui).
-    """
     import pandas as pd
 
-    required = {'Material', 'Plant', 'Material Type', 'Planning Time Fence'}
+    required = {'Material', 'Plant', 'MRP Type', 'Planning Time Fence'}
     if not required.issubset(df.columns):
-        print("⚠️ Columns 'Material', 'Plant', 'Material Type' or 'Planning Time Fence' not found.")
+        print("⚠️ Columns 'Material', 'Plant', 'MRP Type' or 'Planning Time Fence' not found.")
         return
 
     def parse_tf(val):
@@ -1072,7 +1041,7 @@ def validar_planning_time_fence(df, resultados):
             return None
         try:
             return float(str(val).strip())
-        except Exception:
+        except:
             return 'INVALID'
 
     def parse_status(val):
@@ -1080,47 +1049,35 @@ def validar_planning_time_fence(df, resultados):
             return None
         try:
             return int(float(str(val).strip()))
-        except Exception:
-            return None  # não precisamos de códigos não numéricos aqui
+        except:
+            return None
 
     for idx, row in df.iterrows():
         erros = []
         material = str(row.get('Material', '')).strip()
         plant    = str(row.get('Plant', '')).strip()
-        mt       = str(row.get('Material Type', '')).strip().upper()
-        tf_raw   = row.get('Planning Time Fence', None)
-        tf_val   = parse_tf(tf_raw)
+        mt       = str(row.get('MRP Type', '')).strip().upper()
+
+        tf = parse_tf(row.get('Planning Time Fence', None))
         psms_val = parse_status(row.get('Plant Specific Material Status', None))
 
-        # PSMS=10: não validar TF
+        # PSMS = 10 -> ignorar linha
         if psms_val == 10:
             continue
 
-        # Valor inválido
-        if tf_val == 'INVALID':
-            erros.append(f"Invalid value: '{tf_raw}' (should be numeric, or empty to represent 0)")
+        # Valor inválido (letras, símbolos, etc.)
+        if tf == 'INVALID':
+            erros.append("Planning Time Fence contains non-numeric value.")
         else:
-            has_tf = (tf_val is not None) and (tf_val > 0)
-            is_zero_or_empty = (tf_val is None) or (tf_val == 0)
 
-            # PSMS=25: TF TEM de ser 0 estrito (não vazio)
-            if psms_val == 25:
-                if tf_val is None:
-                    erros.append("For Status '25', Planning Time Fence must be 0 (Current: empty)")
-                elif tf_val != 0:
-                    erros.append(f"For Status '25', Planning Time Fence must be 0 (Current: '{tf_raw}')")
-            else:
-                # Regras normais por MT
-                if mt == 'FERT':
-                    if not has_tf:
-                        erros.append(f"For FERT, Planning Time Fence should be > 0 (Current: '{tf_raw}')")
-                elif mt == 'ROH':
-                    if not is_zero_or_empty:
-                        erros.append(f"For ROH, Planning Time Fence should be 0 or empty (Current: '{tf_raw}')")
-                elif mt == 'HALB':
-                    pass  # aceita ambos
-                else:
-                    pass
+            # Regras por MRP Type
+            if mt == 'PD':
+                if tf not in (None, 0):
+                    erros.append(f"For {mt}, Planning Time Fence should be empty or 0 (Current: '{tf}')")
+
+            elif mt in ('P1', 'M1'):
+                if tf is None or tf == 0:
+                    erros.append(f"For {mt}, Planning Time Fence should be > 0 (Current: '{tf}')")
 
         if erros:
             resultados.append({
@@ -1131,39 +1088,45 @@ def validar_planning_time_fence(df, resultados):
                 'Plant': plant
             })
 
+
+
 def validar_mrp_type(df, resultados, zplm_marc_df=None):
     """
-    MRP Type considerando:
+    Validação do MRP Type segundo regras finais confirmadas.
+
+    Regras:
     - TF com semântica: TF>0 (Yes) ; TF=0 ou vazio (No)
-    - HALB transfer (ZPLM MARC)
-    - PSMS (Plant Specific Material Status): precedências 10 e 25
-    - PLANT (PT01/PT02) para coerência do Planning Calendar quando PSMS=25
+    - MP & FP transfer (ZPLM MARC)
+    - PSMS (Plant Specific Material Status): precedências 10, 25, 70, 75
+    - PLANT (PT01/PT02) → coerência do Planning Calendar quando PSMS=25
 
     Precedências por Status:
-    - PSMS = 10 -> Ignora a linha (não valida nem contabiliza erros).
-    - PSMS = 25 -> MRP = ND ; TF = 0 (estritamente 0; vazio não aceite);
-                    Planning Calendar:
-                        PT01 -> 'PT1'
-                        PT02 -> 'PT2'
-    Tabela base (aplicada quando não é 10/25):
-    - FERT -> MRP = M1, TF > 0
-    - HALB transfer -> MRP ∈ {M1, P1, PD}, TF pode ser >0 ou 0/vazio
-    - HALB sem transfer -> MRP = PD, TF = 0 ou vazio
-    - ROH com TF (>0) -> MRP = P1
-    - ROH sem TF (0/vazio) -> MRP = PD
+    - PSMS = 10 → Ignora a linha (não valida nem contabiliza erros).
+    - PSMS = 25 → MRP = ND; TF = 0 ou vazio; Planning Calendar:
+                     PT01 → 'PT1'
+                     PT02 → 'PT2'
+    - PSMS ∈ {70, 75} → MRP = ND para TODOS os Plant Types (restantes regras não se aplicam)
+
+    Tabela base (aplicada apenas quando não é 10/25/70/75):
+    - Plant Type FP → MRP = M1, TF > 0
+    - Plant Type MP & FP transfer → MRP ∈ {M1, P1, PD}, TF pode ser >0 ou 0/vazio
+    - Plant Type MP sem transfer → MRP = PD, TF = 0 ou vazio
+    - Plant Type PP com TF (>0) → MRP = P1
+    - Plant Type PP sem TF (0/vazio) → MRP = PD
     """
+
     import pandas as pd
 
-    needed = {'MRP Type', 'Material Type', 'Planning Time Fence', 'Plant'}
+    needed = {'MRP Type', 'Plant Type', 'Planning Time Fence', 'Plant'}
     if not needed.issubset(df.columns):
-        # print("⚠️ Columns 'MRP Type', 'Material Type', 'Planning Time Fence', 'Plant' not found.")
         return
 
     has_psms = 'Plant Specific Material Status' in df.columns
     has_pc = 'Planning Calendar' in df.columns
 
-    valores_permitidos = ['M1', 'PD', 'P1', 'ND', 'V1']
+    valores_permitidos = {'M1', 'PD', 'P1', 'ND', 'V1'}
 
+    # Mapa de transferências (FP ou MP)
     transfer_map = {}
     if zplm_marc_df is not None:
         try:
@@ -1172,11 +1135,6 @@ def validar_mrp_type(df, resultados, zplm_marc_df=None):
             transfer_map = {}
 
     def parse_tf(val):
-        """
-        None se vazio/NaN (interpreta como No)
-        float se numérico (permite >0 como Yes; 0 como No)
-        'INVALID' se não numérico
-        """
         if pd.isna(val) or str(val).strip() == '':
             return None
         try:
@@ -1185,8 +1143,7 @@ def validar_mrp_type(df, resultados, zplm_marc_df=None):
             return 'INVALID'
 
     def parse_status(val):
-        """PSMS int (aceita '10', '10.0'); None se vazio/NaN/inválido."""
-        if val is None or (isinstance(val, float) and pd.isna(val)) or str(val).strip() == '':
+        if pd.isna(val) or str(val).strip() == '':
             return None
         try:
             return int(float(str(val).strip()))
@@ -1194,129 +1151,143 @@ def validar_mrp_type(df, resultados, zplm_marc_df=None):
             return None
 
     for idx, row in df.iterrows():
-        erros_linha = []
+        erros = []
 
-        mrp_type = '' if pd.isna(row['MRP Type']) else str(row['MRP Type']).strip().upper()
-        material_type = '' if pd.isna(row['Material Type']) else str(row['Material Type']).strip().upper()
-        plant = str(row['Plant']).strip() if not pd.isna(row['Plant']) else ''
+        mrp = '' if pd.isna(row['MRP Type']) else str(row['MRP Type']).strip().upper()
+        pt  = '' if pd.isna(row['Plant Type']) else str(row['Plant Type']).strip().upper()
+        plant = '' if pd.isna(row['Plant']) else str(row['Plant']).strip()
 
         tf_raw = row.get('Planning Time Fence', None)
         tf_val = parse_tf(tf_raw)
 
-        psms_val = parse_status(row.get('Plant Specific Material Status', None)) if has_psms else None
-        planning_calendar = '' if (not has_pc or pd.isna(row.get('Planning Calendar', None))) else str(row.get('Planning Calendar')).strip().upper()
+        psms = parse_status(row.get('Plant Specific Material Status', None)) if has_psms else None
+        pc = '' if (not has_pc or pd.isna(row.get('Planning Calendar'))) else str(row['Planning Calendar']).strip().upper()
 
-        material = str(row['Material']).strip() if 'Material' in df.columns else ''
+        material = str(row.get('Material', '')).strip()
         is_transfer = transfer_map.get((material, plant), False)
 
-        # ——— Precedências por Status ———
-        # PSMS = 10: ignorar completamente (não adicionar erros para esta linha)
-        if psms_val == 10:
+        # =====================================================
+        # PSMS = 10 → ignorar linha
+        # =====================================================
+        if psms == 10:
             continue
 
-        # PSMS = 25: regras obrigatórias
-        if psms_val == 25:
-            # 1) MRP Type obrigatoriamente 'ND'
-            if mrp_type == '':
-                erros_linha.append("Mandatory field blank (MRP Type)")
-            elif mrp_type != 'ND':
-                erros_linha.append(f"For Plant Specific Material Status '25', MRP Type must be 'ND' (Current: '{mrp_type}')")
+        # =====================================================
+        # PSMS = 25 → regras obrigatórias (ND + TF=0/empty + PC coerente)
+        # =====================================================
+        if psms == 25:
+            # 1) MRP deve ser ND
+            if mrp != 'ND':
+                if mrp == '':
+                    erros.append("Mandatory field blank (MRP Type); For Part Status = 25 it must be 'ND'")
+                else:
+                    erros.append(f"For Part Status = 25, MRP Type must be 'ND' (Current: '{mrp}')")
 
-            # 2) TF obrigatoriamente = 0 (vazio não aceite; tem de ser numericamente 0)
-            if tf_val is None:
-                erros_linha.append("For Plant Specific Material Status '25', Planning Time Fence must be 0 (Current: empty)")
-            elif tf_val == 'INVALID':
-                erros_linha.append("Planning Time Fence invalid or not numeric; for Status '25' it must be 0")
-            elif tf_val != 0:
-                erros_linha.append(f"For Plant Specific Material Status '25', Planning Time Fence must be 0 (Current: '{tf_raw}')")
+            # 2) TF deve ser 0 ou vazio
+            if tf_val == 'INVALID':
+                erros.append("Planning Time Fence invalid for Part Status = 25 (must be 0 or empty)")
+            elif tf_val not in (None, 0):
+                erros.append(f"For Part Status = 25, Planning Time Fence must be 0 or empty (Current: '{tf_raw}')")
 
-            # 3) Planning Calendar coerente com a Plant
+            # 3) Planning Calendar coerente
             if has_pc:
-                if plant == 'PT01':
-                    if planning_calendar != 'PT1':
-                        erros_linha.append(
-                            f"For Status '25' and Plant 'PT01', Planning Calendar must be 'PT1' (Current: '{planning_calendar}')"
-                        )
-                elif plant == 'PT02':
-                    if planning_calendar != 'PT2':
-                        erros_linha.append(
-                            f"For Status '25' and Plant 'PT02', Planning Calendar must be 'PT2' (Current: '{planning_calendar}')"
-                        )
-                # Outras Plants: não impomos Calendar aqui
+                if plant == 'PT01' and pc != 'PT1':
+                    erros.append(f"For Part Status = 25 & PT01, Planning Calendar must be 'PT1' (Current: '{pc}')")
+                elif plant == 'PT02' and pc != 'PT2':
+                    erros.append(f"For Part Status = 25 & PT02, Planning Calendar must be 'PT2' (Current: '{pc}')")
 
-            if erros_linha:
+            if erros:
                 resultados.append({
                     'Line': idx + 2,
                     'Field': 'MRP Type',
-                    'Error': ' \n'.join(erros_linha),
+                    'Error': ' \n'.join(erros),
                     'Material': material,
                     'Plant': plant
                 })
-            # Short-circuit: não aplicar mais regras desta linha
-            continue
+            continue  # não aplicar regras base
 
-        # ——— Validações base (fora das precedências 10/25) ———
-        # Campo obrigatório + domínio
-        if mrp_type == '':
-            erros_linha.append('Mandatory field blank')
-        else:
-            if mrp_type not in valores_permitidos:
-                erros_linha.append(f"Invalid value: '{mrp_type}' (allowed: {', '.join(valores_permitidos)})")
-
-        # TF inválido (texto não numérico) → semântica não aplicável
-        if tf_val == 'INVALID':
-            erros_linha.append("Planning Time Fence invalid or not numeric; MRP rule depends on TF > 0 / TF = 0 or empty")
-        else:
-            # Interpretação do TF (fora das precedências):
-            has_tf = (tf_val is not None) and (tf_val > 0)   # Yes
-            no_tf = (tf_val is None) or (tf_val == 0)        # No (0 ou vazio)
-
-            # ——— Regras por Material Type ———
-            if material_type == 'FERT':
-                # M1 e TF > 0
-                if mrp_type != 'M1':
-                    erros_linha.append(f"For Plant {plant} & Material Type 'FERT', MRP Type should be 'M1' (Current: '{mrp_type}')")
-                if not has_tf:
-                    erros_linha.append(f"For Plant {plant} & Material Type 'FERT', Planning Time Fence should be > 0 (Current: '{tf_raw}')")
-
-            elif material_type == 'HALB':
-                if is_transfer:
-                    # M1/P1/PD ; TF livre (>0 ou 0/vazio)
-                    if mrp_type not in {'M1', 'P1', 'PD'}:
-                        erros_linha.append(
-                            f"For Plant {plant} & HALB with Material Transfer, allowed MRP Type: M1, P1 or PD (Current: '{mrp_type}')"
-                        )
+        # =====================================================
+        # PSMS = 70 ou 75 → somente MRP = ND (resto não aplica)
+        # =====================================================
+        if psms in (70, 75):
+            if mrp != 'ND':
+                if mrp == '':
+                    erros.append("Mandatory field blank (MRP Type); for Part Status = 70/75 it must be 'ND'")
                 else:
-                    # Sem transfer: PD ; TF = 0/vazio
-                    if mrp_type != 'PD':
-                        erros_linha.append(
-                            f"For Plant {plant} & HALB without Material Transfer, MRP Type should be 'PD' (Current: '{mrp_type}')"
-                        )
-                    if not no_tf:
-                        erros_linha.append(
-                            f"For Plant {plant} & HALB without Material Transfer, Planning Time Fence should be 0 or empty (Current: '{tf_raw}')"
-                        )
+                    erros.append(f"For Part Status = {psms}, MRP Type must be 'ND' (Current: '{mrp}')")
 
-            elif material_type == 'ROH':
+            if erros:
+                resultados.append({
+                    'Line': idx + 2,
+                    'Field': 'MRP Type',
+                    'Error': ' \n'.join(erros),
+                    'Material': material,
+                    'Plant': plant
+                })
+            continue  # não aplicar regras base
+
+        # =====================================================
+        # Validações base (apenas quando não é PSMS 10/25/70/75)
+        # =====================================================
+
+        # MRP obrigatório e dentro do domínio
+        if mrp == '':
+            erros.append("Mandatory field blank (MRP Type)")
+        elif mrp not in valores_permitidos:
+            erros.append(f"Invalid MRP Type: '{mrp}'")
+
+        # TF inválido
+        if tf_val == 'INVALID':
+            erros.append("Planning Time Fence invalid (must be numeric)")
+        else:
+            has_tf = (tf_val is not None) and (tf_val > 0)
+            no_tf  = (tf_val is None) or (tf_val == 0)
+
+            # -------------------------------------------------
+            # FP NORMAL (não transfer)
+            # -------------------------------------------------
+            if pt == 'FP' and not is_transfer:
+                if mrp != 'M1':
+                    erros.append(f"For FP, MRP must be 'M1' (Current: '{mrp}')")
+                if not has_tf:
+                    erros.append(f"For FP, Time Fence must be > 0 (Current: '{tf_raw}')")
+
+            # -------------------------------------------------
+            # FP TRANSFER + MP TRANSFER
+            # -------------------------------------------------
+            elif pt in {'FP', 'MP'} and is_transfer:
+                if mrp not in {'M1', 'P1', 'PD'}:
+                    erros.append(
+                        f"For {pt} with transfer, allowed MRP Types: M1, P1, PD (Current: '{mrp}')"
+                    )
+                # TF livre → sem validação
+
+            # -------------------------------------------------
+            # MP SEM TRANSFER
+            # -------------------------------------------------
+            elif pt == 'MP' and not is_transfer:
+                if mrp != 'PD':
+                    erros.append(f"For MP without transfer, MRP must be 'PD' (Current: '{mrp}')")
+                if not no_tf:
+                    erros.append(f"For MP without transfer, Time Fence must be 0 or empty (Current: '{tf_raw}')")
+
+            # -------------------------------------------------
+            # PP
+            # -------------------------------------------------
+            elif pt == 'PP':
                 if has_tf:
-                    # Com TF (>0): P1
-                    if mrp_type != 'P1':
-                        erros_linha.append(
-                            f"For Plant {plant} & ROH with Time Fence (>0), MRP Type should be 'P1' (Current: '{mrp_type}')"
-                        )
-                elif no_tf:
-                    # Sem TF (0/vazio): PD
-                    if mrp_type != 'PD':
-                        erros_linha.append(
-                            f"For Plant {plant} & ROH without Time Fence (0 or empty), MRP Type should be 'PD' (Current: '{mrp_type}')"
-                        )
-                # Outros MTs: sem regra específica
+                    if mrp != 'P1':
+                        erros.append(f"For PP with Time Fence > 0, MRP must be 'P1' (Current: '{mrp}')")
+                else:
+                    if mrp != 'PD':
+                        erros.append(f"For PP with Time Fence = 0/empty, MRP must be 'PD' (Current: '{mrp}')")
 
-        if erros_linha:
+        # Final → guardar erros
+        if erros:
             resultados.append({
                 'Line': idx + 2,
                 'Field': 'MRP Type',
-                'Error': ' \n'.join(erros_linha),
+                'Error': ' \n'.join(erros),
                 'Material': material,
                 'Plant': plant
             })
@@ -1533,17 +1504,17 @@ def validar_source_list_required(df, resultados):
             })
 
 def validar_storage_location(df, resultados):
-    if 'Plant' not in df.columns or 'Storage Location' not in df.columns:
+    if 'Plant' not in df.columns or 'Issue Storage Location' not in df.columns:
         print("⚠️ Columns 'Plant' or 'Storage Location' not found.")
         return
 
     for idx, row in df.iterrows():
         erros_linha = []
         plant = str(row['Plant']).strip()
-        storage_location = str(row['Storage Location']).strip()
+        storage_location = str(row['Issue Storage Location']).strip()
 
         # Field obrigatório
-        if pd.isna(row['Storage Location']) or storage_location == '':
+        if pd.isna(row['Issue Storage Location']) or storage_location == '':
             erros_linha.append('Mandatory field blank')
         else:
             # Regras específicas
@@ -1555,7 +1526,7 @@ def validar_storage_location(df, resultados):
         if erros_linha:
             resultados.append({
                 'Line': idx + 2,
-                'Field': 'Storage Location',
+                'Field': 'Issue Storage Location',
                 'Error': ' | '.join(erros_linha),
                 'Material': str(row['Material']).strip() if 'Material' in df.columns else '',
                 'Plant': str(row['Plant']).strip() if 'Plant' in df.columns else ''
@@ -2440,7 +2411,7 @@ def postprocess_with_views_roles_and_classification(
             coverage_data.append({
                 'View': letter,
                 'View_Description': view_to_desc.get(letter, ''),
-                'Materiais without View': count,
+                'Materiais without Active View': count,
                 'Link': f'=HYPERLINK("#Missing_{letter}!A1","Check Details")'
             })
     coverage_df = pd.DataFrame(coverage_data)

@@ -1,6 +1,7 @@
 # app.py
 import streamlit as st
 import pandas as pd
+import re
 import io
 import os
 
@@ -25,6 +26,7 @@ from sap_validation_engine import (
     build_mrp_log_payload
 )
 
+from datetime import datetime
 # ==========================================================
 # CSS GLOBAL INJECTION
 # ==========================================================
@@ -58,9 +60,6 @@ inject_css("assets/styles.css")
 # ==========================================================
 # HELPERS PARA MODO MANUAL (Progress) – DETEÇÃO DE "Atual" e "Anterior"
 # ==========================================================
-import re
-from datetime import datetime
-
 _TS_PATTERN = re.compile(r'(\d{8}_\d{6})')  # ex.: 20260114_085435
 
 def extract_timestamp_from_name(filename: str) -> datetime | None:
@@ -314,12 +313,15 @@ def required_keys_for_page(page_choice: str) -> list[str]:
     if page_choice == "🧮 MRP Validation":
         return ["MARA.xlsx", "MARC.xlsx", "ZPLM MARA.xlsx"]
 
-    if page_choice == "🚗 PLM Workflow (A & TL)":
+    if page_choice == "Automotive + Timing Letter (A & TL)":
         return [
             "PLM Automotive Validation.xlsx",
             "PLM TimingLetter Validation.xlsx",
             "Timing Letters.xlsx",
         ]
+    if page_choice == "Change Cockpit":
+            # Ajusta quando definires os ficheiros desta página
+            return []
 
     if page_choice == "📈 SAP Material Validation Progress":
         return [
@@ -361,19 +363,43 @@ def display_to_internal_key(display_name: str):
     return DISPLAY_TO_INTERNAL.get(display_name.strip().lower())
 
 # ==========================================================
-# SIDEBAR MENU
+# SIDEBAR MENU + SUBMENU
 # ==========================================================
 st.sidebar.header("Report Selection")
-choice = st.sidebar.radio(
-    "Choose your Report:",
+
+main_choice = st.sidebar.radio(
+    "",
     [
         "📦 SAP Material Validation",
-        "🚗 PLM Workflow (A & TL)",
+        "🚗 PLM Workflow",
         "🧮 MRP Validation",
         "📈 SAP Material Validation Progress"
-    ],
-    index=0
+    ]
 )
+
+sub_choice = None
+if main_choice == "🚗 PLM Workflow":
+
+    # Título visual
+    st.sidebar.markdown(
+        "<div class='sidebar-submenu-title'>▼ Options</div>",
+        unsafe_allow_html=True
+    )
+
+    # Container indentado (submenu)
+    with st.sidebar.container():
+        st.sidebar.markdown("<div class='sidebar-submenu-wrap'>", unsafe_allow_html=True)
+
+        sub_choice = st.sidebar.radio(
+            "",
+            [
+                "Automotive + Timing Letter (A & TL)",
+                "Change Cockpit"
+            ],
+            key="submenu_plm"
+        )
+
+        st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
 # ==========================================================
 # AUXILIAR DE LEITURA DE FOLHAS
@@ -415,7 +441,7 @@ def identity_input(label: str, key: str):
 # PAGE 1
 # SAP MATERIAL VALIDATION (WIZARD + PERSISTÊNCIA DE UPLOADS)
 # ======================================================================================
-if choice == "📦 SAP Material Validation":
+if main_choice == "📦 SAP Material Validation":
 
     import os
     import pandas as pd
@@ -513,7 +539,7 @@ if choice == "📦 SAP Material Validation":
         # Mostrar deteção do upload atual
         
         with st.expander("🔍 Files identified (Current upload)"):
-            for display_name in required_keys_for_page(choice):
+            for display_name in required_keys_for_page(main_choice):
                 internal = display_to_internal_key(display_name)
                 f = files.get(internal) if internal else None
                 st.write(f"**{display_name}** → {getattr(f, 'name', '—')}")
@@ -749,9 +775,9 @@ if choice == "📦 SAP Material Validation":
 
 
 # ==========================================================
-# PAGE 2 — PLM WORKFLOW (ATL) — PREMIUM WIZARD
+# PAGE 2 — SUBMENU - PLM ATL — PREMIUM WIZARD
 # ==========================================================
-elif choice == "🚗 PLM Workflow (A & TL)":
+if main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing Letter (A & TL)":
 
     st.subheader("🚗 PLM Workflow (ATL)")
 
@@ -849,7 +875,7 @@ elif choice == "🚗 PLM Workflow (A & TL)":
             persist_uploaded_mapping(files, state_key="atl_files_persisted")
    
         with st.expander("🔍 Files identified (Current upload)"):
-            for display_name in required_keys_for_page(choice):
+            for display_name in required_keys_for_page(sub_choice):
                 internal = display_to_internal_key(display_name)
                 f = files.get(internal) if internal else None
                 st.write(f"**{display_name}** → {getattr(f, 'name', '—')}")
@@ -1032,11 +1058,109 @@ elif choice == "🚗 PLM Workflow (A & TL)":
                 st.session_state.atl_step = 1
                 st.rerun()
 
+# ==========================================================
+# PAGE 2 — SUBMENU - PLM CHANGE COCKPIT — PREMIUM WIZARD
+# ==========================================================
+if main_choice == "🚗 PLM Workflow" and (sub_choice == "Change Cockpit"):
+    # --- NOVA PÁGINA: Change Cockpit ---
+    st.subheader("🛠️ Change Cockpit (In Progess...)")
+    inject_css("assets/styles.css")
+
+    # Identidade (consistente com as restantes páginas)
+    effective_executor = identity_input("Who performs?", "cc_exec")
+    save_history = st.checkbox("Save this execution in history", value=True)
+
+    # Estado inicial do wizard (opcional, se quiseres mesmo ter 4 passos iguais)
+    if "cc_step" not in st.session_state:
+        st.session_state.cc_step = 1
+
+    # Wizard visual (exemplo; copiares o padrão que usas nas outras páginas)
+    def render_cc_wizard(current_step: int):
+        steps = ["Files", "Scope", "Validate", "Results"]
+        cols = st.columns(len(steps))
+        for idx, col in enumerate(cols, start=1):
+            with col:
+                klass = "active" if current_step == idx else ("done" if current_step > idx else "pending")
+                st.markdown(
+                    f"""
+<div class="wizard-step {klass}">
+  <div class="step-index">{idx}</div>
+  <div class="step-label">{steps[idx-1]}</div>
+</div>
+""",
+                    unsafe_allow_html=True,
+                )
+        completion = (current_step - 1) / (len(steps) - 1)
+        st.markdown(f'<div class="wizard-progress"><div style="width:{completion*100:.0f}%"></div></div>', unsafe_allow_html=True)
+
+    render_cc_wizard(st.session_state.cc_step)
+
+    # PASSO 1 — Ficheiros (placeholder)
+    if st.session_state.cc_step == 1:
+        st.markdown("### 📂 Step 1 — Load Files")
+        uploads = st.file_uploader(
+            "Drop the Change Cockpit input(s) here",
+            type=["xlsx", "csv"],
+            accept_multiple_files=True,
+            key="cc_multi_uploader"
+        )
+        # TODO: classificar ficheiros quando definires o modelo CC
+        can_continue = True  # troca quando soubermos os files obrigatórios
+        c1, c2 = st.columns([1, 1])
+        with c2:
+            if st.button("➡️ Continue to Scope", disabled=not can_continue, use_container_width=True):
+                st.session_state.cc_step = 2
+                st.rerun()
+
+    # PASSO 2 — Âmbito (placeholder)
+    if st.session_state.cc_step == 2:
+        st.markdown("### 🌍 Step 2 — Select Scope")
+        cc_scope = st.radio("Scope:", ["All", "Only PT01", "Only PT02"], horizontal=True)
+        st.session_state.cc_scope = cc_scope
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("⬅️ Back (Files)", use_container_width=True):
+                st.session_state.cc_step = 1
+                st.rerun()
+        with c2:
+            if st.button("➡️ Continue to Validation", use_container_width=True):
+                st.session_state.cc_step = 3
+                st.rerun()
+
+    # PASSO 3 — Validar/Executar (placeholder)
+    if st.session_state.cc_step == 3:
+        st.markdown("### ⚙️ Step 3 — Run Change Cockpit")
+        st.info("Define here the processing for Change Cockpit.")
+        if st.button("▶️ Run Change Cockpit", type="primary"):
+            with st.spinner("Running Change Cockpit..."):
+                # TODO: executar a lógica CC e preparar dataframes/Excel
+                st.session_state.cc_result_df = None
+                st.session_state.cc_excel = None
+            st.session_state.cc_step = 4
+            st.rerun()
+
+    # PASSO 4 — Resultados (placeholder)
+    if st.session_state.cc_step == 4:
+        st.markdown("### 📈 Step 4 — Results")
+        st.success("Results placeholder. Plug your tables and dashboards here.")
+
+        # Exemplo de botões finais
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("🔄 New Run", use_container_width=True):
+                st.session_state.cc_step = 1
+                st.rerun()
+        with c2:
+            if st.button("🧹 Clear & Start Over", use_container_width=True):
+                for k in ["cc_result_df", "cc_excel"]:
+                    st.session_state.pop(k, None)
+                st.session_state.cc_step = 1
+                st.rerun()
 
 # ==========================================================
 # PAGE 3 — MRP VALIDATION — PREMIUM WIZARD
 # ==========================================================
-elif choice == "🧮 MRP Validation":
+elif main_choice == "🧮 MRP Validation":
 
     st.subheader("🧮 MRP Validation")
 
@@ -1134,7 +1258,7 @@ elif choice == "🧮 MRP Validation":
             persist_uploaded_mapping(files, state_key="mrp_files_persisted")
 
         with st.expander("🔍 Files identified (Current Upload)"):
-            for display_name in required_keys_for_page(choice):
+            for display_name in required_keys_for_page(main_choice):
                 internal = display_to_internal_key(display_name)
                 f = files.get(internal) if internal else None
                 st.write(f"**{display_name}** → {getattr(f, 'name', '—')}")
@@ -1353,7 +1477,7 @@ elif choice == "🧮 MRP Validation":
 # ==========================================================
 # PAGE 4 — SAP MATERIAL VALIDATION PROGRESS — PREMIUM WIZARD
 # ==========================================================
-elif choice == "📈 SAP Material Validation Progress":
+elif main_choice == "📈 SAP Material Validation Progress":
 
     st.subheader("📈 SAP Material Validation Progress")
 
@@ -1472,7 +1596,7 @@ elif choice == "📈 SAP Material Validation Progress":
             curr_file, prev_file, notes = pick_current_previous_from_uploads(uploads or [])
             
             with st.expander("🔍 Files identified (Current upload)"):
-                for display_name in required_keys_for_page(choice):
+                for display_name in required_keys_for_page(main_choice):
                     internal = display_to_internal_key(display_name)
                     f = curr_file if internal == "current" else prev_file if internal == "previous" else None
                     st.write(f"**{display_name}** → {getattr(f, 'name', '—')}")

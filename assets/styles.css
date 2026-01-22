@@ -419,3 +419,57 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:f
   color: var(--app-fg) !important;
   font-weight: 700 !important;
 }
+
+
+/* ========================================================================== */
+/*  SUBMENU (Dropdown embutido logo abaixo do item principal)                 */
+/* ========================================================================== */
+
+/* Container que empurra o submenu para dentro (indentação) */
+.sidebar-submenu-wrap {
+    margin-top: -12px !important;
+    margin-left: 32px !important;
+    padding-left: 8px !important;
+    border-left: 2px solid var(--menu-border) !important;
+}
+
+/* Label "▼ Options" que fica colado ao item principal */
+.sidebar-submenu-title {
+    font-size: 14px !important;
+    font-weight: 700 !important;
+    color: var(--menu-text-muted) !important;
+    margin: 4px 0 -4px 6px !important;
+    cursor: default;
+}
+
+/* Ajustar os radios do submenu para ficarem menores e mais “internos” */
+.sidebar-submenu-wrap .stRadio > div[role="radiogroup"] > label {
+    background-color: var(--menu-item-bg) !important;
+    border: 1px solid var(--menu-border) !important;
+    border-radius: 10px;
+    padding: 10px 12px !important;
+    margin-bottom: 6px;
+    font-size: 14px !important;
+    transition: all .20s ease;
+}
+
+/* Hover suave */
+.sidebar-submenu-wrap .stRadio > div[role="radiogroup"] > label:hover {
+    background-color: var(--menu-item-hover) !important;
+    transform: translateX(4px);
+}
+
+/* Active (selecionado) */
+.sidebar-submenu-wrap .stRadio > div[role="radiogroup"] > label:has(input:checked) {
+    background-color: var(--menu-item-active) !important;
+    border-color: var(--menu-radio) !important;
+    box-shadow: 0 0 8px var(--glow);
+    transform: translateX(3px) scale(1.01);
+}
+
+/* Reduz o tamanho da bolinha do radio no submenu */
+.sidebar-submenu-wrap .stRadio > div[role="radiogroup"] > label > div:first-child {
+    width: 14px !important;
+    height: 14px !important;
+    border-width: 2px !important;
+}
