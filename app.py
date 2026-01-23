@@ -332,6 +332,23 @@ def required_keys_for_page(page_choice: str) -> list[str]:
     return []
 
 # ==========================================================
+# função de estilização de erros (DataFrame)
+# ==========================================================
+def colorize_errors(df):
+    def highlight_row(row):
+        error_text = str(row.get("Error", "")).lower()
+
+        if "mandatory" in error_text or "obrigatório" in error_text:
+            return ['background-color: #ffcccc'] * len(row)  # red light
+        if "invalid" in error_text or "inválido" in error_text:
+            return ['background-color: #ffe5b4'] * len(row)  # orange
+        if "view" in error_text and "missing" in error_text:
+            return ['background-color: #fff7a8'] * len(row)  # yellow
+        return [''] * len(row)
+
+    return df.style.apply(highlight_row, axis=1)
+
+# ==========================================================
 # Nomes bonitos para exibir no Expander
 # ==========================================================
 LABELS_PT = {
@@ -560,7 +577,7 @@ if main_choice == "📦 SAP Material Validation":
 
         c1, c2 = st.columns([1,1])
         with c2:
-            if st.button("➡️ Continue to Scope", disabled=disabled, use_container_width=True):
+            if st.button("➡️ Continue to Scope", disabled=disabled, width='stretch'):
                 st.session_state.sap_step = 2
                 st.rerun()
 
@@ -596,11 +613,11 @@ if main_choice == "📦 SAP Material Validation":
         # Botões
         c1, c2 = st.columns([1,1])
         with c1:
-            if st.button("⬅️ Back (Files)", use_container_width=True):
+            if st.button("⬅️ Back (Files)", width='stretch'):
                 st.session_state.sap_step = 1
                 st.rerun()
         with c2:
-            if st.button("➡️ Continue to Validation", use_container_width=True):
+            if st.button("➡️ Continue to Validation", width='stretch'):
                 st.session_state.sap_step = 3
                 st.rerun()
 
@@ -633,21 +650,28 @@ if main_choice == "📦 SAP Material Validation":
                 st.error(f"The sheet 'SAPUI5 Export' does not exist. Sheets found: {sheets}")
                 st.stop()
 
+            progress_bar = st.progress(0, text="Initializing validation...")
+
+            def update_progress(percent: int, message: str = ""):
+                progress_bar.progress(percent, text=message)
+
             from sap_validation_engine import run_full_validation
 
             with st.spinner("Validating materials..."):
 
                 # Execução para visualização (display)
+                
                 excel_display, errors_df, summary_df = run_full_validation(
                     sap_file=sap_file,
                     mara_file=mara_file,
                     marc_file=marc_file,
                     mvke_file=mvke_file,
+                    qmat_file=qmat_file,
                     zplm_marc_file=zplm_marc,
                     zplm_mara_file=zplm_mara,
-                    qmat_file=qmat_file,
                     previous_report=None,
-                    plant_filter=plant_filter_display
+                    plant_filter=plant_filter_display,
+                    progress_callback=update_progress
                 )
 
                 # Execução para exportação (se necessário)
@@ -657,9 +681,9 @@ if main_choice == "📦 SAP Material Validation":
                         mara_file=mara_file,
                         marc_file=marc_file,
                         mvke_file=mvke_file,
+                        qmat_file=qmat_file,
                         zplm_marc_file=zplm_marc,
                         zplm_mara_file=zplm_mara,
-                        qmat_file=qmat_file,
                         previous_report=None,
                         plant_filter=plant_filter_export
                     )
@@ -724,10 +748,10 @@ if main_choice == "📦 SAP Material Validation":
 
         # Tabelas
         st.header("All Errors")
-        st.dataframe(errors_df, use_container_width=True)
+        st.dataframe(errors_df, width='stretch')
 
         st.header("Summary")
-        st.dataframe(summary_df, use_container_width=True)
+        st.dataframe(summary_df, width='stretch')
 
         # Dashboards
         st.markdown("## 📈 Dashboard — SAP Material Validation")
@@ -756,19 +780,19 @@ if main_choice == "📦 SAP Material Validation":
                     }
                     for log in logs
                 ])
-                st.dataframe(hist_df, use_container_width=True)
+                st.dataframe(hist_df, width='stretch')
             else:
                 st.write("No history.")
 
         # Nova execução
         c1, c2 = st.columns([1,1])
         with c1:
-            if st.button("🔁 New Validation", use_container_width=True):
+            if st.button("🔁 New Validation", width='stretch'):
                 # Opcional: manter uploads persistidos ou limpar
                 st.session_state.sap_step = 1
                 st.rerun()
         with c2:
-            if st.button("🧹 Clear persisted uploads and start over", use_container_width=True):
+            if st.button("🧹 Clear persisted uploads and start over", width='stretch'):
                 st.session_state["sap_files_persisted"] = {}
                 st.session_state.sap_step = 1
                 st.rerun()
@@ -893,7 +917,7 @@ if main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing Let
 
         c1, c2 = st.columns([1, 1])
         with c2:
-            if st.button("➡️ Continue to Scope", disabled=disabled, use_container_width=True):
+            if st.button("➡️ Continue to Scope", disabled=disabled, width='stretch'):
                 st.session_state.atl_step = 2
                 st.rerun()
 
@@ -922,12 +946,12 @@ if main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing Let
 
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("⬅️ Back (Files)", use_container_width=True):
+            if st.button("⬅️ Back (Files)", width='stretch'):
                 st.session_state.atl_step = 1
                 st.rerun()
 
         with c2:
-            if st.button("➡️ Continue to Validation", use_container_width=True):
+            if st.button("➡️ Continue to Validation", width='stretch'):
                 st.session_state.atl_step = 3
                 st.rerun()
 
@@ -991,18 +1015,18 @@ if main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing Let
 
         if scope == "PT01":
             st.header("PT01")
-            st.dataframe(df_pt01, use_container_width=True)
+            st.dataframe(df_pt01, width='stretch')
 
         elif scope == "PT02":
             st.header("PT02")
-            st.dataframe(df_pt02, use_container_width=True)
+            st.dataframe(df_pt02, width='stretch')
 
         else:
             st.header("PT01")
-            st.dataframe(df_pt01, use_container_width=True)
+            st.dataframe(df_pt01, width='stretch')
 
             st.header("PT02")
-            st.dataframe(df_pt02, use_container_width=True)
+            st.dataframe(df_pt02, width='stretch')
 
         # ------------------------------
         # DASHBOARD
@@ -1039,7 +1063,7 @@ if main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing Let
                     }
                     for log in logs
                 ])
-                st.dataframe(hist_df, use_container_width=True)
+                st.dataframe(hist_df, width='stretch')
             else:
                 st.write("No History.")
 
@@ -1048,12 +1072,12 @@ if main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing Let
         # ------------------------------
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("🔄 New Run ATL", use_container_width=True):
+            if st.button("🔄 New Run ATL", width='stretch'):
                 st.session_state.atl_step = 1
                 st.rerun()
 
         with c2:
-            if st.button("🧹 Clear persistent uploads and return to the beginning.", use_container_width=True):
+            if st.button("🧹 Clear persistent uploads and return to the beginning.", width='stretch'):
                 st.session_state["atl_files_persisted"] = {}
                 st.session_state.atl_step = 1
                 st.rerun()
@@ -1108,7 +1132,7 @@ if main_choice == "🚗 PLM Workflow" and (sub_choice == "Change Cockpit"):
         can_continue = True  # troca quando soubermos os files obrigatórios
         c1, c2 = st.columns([1, 1])
         with c2:
-            if st.button("➡️ Continue to Scope", disabled=not can_continue, use_container_width=True):
+            if st.button("➡️ Continue to Scope", disabled=not can_continue, width='stretch'):
                 st.session_state.cc_step = 2
                 st.rerun()
 
@@ -1119,11 +1143,11 @@ if main_choice == "🚗 PLM Workflow" and (sub_choice == "Change Cockpit"):
         st.session_state.cc_scope = cc_scope
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("⬅️ Back (Files)", use_container_width=True):
+            if st.button("⬅️ Back (Files)", width='stretch'):
                 st.session_state.cc_step = 1
                 st.rerun()
         with c2:
-            if st.button("➡️ Continue to Validation", use_container_width=True):
+            if st.button("➡️ Continue to Validation", width='stretch'):
                 st.session_state.cc_step = 3
                 st.rerun()
 
@@ -1147,11 +1171,11 @@ if main_choice == "🚗 PLM Workflow" and (sub_choice == "Change Cockpit"):
         # Exemplo de botões finais
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("🔄 New Run", use_container_width=True):
+            if st.button("🔄 New Run", width='stretch'):
                 st.session_state.cc_step = 1
                 st.rerun()
         with c2:
-            if st.button("🧹 Clear & Start Over", use_container_width=True):
+            if st.button("🧹 Clear & Start Over", width='stretch'):
                 for k in ["cc_result_df", "cc_excel"]:
                     st.session_state.pop(k, None)
                 st.session_state.cc_step = 1
@@ -1276,7 +1300,7 @@ elif main_choice == "🧮 MRP Validation":
 
         c1, c2 = st.columns([1, 1])
         with c2:
-            if st.button("➡️ Continue to Scope", disabled=disabled, use_container_width=True):
+            if st.button("➡️ Continue to Scope", disabled=disabled, width='stretch'):
                 st.session_state.mrp_step = 2
                 st.rerun()
 
@@ -1310,12 +1334,12 @@ elif main_choice == "🧮 MRP Validation":
 
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("⬅️ Back (Files)", use_container_width=True):
+            if st.button("⬅️ Back (Files)", width='stretch'):
                 st.session_state.mrp_step = 1
                 st.rerun()
 
         with c2:
-            if st.button("➡️ Continue to Validation", use_container_width=True):
+            if st.button("➡️ Continue to Validation", width='stretch'):
                 st.session_state.mrp_step = 3
                 st.rerun()
 
@@ -1425,10 +1449,10 @@ elif main_choice == "🧮 MRP Validation":
 
         # Tabelas
         st.header("All Errors")
-        st.dataframe(errors_df, use_container_width=True)
+        st.dataframe(errors_df, width='stretch')
 
         st.header("Summary")
-        st.dataframe(summary_df, use_container_width=True)
+        st.dataframe(summary_df, width='stretch')
 
         # DASHBOARD
         st.markdown("## 📈 Dashboard — MRP Validation")
@@ -1448,7 +1472,7 @@ elif main_choice == "🧮 MRP Validation":
                     }
                     for log in logs
                 ])
-                st.dataframe(hist_df, use_container_width=True)
+                st.dataframe(hist_df, width='stretch')
             else:
                 st.write("No history.")
 
@@ -1464,12 +1488,12 @@ elif main_choice == "🧮 MRP Validation":
         # NOVA EXECUÇÃO
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("🔄 New Validation", use_container_width=True):
+            if st.button("🔄 New Validation", width='stretch'):
                 st.session_state.mrp_step = 1
                 st.rerun()
 
         with c2:
-            if st.button("🧹 Clear persistent uploads and return to the beginning", use_container_width=True):
+            if st.button("🧹 Clear persistent uploads and return to the beginning", width='stretch'):
                 st.session_state["mrp_files_persisted"] = {}
                 st.session_state.mrp_step = 1
                 st.rerun()
@@ -1543,7 +1567,7 @@ elif main_choice == "📈 SAP Material Validation Progress":
             prog_scope = st.radio("Scope:", ["ALL", "PT01", "PT02"], horizontal=True)
             st.session_state.prog_scope = prog_scope
 
-        if st.button("➡️ Continue to Files", use_container_width=True):
+        if st.button("➡️ Continue to Files", width='stretch'):
             st.session_state.progress_step = 2
             st.rerun()
 
@@ -1611,11 +1635,11 @@ elif main_choice == "📈 SAP Material Validation Progress":
         # ------------------------------
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("⬅️ Back", use_container_width=True):
+            if st.button("⬅️ Back", width='stretch'):
                 st.session_state.progress_step = 1
                 st.rerun()
         with c2:
-            if st.button("➡️ Continue to Validation", disabled=disabled, use_container_width=True):
+            if st.button("➡️ Continue to Validation", disabled=disabled, width='stretch'):
                 st.session_state.progress_step = 3
                 st.rerun()
 
@@ -1687,7 +1711,7 @@ elif main_choice == "📈 SAP Material Validation Progress":
         tabs = st.tabs(labels)
         for tab, key in zip(tabs, keys):
             with tab:
-                st.dataframe(diff_dfs.get(key, pd.DataFrame()), use_container_width=True)
+                st.dataframe(diff_dfs.get(key, pd.DataFrame()), width='stretch')
 
         # ------------------------------
         # DASHBOARDS
@@ -1725,7 +1749,7 @@ elif main_choice == "📈 SAP Material Validation Progress":
                     }
                     for log in logs
                 ])
-                st.dataframe(hist_df, use_container_width=True)
+                st.dataframe(hist_df, width='stretch')
             else:
                 st.write("No History.")
 
@@ -1734,11 +1758,11 @@ elif main_choice == "📈 SAP Material Validation Progress":
         # ------------------------------
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("🔄 New comparison", use_container_width=True):
+            if st.button("🔄 New comparison", width='stretch'):
                 st.session_state.progress_step = 1
                 st.rerun()
         with c2:
-            if st.button("🧹 Clear all and restart validation", use_container_width=True):
+            if st.button("🧹 Clear all and restart validation", width='stretch'):
                 for k in [
                     "progress_curr_path", "progress_prev_path",
                     "progress_manual_curr", "progress_manual_prev",

@@ -105,7 +105,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
             fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(top_fields['Field'], top_fields['Errors'], color="#1f77b4")
@@ -127,7 +127,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
                          title="Errors by Plant", text='Errors', color='Plant')
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_plant['Plant'], by_plant['Errors'], color="#ff7f0e")
@@ -150,7 +150,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
             fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_mat['Material'], by_mat['Errors'], color="#2ca02c")
@@ -176,7 +176,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
                              text='Errors', color='View')
                 fig.update_traces(textposition='outside')
                 fig = style_plotly(fig, height=480)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             else:
                 fig, ax = plt.subplots(figsize=(8, 4))
                 ax.bar(by_view['View'], by_view['Errors'], color="#d62728")
@@ -213,7 +213,7 @@ def render_sap_history_charts(logs: list[dict]) -> None:
         fig = px.line(dsorted, x='ts', y='total_errors', color='plant_filter',
                       markers=True, title="Total Errors over time (by plant filter)")
         fig = style_plotly(fig, height=480)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         fig, ax = plt.subplots(figsize=(8, 4))
         for plant, grp in dsorted.groupby('plant_filter'):
@@ -282,7 +282,7 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
         if PLOTLY_AVAILABLE:
             fig = px.histogram(df_all, x='Aging', color='Plant', nbins=30, title="Aging Distribution (days)")
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             for plant, grp in df_all.groupby('Plant'):
@@ -299,7 +299,7 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
             fig = px.bar(by_status, x='Approval Status', y='count', color='Plant', barmode='group',
                          title="Approval Status Count")
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             for plant, grp in by_status.groupby('Plant'):
@@ -323,7 +323,7 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
             fig = px.bar(by_cat, x='Category', y='count', color='Plant', barmode='group',
                          title="Activities Checked by Category (X)")
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             for plant, grp in by_cat.groupby('Plant'):
@@ -362,7 +362,7 @@ def render_atl_history_charts(logs: list[dict]) -> None:
         fig = px.line(dsorted, x='ts', y=['PT01_rows', 'PT02_rows'],
                       markers=True, title="Lines by Plant over Time")
         fig = style_plotly(fig, height=480) 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.plot(dsorted['ts'], dsorted['PT01_rows'], marker='o', label='PT01')
@@ -417,7 +417,7 @@ def render_progress_charts(diff_dfs: dict[str, pd.DataFrame]) -> None:
                      title="Errors — New Errors vs Resolved vs Changed")
         fig.update_traces(textposition='outside')
         fig = style_plotly(fig, height=480)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.bar(df_bars["Type"], df_bars["Amount"], color="#9467bd")
@@ -439,7 +439,7 @@ def render_progress_charts(diff_dfs: dict[str, pd.DataFrame]) -> None:
                          title="Lost Views by Code")
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_view['View'], by_view['Amount'], color="#8c564b")
@@ -499,7 +499,7 @@ def render_mrp_run_charts(errors_df: pd.DataFrame) -> None:
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
             fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(top_fields['Field'], top_fields['Errors'], color="#1f77b4")
@@ -521,7 +521,7 @@ def render_mrp_run_charts(errors_df: pd.DataFrame) -> None:
                          title="Errors by Plant (MRP)", text='Errors', color='Plant')
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_plant['Plant'], by_plant['Errors'], color="#ff7f0e")
@@ -544,7 +544,7 @@ def render_mrp_run_charts(errors_df: pd.DataFrame) -> None:
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
             fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_mat['Material'], by_mat['Errors'], color="#2ca02c")
@@ -581,7 +581,7 @@ def render_mrp_history_charts(logs: list[dict]) -> None:
         fig = px.line(dsorted, x='ts', y='total_errors', color='plant_filter',
                       markers=True, title="Total Errors over time (MRP)")
         fig = style_plotly(fig, height=480)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         fig, ax = plt.subplots(figsize=(8, 4))
         for plant, grp in dsorted.groupby('plant_filter'):

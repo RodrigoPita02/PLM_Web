@@ -774,10 +774,10 @@ def validar_lot_sizing_procedure(df, resultados):
     """
     Regras:
     - Campo obrigatório.
-    - EX só permitido para HALB ou FERT (regra base). (mudar para Plant Type FP e MP)
-    - ZK só permitido para ROH (regra base). (mudar para Plant Type PP)
-    - EXCEÇÃO: para HALB cujo Material contenha o token '14K450' (ex.: 'VPAKLF-14K450-BCD'),
-      então Lot Sizing Procedure pode ser 'ZK' ou 'EX'. (Mudar Plant Type MP)
+    - EX só permitido para Plant Type FP e MP (regra base).
+    - ZK só permitido para Plant Type PP (regra base).
+    - EXCEÇÃO: para Plant Type MP cujo Material contenha o token '14K450' (ex.: 'VPAKLF-14K450-BCD'),
+      então Lot Sizing Procedure pode ser 'ZK' ou 'EX'.
     """
     if 'Material Type' not in df.columns or 'Lot Sizing Procedure' not in df.columns:
         print("⚠️ Columns 'Material Type' or 'Lot Sizing Procedure' not found.")
@@ -2459,6 +2459,7 @@ def run_full_validation(
     zplm_mara_file=None,
     previous_report=None,
     plant_filter: str | None = None,
+    progress_callback=None
 ):
     """
     Executa o processo completo:
@@ -2474,11 +2475,37 @@ def run_full_validation(
     # Carregar DataFrames
     # ------------------
 
+    
+    print("DEBUG TYPES:", {
+        "sap": type(sap_file),
+        "mara": type(mara_file),
+        "marc": type(marc_file),
+        "mvke": type(mvke_file),
+        "zplm_marc": type(zplm_marc_file),
+        "zplm_mara": type(zplm_mara_file),
+        "qmat": type(qmat_file),
+    })
+
+    
+    if progress_callback:
+        progress_callback(5, "Loading SAPUI5 Export...")
     sap_df = load_xlsx(sap_file, sheet_name="SAPUI5 Export")
+
+    if progress_callback:
+        progress_callback(7, "Loading MARA...")
     mara_df = load_xlsx(mara_file, sheet_name=0)
-    marc_df = load_xlsx(marc_file, sheet_name=0)
+
+    if progress_callback:
+        progress_callback(10, "Loading MARC...")
+    marc_df = load_xlsx(marc_file, sheet_name=0)    
+
+
+    if progress_callback:
+        progress_callback(12, "Loading MVKE...")
     mvke_df = load_xlsx(mvke_file, sheet_name=0)
 
+    if progress_callback:
+        progress_callback(14, "Loading QMAT...")
     qmat_df = load_xlsx(qmat_file, sheet_name=0)
 
     # Fallback: se não houver roles_file, usa o Excel embutido via Base64
@@ -2487,7 +2514,12 @@ def run_full_validation(
 
     rolesviews_dict = load_xlsx(roles_file, sheet_name=None)
 
+    if progress_callback:
+        progress_callback(16, "Loading ZPLM data...")
     zplm_marc_df = load_xlsx(zplm_marc_file, sheet_name=0) if zplm_marc_file else None
+
+    if progress_callback:
+        progress_callback(18, "Preparing ZPLM data...")         
     zplm_mara_df = load_xlsx(zplm_mara_file, sheet_name=0) if zplm_mara_file else None
 
     # ------------------
@@ -2530,48 +2562,128 @@ def run_full_validation(
 
     # Campos obrigatórios
     for coluna in ['Material', 'Material Type', 'Description', 'Base UOM', 'Plant', 'Plant Type']:
+        if progress_callback:
+            progress_callback(20, f"Validating mandatory field: {coluna}...")
         validar_campo_obrigatorio(sap_df, coluna, resultados)
 
     # Chamadas em sequência
+    if progress_callback:
+        progress_callback(22, "Running field validations...")
     validar_procurement_type(sap_df, resultados)
+    if progress_callback:
+        progress_callback(24, "Running field validations...")
     validar_account_assignment_group(sap_df, resultados, mvke_df)
+    if progress_callback:
+        progress_callback(26, "Running field validations...")
     validar_automatic_purchase_order(sap_df, resultados)
+    if progress_callback:
+        progress_callback(28, "Running field validations...")
     validar_batch_management(sap_df, resultados)
+    if progress_callback:
+        progress_callback(30, "Running field validations...")
     validar_consumption_mode(sap_df, resultados)
+    if progress_callback:
+        progress_callback(32, "Running field validations...")   
     validar_division(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(34, "Running field validations...")
     validar_export_import_group(sap_df, resultados)
+    if progress_callback:
+        progress_callback(36, "Running field validations...")
     validar_general_item_category_group(sap_df, resultados)
+    if progress_callback:
+        progress_callback(38, "Running field validations...")  
     validar_gross_weight(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(40, "Running field validations...")
     validar_repetitive_manufacturing(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(42, "Running field validations...")  
     validar_item_category_group(sap_df, resultados, mvke_df)
+    if progress_callback:   
+        progress_callback(44, "Running field validations...")  
     validar_jit_delivery_sched(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(46, "Running field validations...")  
     validar_loading_group(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(48, "Running field validations...")
     validar_lot_sizing_procedure(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(50, "Running field validations...")
     validar_material_group(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(52, "Running field validations...")
     validar_net_weight(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(54, "Running field validations...")
     validar_period_type(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(56, "Running field validations...")
     validar_planning_calendar(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(58, "Running field validations...")  
     validar_planning_time_fence(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(60, "Running field validations...")
     validar_mrp_type(sap_df, resultados, zplm_marc_df=zplm_marc_df)
+    if progress_callback:   
+        progress_callback(62, "Running field validations...")
     validar_price_control(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(64, "Running field validations...")
     validar_price_unit(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(66, "Running field validations...")
     validar_product_hierarchy(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(68, "Running field validations...")
     validar_production_scheduling_profile(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(70, "Running field validations...")
     validar_profit_center(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(72, "Running field validations...")
     validar_purchasing_group(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(74, "Running field validations...")
     validar_repetitive_manufacturing_profile(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(76, "Running field validations...")
     validar_source_list_required(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(78, "Running field validations...")
     validar_storage_location(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(80, "Running field validations...")
     validar_valuation_class(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(82, "Running field validations...")
     validar_with_qty_structure(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(84, "Running field validations...")
     validar_enterproj_number(sap_df, resultados)
 
+    if progress_callback:   
+        progress_callback(86, "Running field validations...")
     validar_inspection_type_qmat(sap_df, marc_df, qmat_df, resultados)
+    if progress_callback:   
+        progress_callback(88, "Running field validations...")
     validar_mrp_controller(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(90, "Running field validations...")
     validar_plant_specific_material_status(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(92, "Running field validations...")
     validar_backflush(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(94, "Running field validations...")
     validar_strategy_group(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(96, "Running field validations...")
     validar_product_related_origin(sap_df, resultados)
+    if progress_callback:   
+        progress_callback(98, "Running field validations...")
     validar_availability_check(sap_df, resultados)
 
     # ------------------
@@ -2622,7 +2734,9 @@ def run_full_validation(
     # ------------------
     timestamp = datetime.now().strftime("%d-%m-%Y_%H-%M")
     file_bytes = io.BytesIO()
-
+    
+    if progress_callback:
+        progress_callback(100, "Generating final Excel report...")
     with pd.ExcelWriter(file_bytes, engine="openpyxl") as writer:
         sap_df.to_excel(writer, sheet_name="Original Data", index=False)
         errors_df.to_excel(writer, sheet_name="All Errors", index=False)

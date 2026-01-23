@@ -1,0 +1,10 @@
+{
+  "run_type": "PLM_WORKFLOW_ATL",
+  "timestamp": "2026-01-23 09:21:36",
+  "user": "Spongebob",
+  "plant_scope": "Only PT01",
+  "metrics": {
+    "PT01_rows": 138,
+    "PT02_rows": 0
+  }
+}
