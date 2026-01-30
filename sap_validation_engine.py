@@ -3,6 +3,7 @@ import io
 import os
 from datetime import datetime
 from openpyxl import load_workbook
+from utils.fast_loader import load_xlsx_fast
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from rolesviews_data import get_rolesviews_bytesio  # <-- importa o helper
 
@@ -1917,9 +1918,9 @@ def fill_plant_and_validate_enterproj_from_zplm(
     subset = errors_df.loc[mask].copy()
 
     # 👉 Ler ZPLM via load_xlsx (aceita UploadedFile, BytesIO ou path)
-    
-    zplm_marc_df = load_xlsx(zplm_marc_file, sheet_name=0) if zplm_marc_file else None
-    zplm_mara_df = load_xlsx(zplm_mara_file, sheet_name=0) if zplm_mara_file else None
+
+    zplm_marc_df = load_xlsx_fast(zplm_marc_file, sheet_name=0) if zplm_marc_file else None
+    zplm_mara_df = load_xlsx_fast(zplm_mara_file, sheet_name=0) if zplm_mara_file else None
 
     if zplm_marc_df is None or zplm_mara_df is None:
         # Sem ZPLM, não enriquece
@@ -1935,7 +1936,7 @@ def fill_plant_and_validate_enterproj_from_zplm(
     # 👉 Ler “Original Data” do relatório anterior (UploadedFile/BytesIO/path)
     prev_original_df = None
     try:
-        prev_original_df = load_xlsx(latest_report, sheet_name="Original Data")
+        prev_original_df = load_xlsx_fast(latest_report, sheet_name="Original Data")
     except Exception:
         prev_original_df = pd.DataFrame(columns=['Material', 'Enterproj Number'])
 
@@ -2489,38 +2490,37 @@ def run_full_validation(
     
     if progress_callback:
         progress_callback(5, "Loading SAPUI5 Export...")
-    sap_df = load_xlsx(sap_file, sheet_name="SAPUI5 Export")
+    sap_df = load_xlsx_fast(sap_file, sheet_name="SAPUI5 Export")
 
     if progress_callback:
         progress_callback(7, "Loading MARA...")
-    mara_df = load_xlsx(mara_file, sheet_name=0)
+    mara_df = load_xlsx_fast(mara_file, sheet_name=0)
 
     if progress_callback:
         progress_callback(10, "Loading MARC...")
-    marc_df = load_xlsx(marc_file, sheet_name=0)    
-
+    marc_df = load_xlsx_fast(marc_file, sheet_name=0)    
 
     if progress_callback:
         progress_callback(12, "Loading MVKE...")
-    mvke_df = load_xlsx(mvke_file, sheet_name=0)
+    mvke_df = load_xlsx_fast(mvke_file, sheet_name=0)
 
     if progress_callback:
         progress_callback(14, "Loading QMAT...")
-    qmat_df = load_xlsx(qmat_file, sheet_name=0)
+    qmat_df = load_xlsx_fast(qmat_file, sheet_name=0)
 
     # Fallback: se não houver roles_file, usa o Excel embutido via Base64
     if roles_file is None:
         roles_file = get_rolesviews_bytesio()  # BytesIO
 
-    rolesviews_dict = load_xlsx(roles_file, sheet_name=None)
+    rolesviews_dict = load_xlsx_fast(roles_file, sheet_name=None)
 
     if progress_callback:
         progress_callback(16, "Loading ZPLM data...")
-    zplm_marc_df = load_xlsx(zplm_marc_file, sheet_name=0) if zplm_marc_file else None
+    zplm_marc_df = load_xlsx_fast(zplm_marc_file, sheet_name=0) if zplm_marc_file else None
 
     if progress_callback:
         progress_callback(18, "Preparing ZPLM data...")         
-    zplm_mara_df = load_xlsx(zplm_mara_file, sheet_name=0) if zplm_mara_file else None
+    zplm_mara_df = load_xlsx_fast(zplm_mara_file, sheet_name=0) if zplm_mara_file else None
 
     # ------------------
     # Verificações base
@@ -2945,9 +2945,9 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file):
       - df_pt02 (DataFrame)
     """
     # --- Ler fontes com o loader universal já existente no projeto ---
-    df_auto   = load_xlsx(auto_file, sheet_name=0)      # "PLM Automotive Validation.xlsx"
-    df_plm    = load_xlsx(plm_file, sheet_name=0)       # "PLM TimingLetter Validation.xlsx"
-    df_timing = load_xlsx(timing_file, sheet_name=0)    # "Timing Letters.xlsx"
+    df_auto   = load_xlsx_fast(auto_file, sheet_name=0)      # "PLM Automotive Validation.xlsx"
+    df_plm    = load_xlsx_fast(plm_file, sheet_name=0)       # "PLM TimingLetter Validation.xlsx"
+    df_timing = load_xlsx_fast(timing_file, sheet_name=0)    # "Timing Letters.xlsx"
 
     if df_auto is None or df_plm is None or df_timing is None:
         raise ValueError("Ficheiros ATL em falta: Automotive/TimingLetter/Timing Letters")
@@ -3094,7 +3094,7 @@ def _load_rolesviews_maps() -> tuple[dict, dict]:
       - view_to_desc:  View (letra) -> Descrição
     """
     try:
-        rolesviews_dict = load_xlsx(get_rolesviews_bytesio(), sheet_name=None)
+        rolesviews_dict = load_xlsx_fast(get_rolesviews_bytesio(), sheet_name=None)
         roles_df = rolesviews_dict.get("Roles", pd.DataFrame())
         views_df = rolesviews_dict.get("Views", pd.DataFrame())
         if not roles_df.empty:
@@ -3168,8 +3168,8 @@ def compare_adjusted_reports(current_file, previous_file):
       - 'Views Lost':          views que passaram a estar em falta no atual, mas não estavam no anterior
     """
     # 1) Carregar ambos os workbooks para dict de DataFrames
-    current_dict  = load_xlsx(current_file, sheet_name=None)
-    previous_dict = load_xlsx(previous_file, sheet_name=None)
+    current_dict  = load_xlsx_fast(current_file, sheet_name=None)
+    previous_dict = load_xlsx_fast(previous_file, sheet_name=None)
 
     # 2) Obter DataFrames base
     curr_err = current_dict.get("All Errors", pd.DataFrame()).copy()
@@ -3550,9 +3550,9 @@ def run_mrp_validation(
     import io
 
     # 1) Carregar dataframes
-    mara_df = load_xlsx(mara_file, sheet_name=0)
-    marc_df = load_xlsx(marc_file, sheet_name=0)
-    zplm_marc_df = load_xlsx(zplm_marc_file, sheet_name=0) if zplm_marc_file else None
+    mara_df = load_xlsx_fast(mara_file, sheet_name=0)
+    marc_df = load_xlsx_fast(marc_file, sheet_name=0)
+    zplm_marc_df = load_xlsx_fast(zplm_marc_file, sheet_name=0) if zplm_marc_file else None
 
     if mara_df is None or marc_df is None:
         raise ValueError("MARA.xlsx/MARC.xlsx não carregados.")
@@ -3702,7 +3702,7 @@ def run_mrp_validation(
         original_df['HALB Transfer'] = marc_enriched['HALB Transfer']
 
     # 8) Pós-processamento (Views/Roles/Summary) usando o RolesViews embutido
-    rolesviews_dict = load_xlsx(get_rolesviews_bytesio(), sheet_name=None)
+    rolesviews_dict = load_xlsx_fast(get_rolesviews_bytesio(), sheet_name=None)
     roles_df = rolesviews_dict.get("Roles")
     views_df = rolesviews_dict.get("Views")
     (

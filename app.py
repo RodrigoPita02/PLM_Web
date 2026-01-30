@@ -4,6 +4,7 @@ import pandas as pd
 import re
 import io
 import os
+import time
 
 from utils.dashboard import (
     render_sap_run_kpis, render_sap_run_charts, render_sap_history_charts,
@@ -11,7 +12,6 @@ from utils.dashboard import (
     render_progress_kpis, render_progress_charts, render_mrp_history_charts,
     render_mrp_run_kpis, render_mrp_run_charts
 )
-
 from utils.identify import get_executor_identity
 from sap_validation_engine import (
     run_full_validation,
@@ -25,7 +25,7 @@ from sap_validation_engine import (
     run_mrp_validation,
     build_mrp_log_payload
 )
-
+from utils.layout import render_footer, render_header, inject_theme_overrides
 from datetime import datetime
 # ==========================================================
 # CSS GLOBAL INJECTION
@@ -56,6 +56,10 @@ def inject_css(css_path: str):
 st.set_page_config(page_title="SAP & ATL Validation Hub", layout="wide")
 st.title("🧰 Validation Hub")
 inject_css("assets/styles.css")
+start_time = time.time()
+
+# Header global (aparece em todas as páginas)
+theme_name = render_header("🧪 Validation Hub — SAP & ATL", show_theme_picker=True)
 
 # ==========================================================
 # HELPERS PARA MODO MANUAL (Progress) – DETEÇÃO DE "Atual" e "Anterior"
@@ -797,7 +801,9 @@ if main_choice == "📦 SAP Material Validation":
                 st.session_state.sap_step = 1
                 st.rerun()
 
-
+    # app.py – no final do script (depois de renderizar a página seleccionada)
+    render_footer(start_time, version="v1.1")
+    
 # ==========================================================
 # PAGE 2 — SUBMENU - PLM ATL — PREMIUM WIZARD
 # ==========================================================
@@ -1082,6 +1088,9 @@ if main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing Let
                 st.session_state.atl_step = 1
                 st.rerun()
 
+    # app.py – no final do script (depois de renderizar a página seleccionada)
+    render_footer(start_time, version="v1.1")
+
 # ==========================================================
 # PAGE 2 — SUBMENU - PLM CHANGE COCKPIT — PREMIUM WIZARD
 # ==========================================================
@@ -1180,6 +1189,8 @@ if main_choice == "🚗 PLM Workflow" and (sub_choice == "Change Cockpit"):
                     st.session_state.pop(k, None)
                 st.session_state.cc_step = 1
                 st.rerun()
+    # app.py – no final do script (depois de renderizar a página seleccionada)
+    render_footer(start_time, version="v1.1")
 
 # ==========================================================
 # PAGE 3 — MRP VALIDATION — PREMIUM WIZARD
@@ -1498,6 +1509,9 @@ elif main_choice == "🧮 MRP Validation":
                 st.session_state.mrp_step = 1
                 st.rerun()
 
+    # app.py – no final do script (depois de renderizar a página seleccionada)
+    render_footer(start_time, version="v1.1")
+
 # ==========================================================
 # PAGE 4 — SAP MATERIAL VALIDATION PROGRESS — PREMIUM WIZARD
 # ==========================================================
@@ -1771,3 +1785,5 @@ elif main_choice == "📈 SAP Material Validation Progress":
                     st.session_state.pop(k, None)
                 st.session_state.progress_step = 1
                 st.rerun()
+    # app.py – no final do script (depois de renderizar a página seleccionada)
+    render_footer(start_time, version="v1.1")

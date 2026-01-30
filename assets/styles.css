@@ -473,3 +473,46 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:f
     height: 14px !important;
     border-width: 2px !important;
 }
+
+/* === LAYOUT V2: Header / Separator / Footer / Sections ===================== */
+.app-header-wrap {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 6px 4px 2px 4px;
+}
+.app-page-title {
+  font-size: 24px; font-weight: 800; letter-spacing: .2px;
+  color: var(--app-fg);
+}
+.app-separator {
+  height: 1px; width: 100%;
+  background: var(--app-border);
+  margin: 10px 0 14px 0;
+}
+.app-footer {
+  margin-top: 18px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--app-border);
+  color: var(--app-fg-muted);
+  display: flex; gap: 14px; align-items: center;
+  justify-content: space-between;
+  font-size: 12.5px;
+}
+.section-title {
+  font-size: 18px; font-weight: 700; margin: 8px 0 4px;
+}
+.section-subtitle {
+  font-size: 13.5px; color: var(--app-fg-muted); margin-bottom: 10px;
+}
+
+/* micro-interações base (para o Passo 7) */
+.fade-in-up { animation: fadeInUp .35s ease-out; }
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translate3d(0, 8px, 0); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+.pulse-glow { animation: pulseGlow 1.6s ease-in-out infinite; }
+@keyframes pulseGlow {
+  0% { box-shadow: 0 0 0px var(--glow); }
+  50% { box-shadow: 0 0 14px var(--glow); }
+  100% { box-shadow: 0 0 0px var(--glow); }
+}
