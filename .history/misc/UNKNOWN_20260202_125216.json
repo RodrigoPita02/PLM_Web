@@ -1,0 +1,18 @@
+{
+  "kind": "fp",
+  "timestamp": "2026-02-02 12:52:16",
+  "user": "RPITA",
+  "plant_filter": null,
+  "files": {
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "zplm_marc": "ZPLM MARC.xlsx",
+    "zplm_mara": "ZPLM MARA.xlsx"
+  },
+  "metrics": {
+    "materials": 2003,
+    "plants": 2,
+    "outdated": 266,
+    "correct": 1741
+  }
+}

@@ -12,6 +12,7 @@ from utils.dashboard import (
     render_progress_kpis, render_progress_charts, render_mrp_history_charts,
     render_mrp_run_kpis, render_mrp_run_charts
 )
+from utils.fast_loader import load_xlsx_fast
 from utils.identify import get_executor_identity
 from sap_validation_engine import (
     run_full_validation,
@@ -23,7 +24,9 @@ from sap_validation_engine import (
     save_run_log,
     list_run_logs,
     run_mrp_validation,
-    build_mrp_log_payload
+    build_mrp_log_payload,
+    run_fp_status_validation,
+    build_fp_log_payload
 )
 from utils.layout import render_footer, render_header, inject_theme_overrides
 from datetime import datetime
@@ -246,6 +249,12 @@ def classify_uploaded_files(files):
         # Progress
         "current": None,
         "previous": None,
+
+        # FP Plant Status
+        "mara": None,
+        "marc": None,
+        "zplm_mara": None,
+        "zplm_marc": None,
     }
 
     if not files:
@@ -277,7 +286,6 @@ def classify_uploaded_files(files):
             mapping["qmat"] = f
             continue
 
-
         # ATL
         if "automotive" in name:
             mapping["auto"] = f
@@ -295,6 +303,20 @@ def classify_uploaded_files(files):
             continue
         if "previous" in name or "anterior" in name or "old" in name:
             mapping["previous"] = f
+            continue
+
+        # FP Plant Status
+        if "mara" in name and "zplm" not in name:
+            mapping["mara"] = f
+            continue
+        if "marc" in name and "zplm" not in name:
+            mapping["marc"] = f
+            continue
+        if "zplm" in name and "mara" in name:
+            mapping["zplm_mara"] = f
+            continue
+        if "zplm" in name and "marc" in name:
+            mapping["zplm_marc"] = f
             continue
 
     return mapping
@@ -329,8 +351,16 @@ def required_keys_for_page(page_choice: str) -> list[str]:
 
     if page_choice == "📈 SAP Material Validation Progress":
         return [
-            "(date)_SAP_Validation_Adjusted_Report_ALL.xlsx",
-            "(Date)_SAP_Validation_Adjusted_Report_ALL.xlsx",
+            "(Last_date)_SAP_Validation_Adjusted_Report_ALL.xlsx",
+            "(Previous_date)_SAP_Validation_Adjusted_Report_ALL.xlsx",
+        ]
+    
+    if page_choice == "📦 FP Plant Status Extract":
+        return [
+            "MARA.xlsx",
+            "MARC.xlsx",
+            "ZPLM MARA.xlsx",
+            "ZPLM MARC.xlsx",
         ]
 
     return []
@@ -394,7 +424,8 @@ main_choice = st.sidebar.radio(
         "📦 SAP Material Validation",
         "🚗 PLM Workflow",
         "🧮 MRP Validation",
-        "📈 SAP Material Validation Progress"
+        "📈 SAP Material Validation Progress",
+        "📦 FP Plant Status Extract",
     ]
 )
 
@@ -1787,3 +1818,240 @@ elif main_choice == "📈 SAP Material Validation Progress":
                 st.rerun()
     # app.py – no final do script (depois de renderizar a página seleccionada)
     render_footer(start_time, version="v1.1")
+
+# ==========================================================
+# PAGE 5 — FP Plant Status Extract (aligned with MRP flow)
+# ==========================================================
+elif main_choice == "📦 FP Plant Status Extract":
+
+    st.subheader("📦 FP – Plant Status Extract")
+
+    inject_css("assets/styles.css")
+
+    # Who performs
+    effective_executor = identity_input("Who performs?", "fp_executor")
+    save_history = st.checkbox("Save this execution in history", value=True)
+
+    # Wizard Step
+    if "fp_step" not in st.session_state:
+        st.session_state.fp_step = 1
+
+    # Small wizard (reuse same style as MRP)
+    def render_fp_wizard(step):
+        steps = ["Files", "Scope", "Validate", "Results"]
+        cols = st.columns(len(steps))
+        for idx, col in enumerate(cols, start=1):
+            with col:
+                if step == idx:
+                    klass = "active"
+                elif step > idx:
+                    klass = "done"
+                else:
+                    klass = "pending"
+                
+                st.markdown(
+                    f"""
+<div class="wizard-step">
+  <div class="step-circle {klass}">{idx}</div>
+  <div class="step-label">{steps[idx-1]}</div>
+</div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+        completion = (step - 1) / (len(steps) - 1)
+        st.markdown(
+            f'<div class="progress-line" style="width:{completion*100}%"></div>', 
+            unsafe_allow_html=True,
+        )
+
+    render_fp_wizard(st.session_state.fp_step)
+
+    # ----------------------------------------------------------
+    # STEP 1 — FILE UPLOAD (same UX as MRP)
+    # ----------------------------------------------------------
+    if st.session_state.fp_step == 1:
+        st.markdown("### 📂 Step 1 — Load Files")
+        st.caption("Upload **MARA + MARC + ZPLM MARA + ZPLM MARC** (all required).")
+
+        uploads = st.file_uploader(
+            "Drop the 4 Excel files here",
+            type=["xlsx"],
+            accept_multiple_files=True,
+            key="fp_multi_uploader"
+        )
+
+        # Classify (same style as MRP)
+        def classify_fp(files):
+            mapping = {"mara": None, "marc": None, "zplm_marc": None, "zplm_mara": None}
+            if not files:
+                return mapping
+            for f in files:
+                name = f.name.lower()
+                if "zplm" in name and "marc" in name:
+                    mapping["zplm_marc"] = f
+                elif "zplm" in name and "mara" in name:
+                    mapping["zplm_mara"] = f
+                elif "mara" in name and "zplm" not in name:
+                    mapping["mara"] = f
+                elif "marc" in name and "zplm" not in name:
+                    mapping["marc"] = f
+            return mapping
+
+        files = classify_fp(uploads)
+
+        if uploads:
+            persist_uploaded_mapping(files, "fp_files_persisted")
+
+        with st.expander("🔎 Files identified (Current upload)"):
+            for display_name in ["MARA.xlsx", "MARC.xlsx", "ZPLM MARA.xlsx", "ZPLM MARC.xlsx"]:
+                key_map = {
+                    "MARA.xlsx": "mara",
+                    "MARC.xlsx": "marc",
+                    "ZPLM MARA.xlsx": "zplm_mara",
+                    "ZPLM MARC.xlsx": "zplm_marc"
+                }
+                internal = key_map.get(display_name)
+                f = files.get(internal)
+                st.write(f"**{display_name}** → {getattr(f, 'name', '—')}")
+
+        with st.expander("💾 Files saved in session (persisted)"):
+            persisted = st.session_state.get("fp_files_persisted", {})
+            if persisted:
+                for k, meta in persisted.items():
+                    st.write(f"**{k.upper()}** → {meta.get('name')}")
+            else:
+                st.write("No files stored yet.")
+
+        # Required:
+        needed = ["mara", "marc", "zplm_marc", "zplm_mara"]
+        persisted = st.session_state.get("fp_files_persisted", {}) or {}
+        disabled = any(k not in persisted for k in needed)
+
+        c1, c2 = st.columns([1, 1])
+        with c2:
+            if st.button("➡️ Continue to Scope", disabled=disabled, use_container_width=True):
+                st.session_state.fp_step = 2
+                st.rerun()
+
+        with st.expander("🧹 Clear"):
+            if st.button("Clear stored files"):
+                st.session_state["fp_files_persisted"] = {}
+                st.success("Cleared.")
+                st.rerun()
+
+    # ----------------------------------------------------------
+    # STEP 2 — SCOPE (IDENTICAL TO MRP STYLE)
+    # ----------------------------------------------------------
+    if st.session_state.fp_step == 2:
+        st.markdown("### 🗺️ Step 2 — Choose Plant Scope")
+        st.caption("Choose the plant(s) to be included in the extract.")
+
+        export_scope = st.radio(
+            "Scope:",
+            ["All Plants", "Only PT01", "Only PT02"],
+            horizontal=True
+        )
+
+        plant_filter_export = {"Only PT01": "PT01", "Only PT02": "PT02"}.get(export_scope)
+
+        apply_filter_display = st.checkbox("Apply filter to the displayed tables", value=False)
+        plant_filter_display = plant_filter_export if apply_filter_display else None
+
+        st.session_state.fp_export_scope = export_scope
+        st.session_state.fp_plant_export = plant_filter_export
+        st.session_state.fp_plant_display = plant_filter_display
+
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("⬅️ Back (Files)", use_container_width=True):
+                st.session_state.fp_step = 1
+                st.rerun()
+        with c2:
+            if st.button("➡️ Continue to Validation", use_container_width=True):
+                st.session_state.fp_step = 3
+                st.rerun()
+
+
+    # ----------------------------------------------------------
+    # STEP 3 — RUN VALIDATION (MRP STYLE)
+    # ----------------------------------------------------------
+    if st.session_state.fp_step == 3:
+        st.markdown("### ⚙️ Step 3 — Run FP Extract")
+
+        files = rehydrate_persisted_mapping("fp_files_persisted")
+        mara_file = files.get("mara")
+        marc_file = files.get("marc")
+        zplm_marc_file = files.get("zplm_marc")
+        zplm_mara_file = files.get("zplm_mara")
+
+        plant_filter_export = st.session_state.fp_plant_export
+        plant_filter_display = st.session_state.fp_plant_display
+
+        if st.button("▶️ Run FP Extract", type="primary"):
+            with st.spinner("Processing FP validation…"):
+                excel_bytes, df_result, kpis = run_fp_status_validation(
+                    mara_file=mara_file,
+                    marc_file=marc_file,
+                    zplm_marc_file=zplm_marc_file,
+                    zplm_mara_file=zplm_mara_file,
+                    plant_filter=plant_filter_display
+                )
+
+            st.session_state.fp_result = df_result
+            st.session_state.fp_excel = excel_bytes
+            st.session_state.fp_kpis = kpis
+
+            if save_history:
+                payload = build_fp_log_payload(
+                    user=effective_executor,
+                    plant_filter=plant_filter_export,
+                    mara_file=mara_file,
+                    marc_file=marc_file,
+                    zplm_marc_file=zplm_marc_file,
+                    zplm_mara_file=zplm_mara_file,
+                    df_result=df_result
+                )
+                save_run_log(payload)
+
+            st.session_state.fp_step = 4
+            st.rerun()
+
+    # ----------------------------------------------------------
+    # STEP 4 — RESULTS (MRP STYLE)
+    # ----------------------------------------------------------
+    if st.session_state.fp_step == 4:
+        st.markdown("### 📊 Step 4 — Results")
+
+        df = st.session_state.get("fp_result", pd.DataFrame())
+        kpis = st.session_state.get("fp_kpis", {})
+
+        # KPI cards identical layout
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Materials", kpis.get("materials", 0))
+        c2.metric("Plants", kpis.get("plants", 0))
+        c3.metric("Outdated", kpis.get("outdated", 0))
+        c4.metric("Correct", kpis.get("correct", 0))
+
+        st.header("FP Material Status")
+        st.dataframe(df, use_container_width=True)
+
+        # Download
+        excel_bytes = st.session_state.get("fp_excel")
+        st.download_button(
+            "⬇️ Download FP_Materials_Extract.xlsx",
+            data=excel_bytes.getvalue() if excel_bytes else b"",
+            file_name="FP_Materials_Extract.xlsx"
+        )
+
+        # Navigation
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("🔄 New Extraction", use_container_width=True):
+                st.session_state.fp_step = 1
+                st.rerun()
+        with c2:
+            if st.button("🧹 Clear & Restart", use_container_width=True):
+                st.session_state["fp_files_persisted"] = {}
+                st.session_state.fp_step = 1
+                st.rerun()

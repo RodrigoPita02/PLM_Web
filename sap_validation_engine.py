@@ -1,6 +1,6 @@
 import pandas as pd
 import io
-import os
+import os, json
 from datetime import datetime
 from openpyxl import load_workbook
 from utils.fast_loader import load_xlsx_fast
@@ -505,7 +505,6 @@ def validar_division(df, resultados):
                 'Plant': str(row['Plant']).strip() if 'Plant' in df.columns else ''
             })
 
-
 def validar_export_import_group(df, resultados):
     """Valida se o Field 'Export/Import Group' é sempre 'ZVIS' e não está vazio."""
     if 'Export/Import Group' not in df.columns:
@@ -547,7 +546,6 @@ def validar_general_item_category_group(df, resultados):
                 'Material': str(row['Material']).strip() if 'Material' in df.columns else '',
                 'Plant': str(row['Plant']).strip() if 'Plant' in df.columns else ''
             })
-
 
 def validar_gross_weight(df, resultados):
     """Valida 'Gross Weight' apenas para Plant Type = FP: obrigatórios (>0), iguais a Net, e limites por unidade."""
@@ -1089,8 +1087,6 @@ def validar_planning_time_fence(df, resultados):
                 'Plant': plant
             })
 
-
-
 def validar_mrp_type(df, resultados, zplm_marc_df=None):
     """
     Validação do MRP Type segundo regras finais confirmadas.
@@ -1340,7 +1336,6 @@ def validar_price_unit(df, resultados):
                 'Material': str(row['Material']).strip() if 'Material' in df.columns else '',
                 'Plant': str(row['Plant']).strip() if 'Plant' in df.columns else ''
             })
-
 
 def validar_product_hierarchy(df, resultados):
     if 'Material Type' not in df.columns or 'Product Hierarchy' not in df.columns:
@@ -1626,7 +1621,6 @@ def validar_enterproj_number(df, resultados):
                     'Plant': ''  # Ignora a fábrica
                 })
 
-
 def validar_inspection_type_qmat(sap_df, marc_df, qmat_df, resultados):
     """
     Validação QMAT — Inspection Type
@@ -1800,7 +1794,6 @@ def validar_mrp_controller(df, resultados):
                 'Plant': str(row['Plant']).strip() if 'Plant' in df.columns else ''
             })
     
-
 def validar_plant_specific_material_status(df, resultados):
     """Plant Specific Material Status: Não pode estar vazio."""
     if 'Plant Specific Material Status' not in df.columns:
@@ -1819,8 +1812,6 @@ def validar_plant_specific_material_status(df, resultados):
 # ------------------------
 # Cruzamentos MARA/MARC/ZPLM
 # ------------------------
-
-
 def add_old_material_number_errors(mara_df, errors_df):
     """
     Adiciona erros à 'errors_df' do relatório anterior para o campo MARA 'Old material number':
@@ -1890,7 +1881,6 @@ def add_old_material_number_errors(mara_df, errors_df):
         errors_df = pd.concat([errors_df, pd.DataFrame(additional_rows)], ignore_index=True)
 
     return errors_df
-
 
 def fill_plant_and_validate_enterproj_from_zplm(
     errors_df,
@@ -2067,13 +2057,9 @@ def validar_neg_stocks_in_plant(marc_df, mara_df):
 
     return erros
 
-
-
 # ------------------------
 # Pós-processamento (Views, Roles, Error_Type, Summary)
 # ------------------------
-
-
 def postprocess_with_views_roles_and_classification(
     errors_df: pd.DataFrame,
     mara_df: pd.DataFrame,
@@ -2378,7 +2364,7 @@ def postprocess_with_views_roles_and_classification(
         'Planning Calendar': lambda mt, pt: True,
         'Period Type': lambda mt, pt: True,
         'Strategy Group': lambda mt, pt: True,
-        'Inspection Type': lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Inspection Type': lambda mt, pt: mt in ['HALB', 'ROH'],
         'MRP Controller': lambda mt, pt: True,
         'Plant Specific Material Status': lambda mt, pt: True,
         'Backflush': lambda mt, pt: True,
@@ -2448,7 +2434,6 @@ def postprocess_with_views_roles_and_classification(
 # ==========================================================
 # 3) FUNÇÃO PRINCIPAL — ORQUESTRAÇÃO COMPLETA
 # ==========================================================
-
 def run_full_validation(
     sap_file,
     mara_file,
@@ -2890,7 +2875,6 @@ def run_full_validation(
 # ==========================================================
 # ATL / PLM WORKFLOW COMBINED (a partir do SAP_ATL_Validation.py)
 # ==========================================================
-
 def _apply_conditional_formatting_in_memory(xlsx_bytes: io.BytesIO, sheet_names=("PT01", "PT02")) -> io.BytesIO:
     """
     Abre o Excel em memória e aplica formatação condicional na coluna 'Aging'
@@ -3076,11 +3060,9 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file):
 
     return xlsx_bytes, df_pt01, df_pt02
 
-
-# =============== DIFF ENGINE (Comparador) ===============
-import pandas as pd
-import io
-
+# ==========================================================
+# SAP MAterial Comparisson 
+# ==========================================================
 def _norm_str(x) -> str:
     """Normaliza para string sem espaços; NaN -> ''."""
     if x is None or (isinstance(x, float) and pd.isna(x)):
@@ -3151,7 +3133,6 @@ def _extract_missing_views_from_workbook(book_dict: dict[str, pd.DataFrame]) -> 
                 key = (mat, plant)
                 missing_map.setdefault(key, set()).add(view_code)
     return missing_map
-
 
 def compare_adjusted_reports(current_file, previous_file):
     """
@@ -3297,9 +3278,6 @@ def compare_adjusted_reports(current_file, previous_file):
 # ==========================
 # HISTÓRICO DE EXECUÇÕES / LOGS
 # ==========================
-import os, json
-from datetime import datetime
-
 def _ensure_dir(path: str):
     try:
         os.makedirs(path, exist_ok=True)
@@ -3442,13 +3420,9 @@ def list_run_logs(run_type: str, *, base_dir: str = ".history", limit: int = 25)
             continue
     return out
 
-
 # ==========================================================
 # REPORTS VAULT (guardar Excel gerado) + payload helper
 # ==========================================================
-import os, io
-from datetime import datetime
-
 def save_report_to_vault(excel_bytes: io.BytesIO, *, report_type: str = "sap", plant_suffix: str = "ALL") -> str:
     """
     Grava o Excel gerado num diretório local tipo ./reports/<report_type>/YYYY-MM/
@@ -3472,7 +3446,6 @@ def save_report_to_vault(excel_bytes: io.BytesIO, *, report_type: str = "sap", p
         f.write(excel_bytes.getvalue())
 
     return os.path.abspath(fpath)
-
 
 def build_sap_log_payload(
     *,
@@ -3751,7 +3724,6 @@ def run_mrp_validation(
 
     return file_bytes, errors_df, summary_df
 
-
 def build_mrp_log_payload(
     *,
     user: str,
@@ -3792,3 +3764,313 @@ def build_mrp_log_payload(
         },
     }
     return payload
+
+# ==========================================================
+# FP STATUS VALIDATION (MARA + MARC + ZPLM MARC + ZPLM MARA)
+# ==========================================================
+
+def _filter_materials_by_base_duplicates(df: pd.DataFrame, material_col: str = "Material") -> pd.DataFrame:
+    """
+    Mantém no DataFrame apenas as linhas cujo 'Material' (depois de remover o último char)
+    forme uma 'base' com pelo menos 2 ocorrências no scope atual.
+    - Não altera o 'Material' original (usa uma coluna temporária).
+    """
+    if df is None or df.empty or material_col not in df.columns:
+        return df
+
+    tmp = df.copy()
+    # cria a chave base removendo o último carácter; se string vazia, fica vazia
+    tmp["_base"] = tmp[material_col].astype(str).str.strip().str[:-1]
+
+    # grupos com contagem >= 2
+    base_counts = tmp["_base"].value_counts(dropna=False)
+    bases_keep = set(base_counts[base_counts >= 2].index)
+
+    # filtra apenas bases com duplicados
+    out = tmp[tmp["_base"].isin(bases_keep)].drop(columns=["_base"])
+    return out
+
+def _pick_col_upper(df, candidates):
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+def _normalize_code_as_str_basic(x):
+    import pandas as pd
+    if pd.isna(x):
+        return ""
+    s = str(x).strip()
+    try:
+        return str(int(float(s)))
+    except Exception:
+        return s
+
+def _classify_fp_versions(df):
+    """
+    Marca versões por família: tudo igual exceto o último carácter.
+    Escopo do grupo: (Plant, Base).
+    Regras:
+      - Ordena por LastChar (A->Z) dentro do grupo.
+      - Última é 'Correct'; restantes 'Outdated'.
+    """
+    import pandas as pd
+    if df.empty:
+        df["Status"] = []
+        return df
+
+    work = df.copy()
+    work["Material"] = work["Material"].astype(str).str.strip()
+    # Evita materiais com comprimento < 1
+    work = work[work["Material"].str.len() > 0].copy()
+
+    work["Base"] = work["Material"].str[:-1]
+    work["LastChar"] = work["Material"].str[-1]
+
+    # Status default
+    work["Status"] = "Outdated"
+    # Para cada (Plant, Base), encontrar a maior LastChar
+    for (plant, base), grp in work.groupby(["Plant", "Base"]):
+        if len(grp) == 0:
+            continue
+        # Ordena lexicograficamente pela última letra; última é a mais recente
+        idx_latest = grp.sort_values("LastChar").index[-1]
+        work.loc[idx_latest, "Status"] = "Correct"
+
+    return work.drop(columns=["Base", "LastChar"])
+
+def run_fp_status_validation(
+    mara_file,
+    marc_file,
+    zplm_marc_file,
+    zplm_mara_file,
+    plant_filter=None,
+):
+    """
+    Versão atualizada — conforme requisitos do Rodrigo:
+    - Sheets separadas por Plant (PT01 / PT02)
+    - Sem Pivot
+    - Pré-filtro por base de material (Material sem último caracter)
+    - Mantém lógica de classificação Correct/Outdated
+    - Preserva formatação condicional por Status
+    """
+    import pandas as pd
+    import io
+    from openpyxl import load_workbook
+    from openpyxl.styles import PatternFill
+
+    # 1) Load
+    mara = load_xlsx_fast(mara_file, sheet_name=0)
+    marc = load_xlsx_fast(marc_file, sheet_name=0)
+    zplm_marc = load_xlsx_fast(zplm_marc_file, sheet_name=0)
+    zplm_mara = load_xlsx_fast(zplm_mara_file, sheet_name=0)
+
+    if mara is None or marc is None or zplm_marc is None or zplm_mara is None:
+        raise ValueError("Missing required inputs: MARA, MARC, ZPLM MARC, ZPLM MARA")
+
+    # 2) Normalize headers
+    mara.columns = mara.columns.astype(str).str.strip().str.upper()
+    marc.columns = marc.columns.astype(str).str.strip().str.upper()
+    zplm_marc.columns = zplm_marc.columns.astype(str).str.strip().str.upper()
+    zplm_mara.columns = zplm_mara.columns.astype(str).str.strip().str.upper()
+
+    # 3) Pick columns (robusto)
+    col_mat_mara = _pick_col_upper(mara, ["MATERIAL", "MATNR"])
+    col_mat_marc = _pick_col_upper(marc, ["MATERIAL", "MATNR"])
+    col_plant_marc = _pick_col_upper(marc, ["PLANT", "WERKS"])
+    col_psms_marc = _pick_col_upper(marc, [
+        "PLANT-SPECIFIC MATERIAL STATUS", "PLANT SPECIFIC MATERIAL STATUS",
+        "PLANT SPEC. MATERIAL STATUS", "MTSTB"
+    ])
+
+    col_mat_zplm_marc = _pick_col_upper(zplm_marc, ["MATERIAL", "MATNR"])
+    col_plant_zplm_marc = _pick_col_upper(zplm_marc, ["PLANT", "WERKS"])
+    col_mptype_zplm_marc = _pick_col_upper(zplm_marc, ["MATERIAL PLANT TYPE", "PLANT TYPE", "MATERIAL-PLANT TYPE"])
+
+    col_mat_zplm_mara = _pick_col_upper(zplm_mara, ["MATERIAL", "MATNR"])
+    col_projname_zplm_mara = _pick_col_upper(zplm_mara, ["PROJECT NAME", "PROJECT", "PROJ NAME"])
+
+    # 4) Optional plant filtering
+    pf = None
+    if plant_filter:
+        pf = str(plant_filter).strip().upper()
+
+    # 5) Base MARA materials
+    mara_set = set(
+        mara[col_mat_mara].dropna().astype(str).str.strip().unique()
+    )
+
+    # 6) ZPLM MARC — FP type
+    zplm_marc_fp = zplm_marc[
+        zplm_marc[col_mptype_zplm_marc].astype(str).str.strip().str.upper() == "FP"
+    ][[col_mat_zplm_marc, col_plant_zplm_marc, col_mptype_zplm_marc]].copy()
+
+    zplm_marc_fp[col_mat_zplm_marc] = zplm_marc_fp[col_mat_zplm_marc].astype(str).str.strip()
+    zplm_marc_fp[col_plant_zplm_marc] = zplm_marc_fp[col_plant_zplm_marc].astype(str).str.strip().str.upper()
+
+    # 6a) Intersect with MARA
+    zplm_marc_fp = zplm_marc_fp[zplm_marc_fp[col_mat_zplm_marc].isin(mara_set)]
+
+    # 6b) Filter plant if needed
+    if pf:
+        zplm_marc_fp = zplm_marc_fp[zplm_marc_fp[col_plant_zplm_marc] == pf]
+
+    # 7) MARC — PSMS 40/45/50/55
+    marc_small = marc[[col_mat_marc, col_plant_marc, col_psms_marc]].copy()
+    marc_small[col_mat_marc] = marc_small[col_mat_marc].astype(str).str.strip()
+    marc_small[col_plant_marc] = marc_small[col_plant_marc].astype(str).str.strip().str.upper()
+    marc_small[col_psms_marc] = marc_small[col_psms_marc].apply(_normalize_code_as_str_basic)
+
+    marc_small = marc_small[marc_small[col_psms_marc].isin({"40", "45", "50", "55"})]
+
+    if pf:
+        marc_small = marc_small[marc_small[col_plant_marc] == pf]
+
+    merged_fp = zplm_marc_fp.merge(
+        marc_small,
+        left_on=[col_mat_zplm_marc, col_plant_zplm_marc],
+        right_on=[col_mat_marc, col_plant_marc],
+        how="inner",
+    )
+
+    # 8) ZPLM MARA — Project Name
+    zplm_mara_small = zplm_mara[[col_mat_zplm_mara, col_projname_zplm_mara]].copy()
+    zplm_mara_small[col_mat_zplm_mara] = zplm_mara_small[col_mat_zplm_mara].astype(str).str.strip()
+
+    final_df = merged_fp.merge(
+        zplm_mara_small,
+        left_on=col_mat_zplm_marc,
+        right_on=col_mat_zplm_mara,
+        how="left",
+    ).rename(columns={
+        col_mat_zplm_marc: "Material",
+        col_plant_zplm_marc: "Plant",
+        col_mptype_zplm_marc: "Material Plant Type",
+        col_psms_marc: "Plant-Specific Material Status",
+        col_projname_zplm_mara: "Project Name",
+    })[["Material", "Plant", "Material Plant Type", "Plant-Specific Material Status", "Project Name"]]
+
+    # Excluir materiais puramente numéricos
+    final_df["Material"] = final_df["Material"].astype(str).str.strip()
+    final_df = final_df[~final_df["Material"].str.match(r"^\d+$")]
+
+    # 9) Classificação Correct / Outdated
+    final_df = _classify_fp_versions(final_df)
+
+    # 10) ORDENAR
+    final_df = final_df.sort_values(["Material", "Plant"], kind="stable").reset_index(drop=True)
+
+    # ----------------------------------------------------------------------
+    # 🔥 11) NOVO — FILTRO POR BASE DUPLICADA (Material sem último carácter)
+    # ----------------------------------------------------------------------
+    tmp = final_df.copy()
+    tmp["_base"] = tmp["Material"].astype(str).str[:-1]
+
+    base_counts = tmp["_base"].value_counts()
+    bases_keep = set(base_counts[base_counts >= 2].index)
+
+    final_df = tmp[tmp["_base"].isin(bases_keep)].drop(columns=["_base"]).reset_index(drop=True)
+
+    # ----------------------------------------------------------------------
+    # 12) KPIs
+    # ----------------------------------------------------------------------
+    if final_df.empty:
+        kpis = {"materials": 0, "plants": 0, "psms": 0, "projects": 0, "outdated": 0, "correct": 0}
+    else:
+        kpis = {
+            "materials": int(final_df["Material"].nunique()),
+            "plants": int(final_df["Plant"].nunique()),
+            "psms": int(final_df["Plant-Specific Material Status"].nunique()),
+            "projects": int(final_df["Project Name"].nunique()),
+            "outdated": int((final_df["Status"] == "Outdated").sum()),
+            "correct":  int((final_df["Status"] == "Correct").sum()),
+        }
+
+    # ----------------------------------------------------------------------
+    # 13) EXCEL — Sheets separadas por Plant / Sem Pivot
+    # ----------------------------------------------------------------------
+    out = io.BytesIO()
+
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+
+        if plant_filter in ("PT01", "PT02"):
+            df_one = final_df[final_df["Plant"] == plant_filter].copy()
+            df_one.to_excel(writer, sheet_name=plant_filter, index=False)
+
+        else:
+            for plant in ("PT01", "PT02"):
+                df_p = final_df[final_df["Plant"] == plant].copy()
+                df_p.to_excel(writer, sheet_name=plant, index=False)
+
+    # ----------------------------------------------------------------------
+    # 14) COLORIR (por Status) — agora por sheet
+    # ----------------------------------------------------------------------
+    out.seek(0)
+    wb = load_workbook(out)
+
+    orange = PatternFill(start_color="FFE5B4", end_color="FFE5B4", fill_type="solid")
+    green  = PatternFill(start_color="C2F0C2", end_color="C2F0C2", fill_type="solid")
+
+    sheets_to_color = [plant_filter] if plant_filter else ["PT01", "PT02"]
+
+    for sh in sheets_to_color:
+        if sh not in wb.sheetnames:
+            continue
+
+        ws = wb[sh]
+
+        # encontrar coluna Status
+        headers = {cell.value: i+1 for i, cell in enumerate(ws[1])}
+        status_col = headers.get("Status")
+
+        if not status_col:
+            continue
+
+        for r in range(2, ws.max_row + 1):
+            val = ws.cell(row=r, column=status_col).value
+            if val == "Outdated":
+                for c in range(1, ws.max_column + 1):
+                    ws.cell(row=r, column=c).fill = orange
+            elif val == "Correct":
+                for c in range(1, ws.max_column + 1):
+                    ws.cell(row=r, column=c).fill = green
+
+    out2 = io.BytesIO()
+    wb.save(out2)
+    out2.seek(0)
+
+    return out2, final_df, kpis
+
+# ===========================
+# Logging payload (opcional)
+# ===========================
+def build_fp_log_payload(
+    user: str,
+    plant_filter: str | None,
+    mara_file, marc_file, zplm_marc_file, zplm_mara_file,
+    df_result
+):
+    import os
+    mats = int(df_result["Material"].nunique()) if df_result is not None and not df_result.empty else 0
+    plants = int(df_result["Plant"].nunique()) if df_result is not None and not df_result.empty else 0
+    outdated = int((df_result["Status"] == "Outdated").sum()) if df_result is not None and not df_result.empty else 0
+    correct = int((df_result["Status"] == "Correct").sum()) if df_result is not None and not df_result.empty else 0
+
+    return {
+        "kind": "fp",
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "user": user,
+        "plant_filter": plant_filter,
+        "files": {
+            "mara": getattr(mara_file, "name", "MARA.xlsx"),
+            "marc": getattr(marc_file, "name", "MARC.xlsx"),
+            "zplm_marc": getattr(zplm_marc_file, "name", "ZPLM MARC.xlsx"),
+            "zplm_mara": getattr(zplm_mara_file, "name", "ZPLM MARA.xlsx"),
+        },
+        "metrics": {
+            "materials": mats,
+            "plants": plants,
+            "outdated": outdated,
+            "correct": correct,
+        }
+    }
