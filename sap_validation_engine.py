@@ -3843,204 +3843,261 @@ def run_fp_status_validation(
     mara_file,
     marc_file,
     zplm_marc_file,
-    zplm_mara_file,
+    zplm_mara_file,  # mantido para compatibilidade, não usado
     plant_filter=None,
 ):
     """
-    Versão atualizada — conforme requisitos do Rodrigo:
-    - Sheets separadas por Plant (PT01 / PT02)
-    - Sem Pivot
-    - Pré-filtro por base de material (Material sem último caracter)
-    - Mantém lógica de classificação Correct/Outdated
-    - Preserva formatação condicional por Status
+    FP – Regras finais (Rodrigo):
+
+    - OUTDATED -> apenas quando existe duplicação de PSMS = 50.
+        * Apenas 1 (o mais antigo) fica Outdated.
+        * Restantes 50 ficam Correct.
+
+    - NEED VERIFY -> apenas quando existe conflito:
+        * 55 ↔ 45
+        * 55 ↔ 40
+        * 45 ↔ 40
+      E também se:
+        * Toda a família tiver apenas PSMS=55 e >=2 materiais.
+
+    - CORRECT -> tudo o resto.
+
+    - Famílias = Material sem o último carácter.
+    - Apenas famílias com >= 2.
+    - Remove Project Name.
+    - Cria PSMS Name (40/45/50/55).
+    - Sheets por Plant; sem Pivot.
     """
     import pandas as pd
     import io
     from openpyxl import load_workbook
     from openpyxl.styles import PatternFill
 
-    # 1) Load
+    # -----------------------------
+    # 1) LOAD FILES
+    # -----------------------------
     mara = load_xlsx_fast(mara_file, sheet_name=0)
     marc = load_xlsx_fast(marc_file, sheet_name=0)
-    zplm_marc = load_xlsx_fast(zplm_marc_file, sheet_name=0)
-    zplm_mara = load_xlsx_fast(zplm_mara_file, sheet_name=0)
+    zplm = load_xlsx_fast(zplm_marc_file, sheet_name=0)
 
-    if mara is None or marc is None or zplm_marc is None or zplm_mara is None:
-        raise ValueError("Missing required inputs: MARA, MARC, ZPLM MARC, ZPLM MARA")
+    if mara is None or marc is None or zplm is None:
+        raise ValueError("Missing required inputs")
 
-    # 2) Normalize headers
+    # -----------------------------
+    # 2) NORMALIZE HEADERS
+    # -----------------------------
     mara.columns = mara.columns.astype(str).str.strip().str.upper()
     marc.columns = marc.columns.astype(str).str.strip().str.upper()
-    zplm_marc.columns = zplm_marc.columns.astype(str).str.strip().str.upper()
-    zplm_mara.columns = zplm_mara.columns.astype(str).str.strip().str.upper()
+    zplm.columns = zplm.columns.astype(str).str.strip().str.upper()
 
-    # 3) Pick columns (robusto)
+    # -----------------------------
+    # 3) PICK COLUMNS
+    # -----------------------------
     col_mat_mara = _pick_col_upper(mara, ["MATERIAL", "MATNR"])
     col_mat_marc = _pick_col_upper(marc, ["MATERIAL", "MATNR"])
     col_plant_marc = _pick_col_upper(marc, ["PLANT", "WERKS"])
-    col_psms_marc = _pick_col_upper(marc, [
+    col_psms = _pick_col_upper(marc, [
         "PLANT-SPECIFIC MATERIAL STATUS", "PLANT SPECIFIC MATERIAL STATUS",
         "PLANT SPEC. MATERIAL STATUS", "MTSTB"
     ])
+    col_mat_zplm = _pick_col_upper(zplm, ["MATERIAL", "MATNR"])
+    col_plant_zplm = _pick_col_upper(zplm, ["PLANT", "WERKS"])
+    col_mptype = _pick_col_upper(zplm, ["MATERIAL PLANT TYPE", "PLANT TYPE", "MATERIAL-PLANT TYPE"])
 
-    col_mat_zplm_marc = _pick_col_upper(zplm_marc, ["MATERIAL", "MATNR"])
-    col_plant_zplm_marc = _pick_col_upper(zplm_marc, ["PLANT", "WERKS"])
-    col_mptype_zplm_marc = _pick_col_upper(zplm_marc, ["MATERIAL PLANT TYPE", "PLANT TYPE", "MATERIAL-PLANT TYPE"])
+    # -----------------------------
+    # 4) PLANT FILTER
+    # -----------------------------
+    pf = str(plant_filter).strip().upper() if plant_filter else None
 
-    col_mat_zplm_mara = _pick_col_upper(zplm_mara, ["MATERIAL", "MATNR"])
-    col_projname_zplm_mara = _pick_col_upper(zplm_mara, ["PROJECT NAME", "PROJECT", "PROJ NAME"])
+    # -----------------------------
+    # 5) MARA BASE SET
+    # -----------------------------
+    mara_set = set(mara[col_mat_mara].dropna().astype(str).str.strip())
 
-    # 4) Optional plant filtering
-    pf = None
-    if plant_filter:
-        pf = str(plant_filter).strip().upper()
+    # -----------------------------
+    # 6) ZPLM → FP ROWS
+    # -----------------------------
+    df_fp = zplm[
+        zplm[col_mptype].astype(str).str.strip().str.upper() == "FP"
+    ][[col_mat_zplm, col_plant_zplm, col_mptype]].copy()
 
-    # 5) Base MARA materials
-    mara_set = set(
-        mara[col_mat_mara].dropna().astype(str).str.strip().unique()
-    )
+    df_fp[col_mat_zplm]   = df_fp[col_mat_zplm].astype(str).str.strip()
+    df_fp[col_plant_zplm] = df_fp[col_plant_zplm].astype(str).str.strip().str.upper()
 
-    # 6) ZPLM MARC — FP type
-    zplm_marc_fp = zplm_marc[
-        zplm_marc[col_mptype_zplm_marc].astype(str).str.strip().str.upper() == "FP"
-    ][[col_mat_zplm_marc, col_plant_zplm_marc, col_mptype_zplm_marc]].copy()
+    df_fp = df_fp[df_fp[col_mat_zplm].isin(mara_set)]
 
-    zplm_marc_fp[col_mat_zplm_marc] = zplm_marc_fp[col_mat_zplm_marc].astype(str).str.strip()
-    zplm_marc_fp[col_plant_zplm_marc] = zplm_marc_fp[col_plant_zplm_marc].astype(str).str.strip().str.upper()
-
-    # 6a) Intersect with MARA
-    zplm_marc_fp = zplm_marc_fp[zplm_marc_fp[col_mat_zplm_marc].isin(mara_set)]
-
-    # 6b) Filter plant if needed
     if pf:
-        zplm_marc_fp = zplm_marc_fp[zplm_marc_fp[col_plant_zplm_marc] == pf]
+        df_fp = df_fp[df_fp[col_plant_zplm] == pf]
 
-    # 7) MARC — PSMS 40/45/50/55
-    marc_small = marc[[col_mat_marc, col_plant_marc, col_psms_marc]].copy()
-    marc_small[col_mat_marc] = marc_small[col_mat_marc].astype(str).str.strip()
+    # -----------------------------
+    # 7) MARC → PSMS
+    # -----------------------------
+    marc_small = marc[[col_mat_marc, col_plant_marc, col_psms]].copy()
+    marc_small[col_mat_marc]   = marc_small[col_mat_marc].astype(str).str.strip()
     marc_small[col_plant_marc] = marc_small[col_plant_marc].astype(str).str.strip().str.upper()
-    marc_small[col_psms_marc] = marc_small[col_psms_marc].apply(_normalize_code_as_str_basic)
+    marc_small[col_psms]       = marc_small[col_psms].apply(_normalize_code_as_str_basic)
 
-    marc_small = marc_small[marc_small[col_psms_marc].isin({"40", "45", "50", "55"})]
+    allowed = {"40", "45", "50", "55"}
+    marc_small = marc_small[marc_small[col_psms].isin(allowed)]
 
     if pf:
         marc_small = marc_small[marc_small[col_plant_marc] == pf]
 
-    merged_fp = zplm_marc_fp.merge(
+    merged = df_fp.merge(
         marc_small,
-        left_on=[col_mat_zplm_marc, col_plant_zplm_marc],
+        left_on=[col_mat_zplm, col_plant_zplm],
         right_on=[col_mat_marc, col_plant_marc],
-        how="inner",
+        how="inner"
     )
 
-    # 8) ZPLM MARA — Project Name
-    zplm_mara_small = zplm_mara[[col_mat_zplm_mara, col_projname_zplm_mara]].copy()
-    zplm_mara_small[col_mat_zplm_mara] = zplm_mara_small[col_mat_zplm_mara].astype(str).str.strip()
+    # -----------------------------
+    # 8) FINAL DF
+    # -----------------------------
+    df = merged.rename(columns={
+        col_mat_zplm:   "Material",
+        col_plant_zplm: "Plant",
+        col_mptype:     "Material Plant Type",
+        col_psms:       "PSMS",
+    })[["Material", "Plant", "Material Plant Type", "PSMS"]]
 
-    final_df = merged_fp.merge(
-        zplm_mara_small,
-        left_on=col_mat_zplm_marc,
-        right_on=col_mat_zplm_mara,
-        how="left",
-    ).rename(columns={
-        col_mat_zplm_marc: "Material",
-        col_plant_zplm_marc: "Plant",
-        col_mptype_zplm_marc: "Material Plant Type",
-        col_psms_marc: "Plant-Specific Material Status",
-        col_projname_zplm_mara: "Project Name",
-    })[["Material", "Plant", "Material Plant Type", "Plant-Specific Material Status", "Project Name"]]
+    df["Material"] = df["Material"].astype(str).str.strip()
+    df = df[~df["Material"].str.match(r"^\d+$")]
 
-    # Excluir materiais puramente numéricos
-    final_df["Material"] = final_df["Material"].astype(str).str.strip()
-    final_df = final_df[~final_df["Material"].str.match(r"^\d+$")]
+    # -----------------------------
+    # 9) ADD PSMS NAME
+    # -----------------------------
+    PSMS_NAME = {"40": "NewProd", "45": "Prod", "50": "Balout", "55": "Service"}
+    df["PSMS Name"] = df["PSMS"].map(PSMS_NAME)
 
-    # 9) Classificação Correct / Outdated
-    final_df = _classify_fp_versions(final_df)
+    # -----------------------------
+    # 10) BUILD FAMILY BASE
+    # -----------------------------
+    df["_base"] = df["Material"].str[:-1]
 
-    # 10) ORDENAR
-    final_df = final_df.sort_values(["Material", "Plant"], kind="stable").reset_index(drop=True)
+    # keep only families >=2
+    base_counts = df["_base"].value_counts()
+    keep = set(base_counts[base_counts >= 2].index)
+    df = df[df["_base"].isin(keep)].copy()
 
-    # ----------------------------------------------------------------------
-    # 🔥 11) NOVO — FILTRO POR BASE DUPLICADA (Material sem último carácter)
-    # ----------------------------------------------------------------------
-    tmp = final_df.copy()
-    tmp["_base"] = tmp["Material"].astype(str).str[:-1]
+    # -----------------------------
+    # 11) CLASSIFICATION LOGIC
+    # -----------------------------
+    def classify_family(g: pd.DataFrame) -> pd.DataFrame:
+        g = g.copy()
 
-    base_counts = tmp["_base"].value_counts()
-    bases_keep = set(base_counts[base_counts >= 2].index)
+        # Order by suffix
+        g["suffix"] = g["Material"].str[-1]
+        g = g.sort_values("suffix")
 
-    final_df = tmp[tmp["_base"].isin(bases_keep)].drop(columns=["_base"]).reset_index(drop=True)
+        psms_set = set(g["PSMS"])
 
-    # ----------------------------------------------------------------------
+        # ❶ NEW RULE → If all are 55 and >=2 → all Need verify
+        if psms_set == {"55"} and len(g) >= 2:
+            g["Status"] = "Need verify"
+            return g.drop(columns=["suffix"])
+
+        # ❷ Determine Correct PSMS (45 > 40 > 55 > 50)
+        priority = ["45", "40", "55", "50"]
+        correct_psms = next((p for p in priority if p in psms_set), None)
+
+        # default
+        g["Status"] = "Correct"
+
+        # flags
+        has40 = "40" in psms_set
+        has45 = "45" in psms_set
+        has55 = "55" in psms_set
+
+        # ❸ NEED VERIFY RULES → conflicts ONLY
+        # 55 ↔ 45, 55 ↔ 40
+        if correct_psms in ("45", "40") and has55:
+            g.loc[g["PSMS"] == "55", "Status"] = "Need verify"
+        if correct_psms == "55" and (has40 or has45):
+            g.loc[g["PSMS"].isin(["40", "45"]), "Status"] = "Need verify"
+
+        # 45 ↔ 40
+        if correct_psms == "45" and has40:
+            g.loc[g["PSMS"] == "40", "Status"] = "Need verify"
+        if correct_psms == "40" and has45:
+            g.loc[g["PSMS"] == "45", "Status"] = "Need verify"
+
+        # ❹ OUTDATED → ONLY for duplicated 50 (exclusive)
+        dup50 = g[g["PSMS"] == "50"]
+        if len(dup50) >= 2:
+            oldest = dup50.index[0]
+            g.loc[oldest, "Status"] = "Outdated"
+
+        return g.drop(columns=["suffix"])
+
+    df = df.groupby(["Plant", "_base"], group_keys=False).apply(classify_family)
+    df = df.drop(columns=["_base"])
+
+    # -----------------------------
     # 12) KPIs
-    # ----------------------------------------------------------------------
-    if final_df.empty:
-        kpis = {"materials": 0, "plants": 0, "psms": 0, "projects": 0, "outdated": 0, "correct": 0}
+    # -----------------------------
+    if df.empty:
+        kpis = {"materials": 0, "plants": 0, "psms": 0, "outdated": 0, "correct": 0}
     else:
         kpis = {
-            "materials": int(final_df["Material"].nunique()),
-            "plants": int(final_df["Plant"].nunique()),
-            "psms": int(final_df["Plant-Specific Material Status"].nunique()),
-            "projects": int(final_df["Project Name"].nunique()),
-            "outdated": int((final_df["Status"] == "Outdated").sum()),
-            "correct":  int((final_df["Status"] == "Correct").sum()),
+            "materials": df["Material"].nunique(),
+            "plants":    df["Plant"].nunique(),
+            "psms":      df["PSMS"].nunique(),
+            "outdated":  (df["Status"] == "Outdated").sum(),
+            "correct":   (df["Status"] == "Correct").sum(),
         }
 
-    # ----------------------------------------------------------------------
-    # 13) EXCEL — Sheets separadas por Plant / Sem Pivot
-    # ----------------------------------------------------------------------
+    # -----------------------------
+    # 13) EXPORT TO EXCEL
+    # -----------------------------
     out = io.BytesIO()
-
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
-
-        if plant_filter in ("PT01", "PT02"):
-            df_one = final_df[final_df["Plant"] == plant_filter].copy()
-            df_one.to_excel(writer, sheet_name=plant_filter, index=False)
-
+        if pf in ("PT01", "PT02"):
+            df[df["Plant"] == pf].to_excel(writer, sheet_name=pf, index=False)
         else:
             for plant in ("PT01", "PT02"):
-                df_p = final_df[final_df["Plant"] == plant].copy()
-                df_p.to_excel(writer, sheet_name=plant, index=False)
+                df[df["Plant"] == plant].to_excel(writer, sheet_name=plant, index=False)
 
-    # ----------------------------------------------------------------------
-    # 14) COLORIR (por Status) — agora por sheet
-    # ----------------------------------------------------------------------
+    # -----------------------------
+    # 14) COLORS
+    # -----------------------------
     out.seek(0)
     wb = load_workbook(out)
 
-    orange = PatternFill(start_color="FFE5B4", end_color="FFE5B4", fill_type="solid")
-    green  = PatternFill(start_color="C2F0C2", end_color="C2F0C2", fill_type="solid")
+    fill_correct = PatternFill(start_color="C2F0C2", end_color="C2F0C2", fill_type="solid")
+    fill_outdated = PatternFill(start_color="FFE5B4", end_color="FFE5B4", fill_type="solid")
+    fill_verify = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
 
-    sheets_to_color = [plant_filter] if plant_filter else ["PT01", "PT02"]
+    sheets = [pf] if pf in ("PT01", "PT02") else ["PT01", "PT02"]
 
-    for sh in sheets_to_color:
+    for sh in sheets:
         if sh not in wb.sheetnames:
             continue
-
         ws = wb[sh]
 
-        # encontrar coluna Status
-        headers = {cell.value: i+1 for i, cell in enumerate(ws[1])}
-        status_col = headers.get("Status")
-
-        if not status_col:
+        headers = {cell.value: i + 1 for i, cell in enumerate(ws[1])}
+        col = headers.get("Status")
+        if not col:
             continue
 
         for r in range(2, ws.max_row + 1):
-            val = ws.cell(row=r, column=status_col).value
-            if val == "Outdated":
-                for c in range(1, ws.max_column + 1):
-                    ws.cell(row=r, column=c).fill = orange
-            elif val == "Correct":
-                for c in range(1, ws.max_column + 1):
-                    ws.cell(row=r, column=c).fill = green
+            v = ws.cell(row=r, column=col).value
+            if v == "Correct":
+                f = fill_correct
+            elif v == "Outdated":
+                f = fill_outdated
+            elif v == "Need verify":
+                f = fill_verify
+            else:
+                continue
+
+            for c in range(1, ws.max_column + 1):
+                ws.cell(row=r, column=c).fill = f
 
     out2 = io.BytesIO()
     wb.save(out2)
     out2.seek(0)
 
-    return out2, final_df, kpis
-
+    return out2, df, kpis
 # ===========================
 # Logging payload (opcional)
 # ===========================

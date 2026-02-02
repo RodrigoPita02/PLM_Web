@@ -1930,7 +1930,7 @@ elif main_choice == "📦 FP Plant Status Extract":
 
         c1, c2 = st.columns([1, 1])
         with c2:
-            if st.button("➡️ Continue to Scope", disabled=disabled, use_container_width=True):
+            if st.button("➡️ Continue to Scope", disabled=disabled, width='stretch'):
                 st.session_state.fp_step = 2
                 st.rerun()
 
@@ -1964,11 +1964,11 @@ elif main_choice == "📦 FP Plant Status Extract":
 
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("⬅️ Back (Files)", use_container_width=True):
+            if st.button("⬅️ Back (Files)", width='stretch'):
                 st.session_state.fp_step = 1
                 st.rerun()
         with c2:
-            if st.button("➡️ Continue to Validation", use_container_width=True):
+            if st.button("➡️ Continue to Validation", width='stretch'):
                 st.session_state.fp_step = 3
                 st.rerun()
 
@@ -2034,7 +2034,7 @@ elif main_choice == "📦 FP Plant Status Extract":
         c4.metric("Correct", kpis.get("correct", 0))
 
         st.header("FP Material Status")
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width='stretch')
 
         # Download
         excel_bytes = st.session_state.get("fp_excel")
@@ -2047,11 +2047,11 @@ elif main_choice == "📦 FP Plant Status Extract":
         # Navigation
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("🔄 New Extraction", use_container_width=True):
+            if st.button("🔄 New Extraction", width='stretch'):
                 st.session_state.fp_step = 1
                 st.rerun()
         with c2:
-            if st.button("🧹 Clear & Restart", use_container_width=True):
+            if st.button("🧹 Clear & Restart", width='stretch'):
                 st.session_state["fp_files_persisted"] = {}
                 st.session_state.fp_step = 1
                 st.rerun()
