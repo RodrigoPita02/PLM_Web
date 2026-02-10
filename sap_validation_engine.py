@@ -4906,7 +4906,7 @@ def run_data_cleanups_validation(
     marc       = load_xlsx_fast(marc_file, sheet_name=0)
     zplm_marc  = load_xlsx_fast(zplm_marc_file, sheet_name=0)
     zplm_mara  = load_xlsx_fast(zplm_mara_file, sheet_name=0)
-    mbew = load_xlsx_fast(mbew_file, sheet_name=0)
+    mbew       = load_xlsx_fast(mbew_file, sheet_name=0)
 
     if mara is None or marc is None or zplm_marc is None:
         raise ValueError("Missing required files for Data Cleanups")
@@ -4937,7 +4937,7 @@ def run_data_cleanups_validation(
     # 4. OUTRAS VALIDAÇÕES (exemplo: EOP vs Service Liability)
     # =====================================================
     df_eop_vs_srv = validar_fp55_eop_vs_service_liability(zplm_marc, marc)
-    results["EOP vs Service Liability (Blank or Swapped)"] = df_eop_vs_srv
+    results["EOPvsSL (Blank or Swapped)"] = df_eop_vs_srv
 
     df_srv_expired = validar_fp55_service_liability_expired(zplm_marc, marc)
     results["Past Service Liability"] = df_srv_expired
@@ -4945,19 +4945,19 @@ def run_data_cleanups_validation(
     df_std_price = validar_fppp70_standard_price_mbew(zplm_marc, marc, mbew)
     results["No Standard Cost"] = df_std_price
 
-    # --- Cobertura: MARC deve existir em ZPLM MARC (por planta) ---
+    # --- Cobertura: MARC -> ZPLM MARC ---
     df_marc_cov = validar_marc_vs_zplm_marc_existence(marc, zplm_marc)
     results["Missing in ZPLM_MARC"] = df_marc_cov
 
-    # --- Cobertura: MARA deve existir em ZPLM MARA (só material; sem Plant) ---
+    # --- Cobertura: MARA -> ZPLM MARA ---
     df_mara_cov = validar_mara_vs_zplm_mara_existence(mara, zplm_mara)
     results["Missing in ZPLM_MARA"] = df_mara_cov
 
-    # --- Inverse: ZPLM MARC should exist in MARC ---
+    # --- Inverso: ZPLM MARC -> MARC ---
     df_zplm_marc_cov = validar_zplm_marc_vs_marc_existence(zplm_marc, marc)
     results["Missing in MARC"] = df_zplm_marc_cov
 
-    # --- Inverse: ZPLM MARA should exist in MARA (sem Plant) ---
+    # --- Inverso: ZPLM MARA -> MARA ---
     df_zplm_mara_cov = validar_zplm_mara_vs_mara_existence(zplm_mara, mara)
     results["Missing in MARA"] = df_zplm_mara_cov
 
@@ -4969,14 +4969,14 @@ def run_data_cleanups_validation(
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
 
         # =======================================================
-        # SUMMARY SHEET
+        # SUMMARY
         # =======================================================
         summary_rows = []
 
         for sheet_name, df_val in results.items():
 
-            # No "Plant" column → treat as ALL
-            if df_val is None or df_val.empty or "Plant" not in df_val.columns:
+            # No plant → ALL
+            if df_val is None:
                 summary_rows.append({
                     "Validation": sheet_name,
                     "Plant": "ALL",
@@ -4984,10 +4984,19 @@ def run_data_cleanups_validation(
                 })
                 continue
 
-            # Per-plant summary
+            if "Plant" not in df_val.columns:
+                # sem plant → ALL
+                summary_rows.append({
+                    "Validation": sheet_name,
+                    "Plant": "ALL",
+                    "Issues": len(df_val)
+                })
+                continue
+
+            # aqui → A validação TEM coluna Plant
+            # mesmo que esteja vazia, tem PT01/PT02
             for plant in ["PT01", "PT02"]:
                 dfp = df_val[df_val["Plant"] == plant]
-
                 summary_rows.append({
                     "Validation": sheet_name,
                     "Plant": plant,
@@ -4998,117 +5007,106 @@ def run_data_cleanups_validation(
         df_summary.to_excel(writer, sheet_name="SUMMARY", index=False)
 
         # =======================================================
-        # VALIDATION SHEETS (with plant split when applicable)
+        # VALIDATION SHEETS
         # =======================================================
         for sheet_name, df_validation in results.items():
 
-            # Empty DF → still create PT01 + PT02 sheets (se a validação for por planta)
+            # EMPTY DF
             if df_validation is None or df_validation.empty:
-                # Se não tiver coluna Plant: cria uma única sheet 'sheet_name'
+
                 if df_validation is None or "Plant" not in (df_validation.columns if df_validation is not None else []):
                     safe_name = sheet_name[:31]
                     pd.DataFrame(columns=["Material"]).to_excel(writer, sheet_name=safe_name, index=False)
                     continue
 
-                # Tem Plant → cria PT01/PT02 vazias
                 for plant in ["PT01", "PT02"]:
                     safe_name = f"{sheet_name}_{plant}"[:31]
-                    pd.DataFrame(columns=["Material", "Plant"]).to_excel(
-                        writer, sheet_name=safe_name, index=False
-                    )
+                    pd.DataFrame(columns=["Material","Plant"]).to_excel(writer, sheet_name=safe_name, index=False)
                 continue
 
-            # ⚠️ Caso a validação NÃO tenha coluna Plant → escrever numa única sheet
+            # SEM PLANT → sheet única
             if "Plant" not in df_validation.columns:
                 safe_name = sheet_name[:31]
                 df_validation.to_excel(writer, sheet_name=safe_name, index=False)
                 continue
 
-            # IF FILTERED → ONLY ONE PLANT
-            if plant_filter and plant_filter in ("PT01", "PT02"):
+            # FILTRADO
+            if plant_filter and plant_filter in ("PT01","PT02"):
                 safe_name = f"{sheet_name}_{plant_filter}"[:31]
-                df_validation[df_validation["Plant"] == plant_filter].to_excel(
-                    writer, sheet_name=safe_name, index=False
-                )
+                df_validation[df_validation["Plant"]==plant_filter].to_excel(writer, sheet_name=safe_name, index=False)
                 continue
 
-            # ALL PLANTS → GENERATE PT01 + PT02
-            for plant in ["PT01", "PT02"]:
+            # ALL PLANTS
+            for plant in ["PT01","PT02"]:
                 dfp = df_validation[df_validation["Plant"] == plant]
                 safe_name = f"{sheet_name}_{plant}"[:31]
-
                 if dfp.empty:
-                    pd.DataFrame(columns=df_validation.columns).to_excel(
-                        writer, sheet_name=safe_name, index=False
-                    )
+                    pd.DataFrame(columns=df_validation.columns).to_excel(writer, sheet_name=safe_name, index=False)
                 else:
                     dfp.to_excel(writer, sheet_name=safe_name, index=False)
 
     # =======================================================
-    # 2) APPLY STYLING + HYPERLINKS TO SUMMARY SHEET
+    # 6) APPLY STYLING + HYPERLINKS
     # =======================================================
     from openpyxl import load_workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from openpyxl.utils import quote_sheetname
 
     out.seek(0)
     wb = load_workbook(out)
 
     if "SUMMARY" in wb.sheetnames:
+
         ws = wb["SUMMARY"]
 
-        # --- Add hyperlink column ---
+        # Add hyperlink column
         link_col = ws.max_column + 1
         ws.cell(row=1, column=link_col, value="Link")
 
-        # Styles
-        header_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-        zebra_fill  = PatternFill(start_color="F7F7F7", end_color="F7F7F7", fill_type="solid")
+        header_fill = PatternFill(start_color="D9D9D9", fill_type="solid")
+        zebra_fill  = PatternFill(start_color="F7F7F7", fill_type="solid")
         border = Border(
-            left=Side(style="thin", color="808080"),
-            right=Side(style="thin", color="808080"),
-            top=Side(style="thin", color="808080"),
-            bottom=Side(style="thin", color="808080")
+            left=Side(style="thin"), right=Side(style="thin"),
+            top=Side(style="thin"), bottom=Side(style="thin")
         )
 
-        # Format header
+        # -------------------------------
+        # HEADER STYLE
+        # -------------------------------
         for cell in ws[1]:
             cell.font = Font(bold=True)
             cell.fill = header_fill
-            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.alignment = Alignment(horizontal="center")
             cell.border = border
 
-        # Build hyperlinks row-by-row
+        # -------------------------------
+        # HYPERLINKS  (AGORA CORRETO!)
+        # -------------------------------
         for r in range(2, ws.max_row + 1):
 
-            validation = ws.cell(row=r, column=1).value.strip()
-            plant      = ws.cell(row=r, column=2).value.strip() if ws.cell(row=r, column=2).value else None
+            validation = str(ws.cell(row=r, column=1).value).strip()
+            plant      = str(ws.cell(row=r, column=2).value).strip()
 
-            # ===================================================
-            # DETECT REAL TAB NAME CREATED IN THE ENGINE
-            # ===================================================
-            
-            # CASE 1: Validation without Plant → tab is exactly validation name
-            if plant not in ("PT01", "PT02"):
-                target_sheet = validation
-            
-            # CASE 2: Validation with Plant → tab = validation + "_" + PLANT
+            if plant in ("PT01", "PT02"):
+                sheet_name = f"{validation}_{plant}"
             else:
-                target_sheet = f"{validation}_{plant}"
+                sheet_name = validation
 
-            # If sheet exists → add hyperlink
-            if target_sheet in wb.sheetnames:
-                ws.cell(row=r, column=link_col).value = f"=HYPERLINK(\"#'{quote_sheetname(target_sheet)}'!A1\", \"Open\")"
+            safe_sheet = sheet_name.replace("'", "''")
+
+            if sheet_name in wb.sheetnames:
+                formula = f'=HYPERLINK("#\'{safe_sheet}\'!A1","Open")'
             else:
-                ws.cell(row=r, column=link_col).value = "Not found"
+                formula = "Not found"
 
-            # Format hyperlink cell
-            link_cell = ws.cell(row=r, column=link_col)
-            link_cell.font = Font(color="0563C1", underline="single")
-            link_cell.alignment = Alignment(horizontal="center")
-            link_cell.border = border
+            c = ws.cell(row=r, column=link_col)
+            c.value = formula
+            c.font = Font(color="0563C1", underline="single")
+            c.alignment = Alignment(horizontal="center")
+            c.border = border
 
-        # Zebra + borders + autofit
+        # -------------------------------
+        # ZEBRA + BORDERS
+        # -------------------------------
         for r in range(2, ws.max_row + 1):
             for c in range(1, ws.max_column + 1):
                 cell = ws.cell(row=r, column=c)
@@ -5116,15 +5114,17 @@ def run_data_cleanups_validation(
                     cell.fill = zebra_fill
                 cell.border = border
 
+        # -------------------------------
+        # AUTO-FIT
+        # -------------------------------
         for col in ws.columns:
             max_len = 0
             col_letter = col[0].column_letter
             for cell in col:
-                val = str(cell.value) if cell.value else ""
-                max_len = max(max_len, len(val))
+                content = str(cell.value) if cell.value else ""
+                max_len = max(max_len, len(content))
             ws.column_dimensions[col_letter].width = max_len + 2
 
-    # FINAL SAVE
     out2 = io.BytesIO()
     wb.save(out2)
     out2.seek(0)
