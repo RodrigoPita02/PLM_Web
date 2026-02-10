@@ -26,6 +26,7 @@ from sap_validation_engine import (
     run_mrp_validation,
     build_mrp_log_payload,
     run_fp_status_validation,
+    run_data_cleanups_validation,
     build_fp_log_payload
 )
 from utils.layout import render_footer, render_header, inject_theme_overrides
@@ -355,7 +356,7 @@ def required_keys_for_page(page_choice: str) -> list[str]:
             "(Previous_date)_SAP_Validation_Adjusted_Report_ALL.xlsx",
         ]
     
-    if page_choice == "📦 FP Plant Status Extract":
+    if page_choice == "🧹 Data Cleanups":
         return [
             "MARA.xlsx",
             "MARC.xlsx",
@@ -425,7 +426,7 @@ main_choice = st.sidebar.radio(
         "🚗 PLM Workflow",
         "🧮 MRP Validation",
         "📈 SAP Material Validation Progress",
-        "📦 FP Plant Status Extract",
+        "🧹 Data Cleanups",
     ]
 )
 
@@ -664,7 +665,7 @@ if main_choice == "📦 SAP Material Validation":
         st.markdown("### ⚙️ Step 3 — Run Validation")
         st.info("Click the button below to validate the uploaded files.")
 
-        if st.button("▶ Validate now", type="primary"):
+        if st.button("▶️ Validate now", type="primary"):
 
             # Rehidratar ficheiros persistidos como BytesIO (com .name)
             files = rehydrate_persisted_mapping(state_key="sap_files_persisted")
@@ -1820,24 +1821,24 @@ elif main_choice == "📈 SAP Material Validation Progress":
     render_footer(start_time, version="v1.1")
 
 # ==========================================================
-# PAGE 5 — FP Plant Status Extract (aligned with MRP flow)
+# PAGE — 🧹 DATA CLEANUPS (substitui o antigo FP Extract)
 # ==========================================================
-elif main_choice == "📦 FP Plant Status Extract":
+elif main_choice == "🧹 Data Cleanups":
 
-    st.subheader("📦 FP – Plant Status Extract")
+    st.subheader("🧹 Data Cleanups Dashboard")
 
     inject_css("assets/styles.css")
 
     # Who performs
-    effective_executor = identity_input("Who performs?", "fp_executor")
+    effective_executor = identity_input("Who performs?", "dataclean_exec")
     save_history = st.checkbox("Save this execution in history", value=True)
 
     # Wizard Step
-    if "fp_step" not in st.session_state:
-        st.session_state.fp_step = 1
+    if "dataclean_step" not in st.session_state:
+        st.session_state.dataclean_step = 1
 
-    # Small wizard (reuse same style as MRP)
-    def render_fp_wizard(step):
+    # Small wizard (reuse style used in MRP/FP)
+    def render_dataclean_wizard(step):
         steps = ["Files", "Scope", "Validate", "Results"]
         cols = st.columns(len(steps))
         for idx, col in enumerate(cols, start=1):
@@ -1848,7 +1849,7 @@ elif main_choice == "📦 FP Plant Status Extract":
                     klass = "done"
                 else:
                     klass = "pending"
-                
+
                 st.markdown(
                     f"""
 <div class="wizard-step">
@@ -1865,25 +1866,31 @@ elif main_choice == "📦 FP Plant Status Extract":
             unsafe_allow_html=True,
         )
 
-    render_fp_wizard(st.session_state.fp_step)
+    render_dataclean_wizard(st.session_state.dataclean_step)
 
     # ----------------------------------------------------------
-    # STEP 1 — FILE UPLOAD (same UX as MRP)
+    # STEP 1 — FILE UPLOAD (agora com MBEW incluído)
     # ----------------------------------------------------------
-    if st.session_state.fp_step == 1:
+    if st.session_state.dataclean_step == 1:
         st.markdown("### 📂 Step 1 — Load Files")
-        st.caption("Upload **MARA + MARC + ZPLM MARA + ZPLM MARC** (all required).")
+        st.caption("Upload **MARA + MARC + ZPLM MARA + ZPLM MARC + MBEW** (all required).")
 
         uploads = st.file_uploader(
-            "Drop the 4 Excel files here",
+            "Drop the 5 Excel files here",
             type=["xlsx"],
             accept_multiple_files=True,
-            key="fp_multi_uploader"
+            key="dc_multi_uploader"
         )
 
-        # Classify (same style as MRP)
-        def classify_fp(files):
-            mapping = {"mara": None, "marc": None, "zplm_marc": None, "zplm_mara": None}
+        # Classify files
+        def classify_dc(files):
+            mapping = {
+                "mara": None,
+                "marc": None,
+                "zplm_marc": None,
+                "zplm_mara": None,
+                "mbew": None
+            }
             if not files:
                 return mapping
             for f in files:
@@ -1896,27 +1903,29 @@ elif main_choice == "📦 FP Plant Status Extract":
                     mapping["mara"] = f
                 elif "marc" in name and "zplm" not in name:
                     mapping["marc"] = f
+                elif "mbew" in name:
+                    mapping["mbew"] = f
             return mapping
 
-        files = classify_fp(uploads)
+        files = classify_dc(uploads)
 
         if uploads:
-            persist_uploaded_mapping(files, "fp_files_persisted")
+            persist_uploaded_mapping(files, "dc_files_persisted")
 
         with st.expander("🔎 Files identified (Current upload)"):
-            for display_name in ["MARA.xlsx", "MARC.xlsx", "ZPLM MARA.xlsx", "ZPLM MARC.xlsx"]:
-                key_map = {
-                    "MARA.xlsx": "mara",
-                    "MARC.xlsx": "marc",
-                    "ZPLM MARA.xlsx": "zplm_mara",
-                    "ZPLM MARC.xlsx": "zplm_marc"
-                }
-                internal = key_map.get(display_name)
-                f = files.get(internal)
+            expected = {
+                "MARA.xlsx": "mara",
+                "MARC.xlsx": "marc",
+                "ZPLM MARA.xlsx": "zplm_mara",
+                "ZPLM MARC.xlsx": "zplm_marc",
+                "MBEW.xlsx": "mbew"
+            }
+            for display_name, key in expected.items():
+                f = files.get(key)
                 st.write(f"**{display_name}** → {getattr(f, 'name', '—')}")
 
         with st.expander("💾 Files saved in session (persisted)"):
-            persisted = st.session_state.get("fp_files_persisted", {})
+            persisted = st.session_state.get("dc_files_persisted", {})
             if persisted:
                 for k, meta in persisted.items():
                     st.write(f"**{k.upper()}** → {meta.get('name')}")
@@ -1924,28 +1933,28 @@ elif main_choice == "📦 FP Plant Status Extract":
                 st.write("No files stored yet.")
 
         # Required:
-        needed = ["mara", "marc", "zplm_marc", "zplm_mara"]
-        persisted = st.session_state.get("fp_files_persisted", {}) or {}
+        needed = ["mara", "marc", "zplm_marc", "zplm_mara", "mbew"]
+        persisted = st.session_state.get("dc_files_persisted", {}) or {}
         disabled = any(k not in persisted for k in needed)
 
         c1, c2 = st.columns([1, 1])
         with c2:
-            if st.button("➡️ Continue to Scope", disabled=disabled, width='stretch'):
-                st.session_state.fp_step = 2
+            if st.button("➡️ Continue to Scope", disabled=disabled, use_container_width=True):
+                st.session_state.dataclean_step = 2
                 st.rerun()
 
         with st.expander("🧹 Clear"):
             if st.button("Clear stored files"):
-                st.session_state["fp_files_persisted"] = {}
+                st.session_state["dc_files_persisted"] = {}
                 st.success("Cleared.")
                 st.rerun()
 
     # ----------------------------------------------------------
-    # STEP 2 — SCOPE (IDENTICAL TO MRP STYLE)
+    # STEP 2 — SCOPE
     # ----------------------------------------------------------
-    if st.session_state.fp_step == 2:
+    if st.session_state.dataclean_step == 2:
         st.markdown("### 🗺️ Step 2 — Choose Plant Scope")
-        st.caption("Choose the plant(s) to be included in the extract.")
+        st.caption("Choose the plant(s) to be included in the data cleanup validations.")
 
         export_scope = st.radio(
             "Scope:",
@@ -1958,49 +1967,51 @@ elif main_choice == "📦 FP Plant Status Extract":
         apply_filter_display = st.checkbox("Apply filter to the displayed tables", value=False)
         plant_filter_display = plant_filter_export if apply_filter_display else None
 
-        st.session_state.fp_export_scope = export_scope
-        st.session_state.fp_plant_export = plant_filter_export
-        st.session_state.fp_plant_display = plant_filter_display
+        st.session_state.dc_export_scope = export_scope
+        st.session_state.dc_plant_export = plant_filter_export
+        st.session_state.dc_plant_display = plant_filter_display
 
         c1, c2 = st.columns([1, 1])
         with c1:
             if st.button("⬅️ Back (Files)", width='stretch'):
-                st.session_state.fp_step = 1
+                st.session_state.dataclean_step = 1
                 st.rerun()
         with c2:
             if st.button("➡️ Continue to Validation", width='stretch'):
-                st.session_state.fp_step = 3
+                st.session_state.dataclean_step = 3
                 st.rerun()
 
-
     # ----------------------------------------------------------
-    # STEP 3 — RUN VALIDATION (MRP STYLE)
+    # STEP 3 — RUN DATA CLEANUPS
     # ----------------------------------------------------------
-    if st.session_state.fp_step == 3:
-        st.markdown("### ⚙️ Step 3 — Run FP Extract")
+    if st.session_state.dataclean_step == 3:
+        st.markdown("### ⚙️ Step 3 — Run Data Cleanups")
 
-        files = rehydrate_persisted_mapping("fp_files_persisted")
-        mara_file = files.get("mara")
-        marc_file = files.get("marc")
+        files = rehydrate_persisted_mapping("dc_files_persisted")
+        mara_file      = files.get("mara")
+        marc_file      = files.get("marc")
         zplm_marc_file = files.get("zplm_marc")
         zplm_mara_file = files.get("zplm_mara")
+        mbew_file      = files.get("mbew")
 
-        plant_filter_export = st.session_state.fp_plant_export
-        plant_filter_display = st.session_state.fp_plant_display
+        plant_filter_export  = st.session_state.dc_plant_export
+        plant_filter_display = st.session_state.dc_plant_display
 
-        if st.button("▶️ Run FP Extract", type="primary"):
-            with st.spinner("Processing FP validation…"):
-                excel_bytes, df_result, kpis = run_fp_status_validation(
+        if st.button("▶️ Run Data Cleanups", type="primary"):
+            with st.spinner("Running all Data Cleanup validations…"):
+
+                excel_bytes, results_dict, kpis = run_data_cleanups_validation(
                     mara_file=mara_file,
                     marc_file=marc_file,
                     zplm_marc_file=zplm_marc_file,
                     zplm_mara_file=zplm_mara_file,
+                    mbew_file=mbew_file,                # <--- NOVO
                     plant_filter=plant_filter_display
                 )
 
-            st.session_state.fp_result = df_result
-            st.session_state.fp_excel = excel_bytes
-            st.session_state.fp_kpis = kpis
+            st.session_state.dc_excel   = excel_bytes
+            st.session_state.dc_kpis    = kpis
+            st.session_state.dc_results = results_dict
 
             if save_history:
                 payload = build_fp_log_payload(
@@ -2010,48 +2021,50 @@ elif main_choice == "📦 FP Plant Status Extract":
                     marc_file=marc_file,
                     zplm_marc_file=zplm_marc_file,
                     zplm_mara_file=zplm_mara_file,
-                    df_result=df_result
+                    df_result=results_dict.get("FP_Status")
                 )
                 save_run_log(payload)
 
-            st.session_state.fp_step = 4
+            st.session_state.dataclean_step = 4
             st.rerun()
 
     # ----------------------------------------------------------
-    # STEP 4 — RESULTS (MRP STYLE)
+    # STEP 4 — RESULTS
     # ----------------------------------------------------------
-    if st.session_state.fp_step == 4:
+    if st.session_state.dataclean_step == 4:
         st.markdown("### 📊 Step 4 — Results")
 
-        df = st.session_state.get("fp_result", pd.DataFrame())
-        kpis = st.session_state.get("fp_kpis", {})
+        results_dict = st.session_state.get("dc_results", {})
+        kpis         = st.session_state.get("dc_kpis", {})
 
         # KPI cards identical layout
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Materials", kpis.get("materials", 0))
-        c2.metric("Plants", kpis.get("plants", 0))
-        c3.metric("Outdated", kpis.get("outdated", 0))
-        c4.metric("Correct", kpis.get("correct", 0))
+        c2.metric("Plants",    kpis.get("plants", 0))
+        c3.metric("Outdated",  kpis.get("outdated", 0))
+        c4.metric("Correct",   kpis.get("correct", 0))
 
-        st.header("FP Material Status")
-        st.dataframe(df, width='stretch')
+        # Display all validations
+        for sheet_name, df_val in results_dict.items():
+            st.header(f"📄 {sheet_name}")
+            st.dataframe(df_val, width='stretch')
 
-        # Download
-        excel_bytes = st.session_state.get("fp_excel")
+        # Download final Excel
+        excel_bytes = st.session_state.get("dc_excel")
         st.download_button(
-            "⬇️ Download FP_Materials_Extract.xlsx",
+            "⬇️ Download Data_Cleanups_Report.xlsx",
             data=excel_bytes.getvalue() if excel_bytes else b"",
-            file_name="FP_Materials_Extract.xlsx"
+            file_name="Data_Cleanups_Report.xlsx"
         )
 
         # Navigation
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("🔄 New Extraction", width='stretch'):
-                st.session_state.fp_step = 1
+            if st.button("🔄 New Run", width='stretch'):
+                st.session_state.dataclean_step = 1
                 st.rerun()
         with c2:
             if st.button("🧹 Clear & Restart", width='stretch'):
-                st.session_state["fp_files_persisted"] = {}
-                st.session_state.fp_step = 1
+                st.session_state["dc_files_persisted"] = {}
+                st.session_state.dataclean_step = 1
                 st.rerun()
