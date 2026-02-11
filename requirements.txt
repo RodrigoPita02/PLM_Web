@@ -6,4 +6,5 @@ plotly
 matplotlib
 polars
 fastexcel
-"polars[excel]"
+scipy
+polars[excel]

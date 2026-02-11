@@ -15,6 +15,12 @@ Design:
 from __future__ import annotations
 import streamlit as st
 import pandas as pd
+import plotly.express as px
+import matplotlib.pyplot as plt
+import numpy as np
+from datetime import datetime
+from scipy.stats import linregress
+from sap_validation_engine import list_run_logs
 
 # Tenta usar Plotly; se não houver, faz fallback para Matplotlib
 try:
@@ -42,7 +48,6 @@ def style_plotly(fig, height=450):
         colorway=VISTEON_COLORS
     )
     return fig
-
 
 # =========================
 #   SAP MATERIAL VALIDATION
@@ -187,7 +192,6 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
             ax.set_xlabel("View"); ax.set_ylabel("Materials Missing")
             st.pyplot(fig)
 
-
 def render_sap_history_charts(logs: list[dict]) -> None:
     """
     Linha temporal do histórico SAP: total de erros ao longo do tempo,
@@ -226,7 +230,6 @@ def render_sap_history_charts(logs: list[dict]) -> None:
         ax.legend()
         st.pyplot(fig)
 
-
 # =========================
 #   PLM WORKFLOW (ATL)
 # =========================
@@ -256,7 +259,6 @@ def render_atl_run_kpis(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
     c2.metric("PT02 — Lines", f"{pt02_rows:,}")
     c3.metric("PT01 — Aging Average (days)", avg_pt01)
     c4.metric("PT02 — Aging Average (days)", avg_pt02)
-
 
 def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
     """
@@ -337,7 +339,6 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
             plt.xticks(rotation=45, ha='right')
             st.pyplot(fig)
 
-
 def render_atl_history_charts(logs: list[dict]) -> None:
     """
     Evolução temporal do ATL:
@@ -375,7 +376,6 @@ def render_atl_history_charts(logs: list[dict]) -> None:
         ax.legend()
         st.pyplot(fig)
 
-
 # =========================
 #   SAP VALIDATION PROGRESS (DIFF)
 # =========================
@@ -395,7 +395,6 @@ def render_progress_kpis(diff_dfs: dict[str, pd.DataFrame]) -> None:
     c3.metric("Changed Errors", _n("Changed Errors"))
     c4.metric("New Materials", _n("New Materials"))
     c5.metric("Views Lost", _n("Views Lost"))
-
 
 def render_progress_charts(diff_dfs: dict[str, pd.DataFrame]) -> None:
     """
@@ -472,7 +471,6 @@ def render_mrp_run_kpis(errors_df: pd.DataFrame) -> None:
     c1.metric("Total Errors (MRP)", f"{total_errors:,}")
     c2.metric("Fields with Error (distinct)", f"{total_fields:,}")
     c3.metric("Materials with Errors (distinct)", f"{total_materials:,}")
-
 
 def render_mrp_run_charts(errors_df: pd.DataFrame) -> None:
     """
@@ -556,7 +554,6 @@ def render_mrp_run_charts(errors_df: pd.DataFrame) -> None:
             plt.xticks(rotation=45, ha='right')
             st.pyplot(fig)
 
-
 def render_mrp_history_charts(logs: list[dict]) -> None:
     """
     Evolução temporal do MRP:
@@ -599,29 +596,56 @@ def render_mrp_history_charts(logs: list[dict]) -> None:
 # =========================
 def render_evolution_dashboard():
     """
-    Evolution Dashboard (SAP + PLM Workflow + Cleanups)
-    Timeline analysis with grouping, filters and Visteon styling.
+    Evolution Dashboard (SAP + PLM Workflow + Cleanups) — REV9
+    Inclui:
+      - Períodos semanais convertidos para intervalos (ex: 05–11 Jan 2026)
+      - KPIs inteligentes (Conjunto B)
+      - Sparkline
+      - Plant filter com ALL = visão global
+      - Correções ISO-Week com fromisocalendar
+      - Tick spacing inteligente
+      - Paleta Visteon
+      - Trend Detection
+      - Forecast
+      - Anomaly Detection
+      - Auto-Insights
+      - Exportação Excel
     """
-    import streamlit as st
-    import pandas as pd
-    import plotly.express as px
-    import matplotlib.pyplot as plt
-    from sap_validation_engine import list_run_logs
-    from utils.dashboard import style_plotly, PLOTLY_AVAILABLE
+
+    # ------------------------------------------------------------------
+    # Função auxiliar: ISO Week → intervalo real (05–11 Jan 2026)
+    # ------------------------------------------------------------------
+    def iso_week_to_range(iso_str):
+        if "-W" not in iso_str:
+            return iso_str
+        try:
+            year, week = iso_str.split("-W")
+            year = int(year)
+            week = int(week)
+
+            start = datetime.fromisocalendar(year, week, 1)  # Monday
+            end = datetime.fromisocalendar(year, week, 7)    # Sunday
+
+            # Mesmos mês → 05–11 Jan 2026
+            if start.month == end.month:
+                return f"{start.strftime('%d')}–{end.strftime('%d %b %Y')}"
+            else:
+                # Meses diferentes → 28 Jan–03 Feb 2026
+                return f"{start.strftime('%d %b')}–{end.strftime('%d %b %Y')}"
+        except:
+            return iso_str
 
     st.subheader("📈 Evolution Dashboard")
     st.caption("Historical evolution of SAP, PLM Workflow and Data Cleanups validations.")
 
     # ---------------------------------------------------------
-    # Load logs dynamically
+    # Load logs
     # ---------------------------------------------------------
     sap_logs = list_run_logs("sap", limit=500) or []
     atl_logs = list_run_logs("atl", limit=500) or []
     dc_logs  = list_run_logs("dataclean", limit=500) or []
 
-    # ---------------------------------------------------------
-    # Determine which sources have data
-    # ---------------------------------------------------------
+    # Determine available sources
     available_sources = []
     if sap_logs: available_sources.append("SAP")
     if atl_logs: available_sources.append("PLM Workflow")
@@ -629,9 +653,7 @@ def render_evolution_dashboard():
 
     st.sidebar.markdown("### 📌 Data Sources")
     selected_sources = st.sidebar.multiselect(
-        "Choose sources:",
-        options=available_sources,
-        default=available_sources
+        "Choose sources:", options=available_sources, default=available_sources
     )
 
     if not selected_sources:
@@ -639,82 +661,63 @@ def render_evolution_dashboard():
         return
 
     # ---------------------------------------------------------
-    # Build unified list of entries
+    # Build unified dataset
     # ---------------------------------------------------------
-    all_entries = []
+    entries = []
 
     # SAP
     if "SAP" in selected_sources:
         for log in sap_logs:
-            all_entries.append({
-                "ts": pd.to_datetime(log.get("timestamp")),
+            entries.append({
+                "ts": pd.to_datetime(log["timestamp"]),
                 "plant": log.get("plant_filter", "ALL"),
                 "source": "SAP",
-                "metric": "Errors",
                 "value": log.get("metrics", {}).get("total_errors", 0)
             })
 
-    # PLM Workflow (PT01 + PT02)
+    # PLM Workflow
     if "PLM Workflow" in selected_sources:
         for log in atl_logs:
-            ts = pd.to_datetime(log.get("timestamp"))
-            all_entries.append({
-                "ts": ts,
-                "plant": "PT01",
-                "source": "PLM Workflow PT01",
-                "metric": "Rows",
+            ts = pd.to_datetime(log["timestamp"])
+            entries.append({
+                "ts": ts, "plant": "PT01", "source": "PLM Workflow PT01",
                 "value": log.get("metrics", {}).get("PT01_rows", 0)
             })
-            all_entries.append({
-                "ts": ts,
-                "plant": "PT02",
-                "source": "PLM Workflow PT02",
-                "metric": "Rows",
+            entries.append({
+                "ts": ts, "plant": "PT02", "source": "PLM Workflow PT02",
                 "value": log.get("metrics", {}).get("PT02_rows", 0)
             })
 
     # Cleanups
     if "Cleanups" in selected_sources:
         for log in dc_logs:
-            all_entries.append({
-                "ts": pd.to_datetime(log.get("timestamp")),
+            entries.append({
+                "ts": pd.to_datetime(log["timestamp"]),
                 "plant": log.get("plant_filter", "ALL"),
                 "source": "Cleanups",
-                "metric": "Outdated",
                 "value": log.get("metrics", {}).get("outdated", 0)
             })
 
-    if not all_entries:
+    if not entries:
         st.info("No data available for selected sources.")
         return
 
-    df = pd.DataFrame(all_entries)
+    df = pd.DataFrame(entries)
 
     # ---------------------------------------------------------
-    # Sidebar — Date range
+    # Date filter
     # ---------------------------------------------------------
     st.sidebar.markdown("### 📅 Date Range")
-
-    min_date = df["ts"].min().date()
-    max_date = df["ts"].max().date()
-
+    dmin, dmax = df["ts"].min().date(), df["ts"].max().date()
     start_date, end_date = st.sidebar.date_input(
-        "Period:",
-        value=(min_date, max_date),
-        min_value=min_date,
-        max_value=max_date
+        "Period:", value=(dmin, dmax), min_value=dmin, max_value=dmax
     )
-
     df = df[(df["ts"].dt.date >= start_date) & (df["ts"].dt.date <= end_date)]
 
     # ---------------------------------------------------------
-    # Sidebar — Group by mode
+    # Group by
     # ---------------------------------------------------------
-    mode = st.sidebar.selectbox(
-        "Group by:",
-        ["Daily", "Weekly", "Monthly"],
-        index=1
-    )
+    mode = st.sidebar.selectbox("Group by:", ["Daily", "Weekly", "Monthly"], index=1)
 
     if mode == "Daily":
         df["period"] = df["ts"].dt.strftime("%Y-%m-%d")
@@ -727,101 +730,448 @@ def render_evolution_dashboard():
         df["period"] = df["ts"].dt.strftime("%Y-%m")
 
     # ---------------------------------------------------------
-    # Sidebar — Plant filter (only real plants)
+    # Plant filter (ALL = show all)
     # ---------------------------------------------------------
     plants = sorted(df["plant"].dropna().unique().tolist())
-    selected_plants = st.sidebar.multiselect("Plants:", plants, default=plants)
-    df = df[df["plant"].isin(selected_plants)]
+    real_plants = [p for p in plants if p != "ALL"]
+
+    selected_plants = st.sidebar.multiselect(
+        "Plants:", ["ALL"] + real_plants, default=["ALL"]
+    )
+
+    if "ALL" in selected_plants:
+        df = df[df["plant"].isin(real_plants + ["ALL"])]
+    else:
+        df = df[df["plant"].isin(selected_plants)]
 
     # ---------------------------------------------------------
-    # Group & sort chronologically
+    # Group + robust sorting (ISO‑week fix)
     # ---------------------------------------------------------
     grouped = (
-        df.groupby(["period", "source", "plant"])["value"]
-        .mean()
-        .reset_index()
+        df.groupby(["period", "source", "plant"], as_index=False)["value"]
+          .mean()
     )
 
-    grouped["sort_col"] = pd.to_datetime(
-        grouped["period"].str.replace("W", "-W") + "-1",
-        format="%Y-%W-%w",
-        errors="coerce"
+    def iso_to_date(iso_str):
+        if "-W" not in iso_str:
+            return pd.to_datetime(iso_str, errors="coerce")
+        try:
+            year, week = iso_str.split("-W")
+            return datetime.fromisocalendar(int(year), int(week), 1)
+        except:
+            return pd.NaT
+
+    grouped["sort_col"] = grouped["period"].apply(iso_to_date)
+    grouped = grouped.sort_values("sort_col", kind="stable")
+
+    # ---------------------------------------------------------
+    # KPIs (Conjunto B) + sparkline
+    # ---------------------------------------------------------
+    sum_by_period = (
+        grouped.groupby(["period", "sort_col"], as_index=False)["value"]
+               .sum()
+               .sort_values("sort_col", kind="stable")
     )
 
-    grouped = grouped.sort_values("sort_col")
+    # >>>>>>> NOVO: coluna friendly <<<<<<<<<
+    sum_by_period["pretty_period"] = sum_by_period["period"].apply(iso_week_to_range)
+    grouped["pretty_period"] = grouped["period"].apply(iso_week_to_range)
+
+    # Current
+    if len(sum_by_period):
+        current_val = float(sum_by_period["value"].iloc[-1])
+        current_label = str(sum_by_period["pretty_period"].iloc[-1])
+    else:
+        current_val, current_label = 0, "—"
+
+    # Δ %
+    if len(sum_by_period) >= 2:
+        prev_val = float(sum_by_period["value"].iloc[-2])
+        delta_pct = None if prev_val == 0 else (current_val - prev_val) / prev_val * 100
+    else:
+        delta_pct = None
+
+    # Best / Worst
+    if len(sum_by_period):
+        best_idx = sum_by_period["value"].idxmin()
+        worst_idx = sum_by_period["value"].idxmax()
+        best_val = float(sum_by_period.loc[best_idx, "value"])
+        best_label = str(sum_by_period.loc[best_idx, "pretty_period"])
+        worst_val = float(sum_by_period.loc[worst_idx, "value"])
+        worst_label = str(sum_by_period.loc[worst_idx, "pretty_period"])
+    else:
+        best_val = worst_val = 0
+        best_label = worst_label = "—"
 
     # ---------------------------------------------------------
-    # Visteon color map
+    # Render KPIs
     # ---------------------------------------------------------
-    COLOR_MAP = {
-        "SAP": "#FF7200",
-        "PLM Workflow PT01": "#6EC6FF",
-        "PLM Workflow PT02": "#00A6A6",
-        "Cleanups": "#4D4D4D"
-    }
+    k1, k2, k3 = st.columns(3)
+
+    with k1:
+        if delta_pct is None:
+            st.metric("Current Value", f"{current_val:,.0f}", delta="—", delta_color="inverse")
+        else:
+            st.metric("Current Value", f"{current_val:,.0f}",
+                      delta=f"{delta_pct:.1f}%", delta_color="inverse")
+
+        if PLOTLY_AVAILABLE and len(sum_by_period) > 1:
+            spark = px.line(sum_by_period, x="pretty_period", y="value")
+            spark.update_layout(template="simple_white", height=75,
+                                margin=dict(l=0,r=0,t=0,b=0), showlegend=False)
+            spark.update_xaxes(visible=False)
+            spark.update_yaxes(visible=False)
+            st.plotly_chart(spark, width='stretch')
+        st.caption(f"Last period: {current_label}")
+
+    with k2:
+        st.metric("Best Period (min)", f"{best_val:,.0f}", delta=best_label)
+
+    with k3:
+        st.metric("Worst Period (max)", f"{worst_val:,.0f}", delta=worst_label)
 
     # ---------------------------------------------------------
-    # Render line chart
+    # Trend Detection
+    # ---------------------------------------------------------
+    st.markdown("### 📊 Trend Analysis")
+
+    if len(sum_by_period) >= 3:
+        y = sum_by_period["value"].to_numpy(dtype=float)
+        x = np.arange(len(y))
+
+        lr = linregress(x, y)
+        slope = lr.slope
+        r2 = lr.rvalue ** 2
+
+        threshold = np.std(y) * 0.15
+
+        if slope > threshold:
+            trend_label = "📈 Strong Uptrend"
+        elif slope > 0:
+            trend_label = "↗ Weak Uptrend"
+        elif slope < -threshold:
+            trend_label = "📉 Strong Downtrend"
+        elif slope < 0:
+            trend_label = "↘ Weak Downtrend"
+        else:
+            trend_label = "➖ Sideways"
+
+        st.info(
+            f"**Trend:** {trend_label}\n\n"
+            f"**Slope:** `{slope:.3f}`\n"
+            f"**R² (confidence):** `{r2:.3f}`\n"
+            f"**Data Points:** `{len(y)}`"
+        )
+    else:
+        st.info("Not enough data points to compute trend.")
+
+    # ---------------------------------------------------------
+    # Main line chart (pretty_period)
     # ---------------------------------------------------------
     st.markdown(f"### 📉 Evolution Over Time ({mode})")
 
     if PLOTLY_AVAILABLE:
         fig = px.line(
-            grouped,
-            x="period",
-            y="value",
-            color="source",
-            line_dash="plant",
-            markers=True,
-            title="Evolution of Validation Metrics",
+            grouped, x="pretty_period", y="value",
+            color="source", line_dash="plant",
+            markers=True, title="Evolution of Validation Metrics"
         )
 
         fig.update_traces(marker=dict(size=8))
+
+        COLOR_MAP = {
+            "SAP": "#FF7200",
+            "PLM Workflow PT01": "#6EC6FF",
+            "PLM Workflow PT02": "#00A6A6",
+            "Cleanups": "#4D4D4D"
+        }
 
         fig.update_layout(
             colorway=[COLOR_MAP[s] for s in grouped["source"].unique() if s in COLOR_MAP]
         )
 
-        # ------------------------------------------------------------
-        # PATCH — Smart tick spacing (to avoid overlapping labels)
-        # ------------------------------------------------------------
-        unique_periods = list(grouped["period"].unique())
-        n_periods = len(unique_periods)
+        unique_sorted = sum_by_period["pretty_period"].tolist()
+        n = len(unique_sorted)
+        step = 1 if n <= 12 else (2 if n <= 20 else (3 if n <= 35 else 4))
 
-        if n_periods <= 12:
-            step = 1
-        elif n_periods <= 20:
-            step = 2
-        elif n_periods <= 35:
-            step = 3
-        else:
-            step = 4
-
-        fig.update_xaxes(
-            tickmode="array",
-            tickvals=unique_periods[::step],
-        )
-
-        fig.update_layout(
-            xaxis_tickangle=-45,
-            xaxis_tickfont=dict(size=11),
-        )
+        fig.update_xaxes(tickmode="array", tickvals=unique_sorted[::step])
+        fig.update_layout(xaxis_tickangle=-45, xaxis_tickfont=dict(size=11))
 
         fig = style_plotly(fig, height=480)
         st.plotly_chart(fig, width='stretch')
-
     else:
+        # Fallback Matplotlib
         fig, ax = plt.subplots(figsize=(10, 5))
-        for (source, plant), grp in grouped.groupby(["source", "plant"]):
-            color = COLOR_MAP.get(source, "#000000")
-            ax.plot(
-                grp["period"],
-                grp["value"],
-                marker="o",
-                label=f"{source} ({plant})",
-                color=color
-            )
+        for (src, pl), grp in grouped.groupby(["source", "plant"]):
+            ax.plot(grp["pretty_period"], grp["value"],
+                    marker="o", label=f"{src} ({pl})",
+                    color=COLOR_MAP.get(src, "#000000"))
         ax.legend()
-        ax.set_title("Evolution of Validation Metrics")
         plt.xticks(rotation=45)
         st.pyplot(fig)
+
+    # ---------------------------------------------------------
+    # Forecast (Next Period)
+    # ---------------------------------------------------------
+    st.markdown("### 🔮 Forecast (Next Period)")
+
+    if len(sum_by_period) >= 3:
+
+        y = sum_by_period["value"].to_numpy(dtype=float)
+        x = np.arange(len(y))
+
+        slope_f, intercept_f = np.polyfit(x, y, 1)
+        next_x = len(y)
+        forecast_next = slope_f * next_x + intercept_f
+
+        conf = np.std(y) * 0.20
+        lower = forecast_next - conf
+        upper = forecast_next + conf
+
+        if slope_f > 0:
+            forecast_label = "📈 Expected increase"
+        elif slope_f < 0:
+            forecast_label = "📉 Expected decrease"
+        else:
+            forecast_label = "➖ Stable expectation"
+
+        st.success(
+            f"**Forecast:** {forecast_label}\n\n"
+            f"**Next period estimate:** `{forecast_next:,.0f}`\n"
+            f"**Range:** `{lower:,.0f}` → `{upper:,.0f}`"
+        )
+
+        if PLOTLY_AVAILABLE:
+            fhist = sum_by_period.copy()
+            fhist["type"] = "Historical"
+
+            fnext = pd.DataFrame({
+                "pretty_period": [f"Forecast +1 {mode}"],
+                "value": [forecast_next],
+                "type": ["Forecast"]
+            })
+
+            fig_f = px.line(fhist, x="pretty_period", y="value")
+            fig_f.add_scatter(
+                x=fnext["pretty_period"], y=fnext["value"],
+                mode="markers+lines",
+                name="Forecast", line=dict(dash="dash")
+            )
+            fig_f.add_scatter(
+                x=fnext["pretty_period"], y=[upper],
+                mode="markers", marker=dict(color="lightgray"),
+                name="Upper Bound"
+            )
+            fig_f.add_scatter(
+                x=fnext["pretty_period"], y=[lower],
+                mode="markers", marker=dict(color="lightgray"),
+                name="Lower Bound"
+            )
+
+            fig_f.update_layout(
+                template="simple_white",
+                height=300,
+                margin=dict(l=10, r=10, t=20, b=10),
+                showlegend=True
+            )
+
+            st.plotly_chart(fig_f, width='stretch')
+
+    else:
+        st.info("Not enough data points to generate forecast.")
+
+    # ---------------------------------------------------------
+    # Anomaly Detection
+    # ---------------------------------------------------------
+    st.markdown("### 🚨 Anomaly Detection")
+
+    if len(sum_by_period) >= 5:
+
+        vals = sum_by_period["value"].to_numpy(dtype=float)
+
+        mean = np.mean(vals)
+        std  = np.std(vals)
+        median = np.median(vals)
+        mad = np.median(np.abs(vals - median)) if np.median(np.abs(vals - median)) != 0 else 1e-6
+
+        anomalies = []
+
+        for i, row in sum_by_period.iterrows():
+            v = row["value"]
+            period = row["pretty_period"]   # <= now uses pretty
+            z = (v - mean) / std if std > 0 else 0
+            mod_z = 0.6745 * (v - median) / mad
+
+            if abs(mod_z) > 3.5 or abs(z) > 3.5:
+                severity = "🔥 Severe"
+            elif abs(mod_z) > 2.5 or abs(z) > 2.5:
+                severity = "🟠 Moderate"
+            elif abs(mod_z) > 1.8 or abs(z) > 1.8:
+                severity = "🟡 Mild"
+            else:
+                continue
+
+            anomalies.append({
+                "period": period,
+                "value": v,
+                "zscore": float(z),
+                "mod_z": float(mod_z),
+                "severity": severity
+            })
+
+        if anomalies:
+            st.warning(f"**Detected {len(anomalies)} anomalies**:")
+            for a in anomalies:
+                st.markdown(
+                    f"- {a['severity']} — **{a['period']}** → `{a['value']}` "
+                    f"(Z={a['zscore']:.2f}, MAD={a['mod_z']:.2f})"
+                )
+        else:
+            st.success("No anomalies detected in this period.")
+
+    else:
+        st.info("Need at least 5 periods for anomaly detection.")
+
+    # ---------------------------------------------------------
+    # Auto-Insights
+    # ---------------------------------------------------------
+    st.markdown("### 🧠 Auto‑Insights")
+
+    context_lines = []
+
+    if len(sum_by_period) >= 2:
+        initial = float(sum_by_period["value"].iloc[0])
+        final = float(sum_by_period["value"].iloc[-1])
+        total_change = final - initial
+        pct_change = (total_change / initial * 100) if initial != 0 else None
+
+        if pct_change is not None:
+            if pct_change > 0:
+                context_lines.append(
+                    f"Across the selected period, total errors increased by **{pct_change:.1f}%**, "
+                    f"moving from **{initial:,.0f}** to **{final:,.0f}**."
+                )
+            elif pct_change < 0:
+                context_lines.append(
+                    f"Across the selected period, total errors decreased by **{abs(pct_change):.1f}%**, "
+                    f"moving from **{initial:,.0f}** to **{final:,.0f}**."
+                )
+            else:
+                context_lines.append(
+                    "Across the selected period, total errors remained stable."
+                )
+
+    if len(sum_by_period) >= 3:
+        context_lines.append(
+            f"The regression model indicates a **{trend_label.replace('📈','').replace('📉','').strip()}**, "
+            f"with slope **{slope:.3f}** and confidence (R²) **{r2:.3f}**."
+        )
+
+    if len(sum_by_period) >= 3:
+        if slope > 0:
+            context_lines.append(
+                f"Forecast suggests an increase next period, near **{forecast_next:,.0f}**."
+            )
+        elif slope < 0:
+            context_lines.append(
+                f"Forecast points to a further reduction, around **{forecast_next:,.0f}**."
+            )
+        else:
+            context_lines.append(
+                f"Forecast indicates stable results around **{forecast_next:,.0f}**."
+            )
+
+    if "anomalies" in locals() and anomalies:
+        severe = [a for a in anomalies if "Severe" in a["severity"]]
+        if severe:
+            context_lines.append(
+                f"Detected **{len(severe)} severe anomalies**, indicating significant irregularities."
+            )
+        else:
+            context_lines.append(
+                "Detected only mild/moderate anomalies, suggesting normal fluctuations."
+            )
+    else:
+        context_lines.append("No anomalies detected in this timeframe.")
+
+    if len(selected_plants) > 1 or ("ALL" in selected_plants):
+        plant_stats = grouped.groupby("plant")["value"].mean().sort_values()
+        best_plant = plant_stats.index[0]
+        worst_plant = plant_stats.index[-1]
+        context_lines.append(
+            f"Best performing plant: **{best_plant}**. Worst: **{worst_plant}**."
+        )
+
+    final_text = " ".join(context_lines)
+    st.write(final_text)
+
+    # ---------------------------------------------------------
+    # EXPORTAÇÃO
+    # ---------------------------------------------------------
+    st.markdown("### 📤 Export Data")
+
+    import io
+    export_buffer = io.BytesIO()
+
+    with pd.ExcelWriter(export_buffer, engine="openpyxl") as writer:
+
+        sum_by_period.to_excel(writer, sheet_name="Historical_Summary", index=False)
+
+        if "anomalies" in locals() and anomalies:
+            pd.DataFrame(anomalies).to_excel(
+                writer, sheet_name="Anomalies", index=False
+            )
+        else:
+            pd.DataFrame(columns=["period","value","zscore","mod_z","severity"]).to_excel(
+                writer, sheet_name="Anomalies", index=False
+            )
+
+        kpi_df = pd.DataFrame({
+            "Metric": ["Current Value", "Delta %", "Best Value", "Best Period", "Worst Value", "Worst Period"],
+            "Value": [
+                current_val,
+                f"{delta_pct:.1f}%" if delta_pct is not None else "—",
+                best_val,
+                best_label,
+                worst_val,
+                worst_label
+            ]
+        })
+        kpi_df.to_excel(writer, sheet_name="KPIs", index=False)
+
+        if len(sum_by_period) >= 3:
+            trend_df = pd.DataFrame({
+                "Slope": [slope],
+                "R2": [r2],
+                "Trend Classification": [trend_label]
+            })
+        else:
+            trend_df = pd.DataFrame({
+                "Slope": ["—"],
+                "R2": ["—"],
+                "Trend Classification": ["Not enough data"]
+            })
+        trend_df.to_excel(writer, sheet_name="Trend", index=False)
+
+        if len(sum_by_period) >= 3:
+            forecast_df = pd.DataFrame({
+                "Forecast Next Period": [forecast_next],
+                "Lower Bound": [lower],
+                "Upper Bound": [upper],
+                "Forecast Classification": [forecast_label]
+            })
+        else:
+            forecast_df = pd.DataFrame({
+                "Forecast Next Period": ["—"],
+                "Lower Bound": ["—"],
+                "Upper Bound": ["—"],
+                "Forecast Classification": ["Not enough data"]
+            })
+        forecast_df.to_excel(writer, sheet_name="Forecast", index=False)
+
+    st.download_button(
+        label="⬇️ Download Evolution Report (Excel)",
+        data=export_buffer.getvalue(),
+        file_name="Evolution_Report.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )

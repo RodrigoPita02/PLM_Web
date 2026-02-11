@@ -421,9 +421,9 @@ def validar_batch_management(df, resultados):
         if pd.isna(row['Batch Management Required Ind.']) or batch_ind == '':
             erros_linha.append('Mandatory field blank')
         else:
-            if plant_type == 'PP' and batch_ind != '1':
+            if plant_type in ('PP', 'COI') and batch_ind != '1':
                 erros_linha.append(f"For Plant Type 'PP', should be 'Yes' (Current: '{batch_ind}')")
-            elif plant_type != 'PP' and batch_ind != '0':
+            elif plant_type not in ('PP', 'COI') and batch_ind != '0':
                 erros_linha.append(f"For Plant Type '{plant_type}', should be 'No' (Current: '{batch_ind}')")
 
         if erros_linha:
