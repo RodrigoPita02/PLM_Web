@@ -79,8 +79,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
       - Top N Fields com mais erros
       - Erros por Planta
       - Top N Materiais com mais erros
-      - Erros (View em falta) por código de View
-    Usa padrão robusto para value_counts → (rename_axis + reset_index(name=...)).
+      - Materiais com View em falta (por código de View)
     """
     if errors_df is None or errors_df.empty:
         return
@@ -105,7 +104,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
             fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(top_fields['Field'], top_fields['Errors'], color="#1f77b4")
@@ -127,7 +126,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
                          title="Errors by Plant", text='Errors', color='Plant')
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_plant['Plant'], by_plant['Errors'], color="#ff7f0e")
@@ -150,7 +149,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
             fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_mat['Material'], by_mat['Errors'], color="#2ca02c")
@@ -159,30 +158,34 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
             plt.xticks(rotation=45, ha='right')
             st.pyplot(fig)
 
-    # --- Views em falta por código de View ---
-    if {'Justified_By_Missing_View', 'View'}.issubset(errors_df.columns):
-        mv = errors_df.loc[errors_df['Justified_By_Missing_View']].copy()
-        mv = mv[mv['View'].astype(str).str.strip().ne('Not aplicable')]
-        if not mv.empty:
-            by_view = (
-                mv['View']
-                .value_counts()
-                .rename_axis('View')
-                .reset_index(name='Errors')
-            )
-            if PLOTLY_AVAILABLE:
-                fig = px.bar(by_view, x='View', y='Errors',
-                             title="Errors (Missing View) due to View code",
-                             text='Errors', color='View')
-                fig.update_traces(textposition='outside')
-                fig = style_plotly(fig, height=480)
-                st.plotly_chart(fig, width='stretch')
-            else:
-                fig, ax = plt.subplots(figsize=(8, 4))
-                ax.bar(by_view['View'], by_view['Errors'], color="#d62728")
-                ax.set_title("Errors (Missing View) due to View code")
-                ax.set_xlabel("View"); ax.set_ylabel("Errors")
-                st.pyplot(fig)
+    # ============================================================
+    # NOVO: Materiais com View em falta por código de View
+    # (Usa view_is_missing_df em vez de erros justificados)
+    # ============================================================
+
+    view_missing_df = st.session_state.get("sap_view_missing_df")
+
+    if view_missing_df is not None and not view_missing_df.empty:
+        by_view = (
+            view_missing_df['Missing_View']
+            .value_counts()
+            .rename_axis('View')
+            .reset_index(name='Materials Missing')
+        )
+
+        if PLOTLY_AVAILABLE:
+            fig = px.bar(by_view, x='View', y='Materials Missing',
+                         title="Materials Missing by View Code",
+                         text='Materials Missing', color='View')
+            fig.update_traces(textposition='outside')
+            fig = style_plotly(fig, height=480)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            fig, ax = plt.subplots(figsize=(8, 4))
+            ax.bar(by_view['View'], by_view['Materials Missing'], color="#d62728")
+            ax.set_title("Materials Missing by View Code")
+            ax.set_xlabel("View"); ax.set_ylabel("Materials Missing")
+            st.pyplot(fig)
 
 
 def render_sap_history_charts(logs: list[dict]) -> None:

@@ -1,3 +1,4 @@
+from turtle import st
 import pandas as pd
 import io
 import os, json
@@ -116,7 +117,6 @@ def normalize_code(value, *, as_int=False, zero_pad=None):
             if len(s) < zero_pad and s.isdigit():
                 s = s.zfill(zero_pad)
     return s
-
 
 def ensure_basic_data_k(marc_df):
     """
@@ -2651,6 +2651,7 @@ def validar_zplm_marc_vs_marc_existence(zplm_marc_df, marc_df):
          for (mat, plant) in sorted(missing)],
         columns=["Material", "Plant", "Error"]
     )
+
 # ------------------------
 # Cruzamentos MARA/MARC/ZPLM
 # ------------------------
@@ -3561,6 +3562,37 @@ def run_full_validation(
         plant_filter=plant_filter,
     )
 
+    # --- NOVO: consolidar Missing_<View> ---
+    def _concat_missing_tabs(vtabs: dict) -> pd.DataFrame:
+        import pandas as pd
+        cols = ['Material', 'Plant', 'Missing_View', 'View_Description', 'Fields_Expected']
+        if not vtabs:
+            return pd.DataFrame(columns=cols)
+
+        frames = []
+        for v_code, dfv in vtabs.items():
+            if dfv is None or dfv.empty:
+                continue
+
+            dfc = dfv.copy()
+
+            if 'Missing_View' not in dfc.columns:
+                dfc['Missing_View'] = v_code
+            if 'View_Description' not in dfc.columns:
+                dfc['View_Description'] = ''
+
+            dfc = dfc[cols]
+            frames.append(dfc)
+
+        if not frames:
+            return pd.DataFrame(columns=cols)
+
+        out = pd.concat(frames, ignore_index=True).drop_duplicates()
+        out.sort_values(['Material', 'Plant', 'Missing_View'], inplace=True)
+        return out
+
+    view_is_missing_df = _concat_missing_tabs(view_tabs_dict)
+    
     # ------------------
     # Geração do Excel final em memória
     # ------------------
@@ -3572,7 +3604,8 @@ def run_full_validation(
     with pd.ExcelWriter(file_bytes, engine="openpyxl") as writer:
         sap_df.to_excel(writer, sheet_name="Original Data", index=False)
         errors_df.to_excel(writer, sheet_name="All Errors", index=False)
-        errors_filtered_df.to_excel(writer, sheet_name="View is Missing", index=False)
+        # ⬅️ AGORA "View is Missing" vem do consolidado das Missing_<View>
+        view_is_missing_df.to_excel(writer, sheet_name="View is Missing", index=False)
         views_missing_output_df.to_excel(writer, sheet_name="Field With Error", index=False)
 
         # Summary + Coverage

@@ -677,7 +677,7 @@ if main_choice == "📦 SAP Material Validation":
             zplm_mara  = files.get("zplm_mara")
             qmat_file  = files.get("qmat")
 
-            plant_filter_export = st.session_state.sap_plant_export
+            plant_filter_export  = st.session_state.sap_plant_export
             plant_filter_display = st.session_state.sap_plant_display
 
             # Sanity check da folha SAPUI5 Export
@@ -696,7 +696,6 @@ if main_choice == "📦 SAP Material Validation":
             with st.spinner("Validating materials..."):
 
                 # Execução para visualização (display)
-                
                 excel_display, errors_df, summary_df = run_full_validation(
                     sap_file=sap_file,
                     mara_file=mara_file,
@@ -709,6 +708,16 @@ if main_choice == "📦 SAP Material Validation":
                     plant_filter=plant_filter_display,
                     progress_callback=update_progress
                 )
+
+                # ---------------------------------------------------------
+                # NOVO → Ler aba "View is Missing" e guardar no session_state
+                # ---------------------------------------------------------
+                import pandas as pd
+                try:
+                    df_view_missing = pd.read_excel(excel_display, sheet_name="View is Missing")
+                    st.session_state["sap_view_missing_df"] = df_view_missing
+                except Exception:
+                    st.session_state["sap_view_missing_df"] = pd.DataFrame()
 
                 # Execução para exportação (se necessário)
                 if plant_filter_export != plant_filter_display:
