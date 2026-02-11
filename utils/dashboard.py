@@ -104,7 +104,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
             fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(top_fields['Field'], top_fields['Errors'], color="#1f77b4")
@@ -126,7 +126,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
                          title="Errors by Plant", text='Errors', color='Plant')
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_plant['Plant'], by_plant['Errors'], color="#ff7f0e")
@@ -149,7 +149,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
             fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_mat['Material'], by_mat['Errors'], color="#2ca02c")
@@ -179,7 +179,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
                          text='Materials Missing', color='View')
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_view['View'], by_view['Materials Missing'], color="#d62728")
@@ -592,4 +592,236 @@ def render_mrp_history_charts(logs: list[dict]) -> None:
         ax.set_title("Total Errors over time (MRP)")
         ax.set_xlabel("Time"); ax.set_ylabel("Errors")
         ax.legend()
+        st.pyplot(fig)
+
+# =========================
+# Evolution Dashboartd (NOVO)
+# =========================
+def render_evolution_dashboard():
+    """
+    Evolution Dashboard (SAP + PLM Workflow + Cleanups)
+    Timeline analysis with grouping, filters and Visteon styling.
+    """
+    import streamlit as st
+    import pandas as pd
+    import plotly.express as px
+    import matplotlib.pyplot as plt
+    from sap_validation_engine import list_run_logs
+    from utils.dashboard import style_plotly, PLOTLY_AVAILABLE
+
+    st.subheader("📈 Evolution Dashboard")
+    st.caption("Historical evolution of SAP, PLM Workflow and Data Cleanups validations.")
+
+    # ---------------------------------------------------------
+    # Load logs dynamically
+    # ---------------------------------------------------------
+    sap_logs = list_run_logs("sap", limit=500) or []
+    atl_logs = list_run_logs("atl", limit=500) or []
+    dc_logs  = list_run_logs("dataclean", limit=500) or []
+
+    # ---------------------------------------------------------
+    # Determine which sources have data
+    # ---------------------------------------------------------
+    available_sources = []
+    if sap_logs: available_sources.append("SAP")
+    if atl_logs: available_sources.append("PLM Workflow")
+    if dc_logs:  available_sources.append("Cleanups")
+
+    st.sidebar.markdown("### 📌 Data Sources")
+    selected_sources = st.sidebar.multiselect(
+        "Choose sources:",
+        options=available_sources,
+        default=available_sources
+    )
+
+    if not selected_sources:
+        st.info("Please select at least one source.")
+        return
+
+    # ---------------------------------------------------------
+    # Build unified list of entries
+    # ---------------------------------------------------------
+    all_entries = []
+
+    # SAP
+    if "SAP" in selected_sources:
+        for log in sap_logs:
+            all_entries.append({
+                "ts": pd.to_datetime(log.get("timestamp")),
+                "plant": log.get("plant_filter", "ALL"),
+                "source": "SAP",
+                "metric": "Errors",
+                "value": log.get("metrics", {}).get("total_errors", 0)
+            })
+
+    # PLM Workflow (PT01 + PT02)
+    if "PLM Workflow" in selected_sources:
+        for log in atl_logs:
+            ts = pd.to_datetime(log.get("timestamp"))
+            all_entries.append({
+                "ts": ts,
+                "plant": "PT01",
+                "source": "PLM Workflow PT01",
+                "metric": "Rows",
+                "value": log.get("metrics", {}).get("PT01_rows", 0)
+            })
+            all_entries.append({
+                "ts": ts,
+                "plant": "PT02",
+                "source": "PLM Workflow PT02",
+                "metric": "Rows",
+                "value": log.get("metrics", {}).get("PT02_rows", 0)
+            })
+
+    # Cleanups
+    if "Cleanups" in selected_sources:
+        for log in dc_logs:
+            all_entries.append({
+                "ts": pd.to_datetime(log.get("timestamp")),
+                "plant": log.get("plant_filter", "ALL"),
+                "source": "Cleanups",
+                "metric": "Outdated",
+                "value": log.get("metrics", {}).get("outdated", 0)
+            })
+
+    if not all_entries:
+        st.info("No data available for selected sources.")
+        return
+
+    df = pd.DataFrame(all_entries)
+
+    # ---------------------------------------------------------
+    # Sidebar — Date range
+    # ---------------------------------------------------------
+    st.sidebar.markdown("### 📅 Date Range")
+
+    min_date = df["ts"].min().date()
+    max_date = df["ts"].max().date()
+
+    start_date, end_date = st.sidebar.date_input(
+        "Period:",
+        value=(min_date, max_date),
+        min_value=min_date,
+        max_value=max_date
+    )
+
+    df = df[(df["ts"].dt.date >= start_date) & (df["ts"].dt.date <= end_date)]
+
+    # ---------------------------------------------------------
+    # Sidebar — Group by mode
+    # ---------------------------------------------------------
+    mode = st.sidebar.selectbox(
+        "Group by:",
+        ["Daily", "Weekly", "Monthly"],
+        index=1
+    )
+
+    if mode == "Daily":
+        df["period"] = df["ts"].dt.strftime("%Y-%m-%d")
+
+    elif mode == "Weekly":
+        iso = df["ts"].dt.isocalendar()
+        df["period"] = iso["year"].astype(str) + "-W" + iso["week"].astype(str)
+
+    else:
+        df["period"] = df["ts"].dt.strftime("%Y-%m")
+
+    # ---------------------------------------------------------
+    # Sidebar — Plant filter (only real plants)
+    # ---------------------------------------------------------
+    plants = sorted(df["plant"].dropna().unique().tolist())
+    selected_plants = st.sidebar.multiselect("Plants:", plants, default=plants)
+    df = df[df["plant"].isin(selected_plants)]
+
+    # ---------------------------------------------------------
+    # Group & sort chronologically
+    # ---------------------------------------------------------
+    grouped = (
+        df.groupby(["period", "source", "plant"])["value"]
+        .mean()
+        .reset_index()
+    )
+
+    grouped["sort_col"] = pd.to_datetime(
+        grouped["period"].str.replace("W", "-W") + "-1",
+        format="%Y-%W-%w",
+        errors="coerce"
+    )
+
+    grouped = grouped.sort_values("sort_col")
+
+    # ---------------------------------------------------------
+    # Visteon color map
+    # ---------------------------------------------------------
+    COLOR_MAP = {
+        "SAP": "#FF7200",
+        "PLM Workflow PT01": "#6EC6FF",
+        "PLM Workflow PT02": "#00A6A6",
+        "Cleanups": "#4D4D4D"
+    }
+
+    # ---------------------------------------------------------
+    # Render line chart
+    # ---------------------------------------------------------
+    st.markdown(f"### 📉 Evolution Over Time ({mode})")
+
+    if PLOTLY_AVAILABLE:
+        fig = px.line(
+            grouped,
+            x="period",
+            y="value",
+            color="source",
+            line_dash="plant",
+            markers=True,
+            title="Evolution of Validation Metrics",
+        )
+
+        fig.update_traces(marker=dict(size=8))
+
+        fig.update_layout(
+            colorway=[COLOR_MAP[s] for s in grouped["source"].unique() if s in COLOR_MAP]
+        )
+
+        # ------------------------------------------------------------
+        # PATCH — Smart tick spacing (to avoid overlapping labels)
+        # ------------------------------------------------------------
+        unique_periods = list(grouped["period"].unique())
+        n_periods = len(unique_periods)
+
+        if n_periods <= 12:
+            step = 1
+        elif n_periods <= 20:
+            step = 2
+        elif n_periods <= 35:
+            step = 3
+        else:
+            step = 4
+
+        fig.update_xaxes(
+            tickmode="array",
+            tickvals=unique_periods[::step],
+        )
+
+        fig.update_layout(
+            xaxis_tickangle=-45,
+            xaxis_tickfont=dict(size=11),
+        )
+
+        fig = style_plotly(fig, height=480)
+        st.plotly_chart(fig, width='stretch')
+
+    else:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        for (source, plant), grp in grouped.groupby(["source", "plant"]):
+            color = COLOR_MAP.get(source, "#000000")
+            ax.plot(
+                grp["period"],
+                grp["value"],
+                marker="o",
+                label=f"{source} ({plant})",
+                color=color
+            )
+        ax.legend()
+        ax.set_title("Evolution of Validation Metrics")
+        plt.xticks(rotation=45)
         st.pyplot(fig)

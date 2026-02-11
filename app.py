@@ -10,7 +10,7 @@ from utils.dashboard import (
     render_sap_run_kpis, render_sap_run_charts, render_sap_history_charts,
     render_atl_run_kpis, render_atl_run_charts, render_atl_history_charts,
     render_progress_kpis, render_progress_charts, render_mrp_history_charts,
-    render_mrp_run_kpis, render_mrp_run_charts
+    render_mrp_run_kpis, render_mrp_run_charts, render_evolution_dashboard
 )
 from utils.fast_loader import load_xlsx_fast
 from utils.identify import get_executor_identity
@@ -27,7 +27,9 @@ from sap_validation_engine import (
     build_mrp_log_payload,
     run_fp_status_validation,
     run_data_cleanups_validation,
-    build_fp_log_payload
+    build_fp_log_payload,
+    build_dc_log_payload, 
+    save_report_to_vault 
 )
 from utils.layout import render_footer, render_header, inject_theme_overrides
 from datetime import datetime
@@ -422,6 +424,7 @@ st.sidebar.header("Report Selection")
 main_choice = st.sidebar.radio(
     "",
     [
+        "📈 Evolution Dashboard",
         "📦 SAP Material Validation",
         "🚗 PLM Workflow",
         "🧮 MRP Validation",
@@ -489,6 +492,12 @@ def identity_input(label: str, key: str):
         st.stop()
 
     return st.session_state["executor_name"]
+
+# ==========================================================
+# 📈 EVOLUTION DASHBOARD
+# ==========================================================
+if main_choice == "📈 Evolution Dashboard":
+    render_evolution_dashboard()
 
 # ======================================================================================
 # PAGE 1
@@ -1948,7 +1957,7 @@ elif main_choice == "🧹 Data Cleanups":
 
         c1, c2 = st.columns([1, 1])
         with c2:
-            if st.button("➡️ Continue to Scope", disabled=disabled, use_container_width=True):
+            if st.button("➡️ Continue to Scope", disabled=disabled, width='stretch'):
                 st.session_state.dataclean_step = 2
                 st.rerun()
 
@@ -2022,15 +2031,17 @@ elif main_choice == "🧹 Data Cleanups":
             st.session_state.dc_kpis    = kpis
             st.session_state.dc_results = results_dict
 
+            
             if save_history:
-                payload = build_fp_log_payload(
+                payload = build_dc_log_payload(
                     user=effective_executor,
                     plant_filter=plant_filter_export,
                     mara_file=mara_file,
                     marc_file=marc_file,
                     zplm_marc_file=zplm_marc_file,
                     zplm_mara_file=zplm_mara_file,
-                    df_result=results_dict.get("FP_Status")
+                    mbew_file=mbew_file,
+                    df_result=results_dict.get("FP_Status")  # Ou outro DF que represente o módulo
                 )
                 save_run_log(payload)
 

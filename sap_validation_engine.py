@@ -5198,3 +5198,27 @@ def build_fp_log_payload(
             "correct": correct,
         }
     }
+
+def build_dc_log_payload(user, plant_filter, mara_file, marc_file,
+                         zplm_marc_file, zplm_mara_file, mbew_file,
+                         df_result):
+    """
+    Build log payload for Data Cleanups validations.
+    """
+    return {
+        "timestamp": datetime.utcnow().isoformat(),
+        "user": user,
+        "plant_filter": plant_filter if plant_filter else "ALL",
+        "metrics": {
+            "materials": int(df_result.shape[0]) if df_result is not None else 0,
+            "outdated": int(df_result["Outdated"].sum()) if "Outdated" in df_result.columns else 0,
+            "plants": df_result["Plant"].nunique() if "Plant" in df_result.columns else 0,
+        },
+        "files": {
+            "mara": getattr(mara_file, "name", None),
+            "marc": getattr(marc_file, "name", None),
+            "zplm_marc": getattr(zplm_marc_file, "name", None),
+            "zplm_mara": getattr(zplm_mara_file, "name", None),
+            "mbew": getattr(mbew_file, "name", None),
+        }
+    }
