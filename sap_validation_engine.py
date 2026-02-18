@@ -2451,17 +2451,11 @@ def validar_fppp70_standard_price_mbew(zplm_marc_df, marc_df, mbew_df):
     ])
 
 def validar_mara_vs_zplm_mara_existence(mara_df, zplm_mara_df):
-    """
-    Verifica se TODOS os materiais da MARA existem na ZPLM MARA.
-    ⚠ Não usa Plant (nível de material).
-    Retorna DF de erros: Material | Error
-    """
     import pandas as pd
 
     if mara_df is None or mara_df.empty or zplm_mara_df is None or zplm_mara_df.empty:
         return pd.DataFrame(columns=["Material", "Error"])
 
-    # Normalizar cabeçalhos
     mara = mara_df.copy()
     mara.columns = [str(c).strip().upper() for c in mara.columns]
 
@@ -2469,23 +2463,23 @@ def validar_mara_vs_zplm_mara_existence(mara_df, zplm_mara_df):
     zplm.columns = [str(c).strip().upper() for c in zplm.columns]
 
     # Pick columns
-    def pick(df, candidates):
-        for c in candidates:
-            if c in df.columns:
-                return c
-        return None
+    m_mat = next((c for c in ["MATERIAL", "MATNR"] if c in mara.columns), None)
+    m_mt  = next((c for c in ["MATERIAL TYPE", "MTART"] if c in mara.columns), None)
+    z_mat = next((c for c in ["MATERIAL", "MATNR"] if c in zplm.columns), None)
 
-    m_mat = pick(mara, ["MATERIAL", "MATNR"])
-    z_mat = pick(zplm, ["MATERIAL", "MATNR"])
-
-    if not all([m_mat, z_mat]):
+    if not all([m_mat, m_mt, z_mat]):
         return pd.DataFrame(columns=["Material", "Error"])
 
-    # Normalizar
+    # Normalize
     mara[m_mat] = mara[m_mat].astype(str).str.strip()
+    mara[m_mt]  = mara[m_mt].astype(str).str.strip().str.upper()
     zplm[z_mat] = zplm[z_mat].astype(str).str.strip()
 
-    mara_set = set(mara[m_mat].unique())
+    # Filter only FERT/HALB/ROH
+    valid_types = {"FERT", "HALB", "ROH"}
+    mara_filtered = mara[mara[m_mt].isin(valid_types)]
+
+    mara_set = set(mara_filtered[m_mat].unique())
     zplm_set = set(zplm[z_mat].unique())
 
     missing = sorted(mara_set - zplm_set)
@@ -2498,157 +2492,151 @@ def validar_mara_vs_zplm_mara_existence(mara_df, zplm_mara_df):
     )
 
 def validar_zplm_mara_vs_mara_existence(zplm_mara_df, mara_df):
-    """
-    Verifica materiais que existem em ZPLM MARA mas NÃO existem na MARA.
-    Não usa Plant.
-    Retorna: Material | Error
-    """
     import pandas as pd
 
     if zplm_mara_df is None or zplm_mara_df.empty or mara_df is None or mara_df.empty:
         return pd.DataFrame(columns=["Material", "Error"])
 
-    # Normalize
     zplm = zplm_mara_df.copy()
     zplm.columns = [str(c).strip().upper() for c in zplm.columns]
 
     mara = mara_df.copy()
     mara.columns = [str(c).strip().upper() for c in mara.columns]
 
-    def pick(df, names):
-        for n in names:
-            if n in df.columns:
-                return n
-        return None
+    z_mat = next((c for c in ["MATERIAL", "MATNR"] if c in zplm.columns), None)
+    m_mat = next((c for c in ["MATERIAL", "MATNR"] if c in mara.columns), None)
+    m_mt  = next((c for c in ["MATERIAL TYPE", "MTART"] if c in mara.columns), None)
 
-    z_mat = pick(zplm, ["MATERIAL", "MATNR"])
-    m_mat = pick(mara, ["MATERIAL", "MATNR"])
-
-    if not all([z_mat, m_mat]):
+    if not all([z_mat, m_mat, m_mt]):
         return pd.DataFrame(columns=["Material", "Error"])
 
     zplm[z_mat] = zplm[z_mat].astype(str).str.strip()
     mara[m_mat] = mara[m_mat].astype(str).str.strip()
+    mara[m_mt]  = mara[m_mt].astype(str).str.strip().str.upper()
+
+    valid_types = {"FERT", "HALB", "ROH"}
+    mara_filtered = mara[mara[m_mt].isin(valid_types)]
 
     z_set = set(zplm[z_mat].unique())
-    m_set = set(mara[m_mat].unique())
+    m_set = set(mara_filtered[m_mat].unique())
 
-    missing = sorted(z_set - m_set)
-
-    if not missing:
+    extra = sorted(z_set - m_set)
+    if not extra:
         return pd.DataFrame(columns=["Material", "Error"])
 
     return pd.DataFrame(
-        [{"Material": mat, "Error": "Exists in ZPLM MARA but missing in MARA"} for mat in missing],
+        [{"Material": mat, "Error": "Exists in ZPLM MARA but missing in filtered MARA"} for mat in extra],
         columns=["Material", "Error"]
     )
 
-def validar_marc_vs_zplm_marc_existence(marc_df, zplm_marc_df):
-    """
-    Verifica se TODAS as combinações (Material, Plant) da MARC existem na ZPLM MARC.
-    Retorna DF de erros: Material | Plant | 
-    """
+def validar_marc_vs_zplm_marc_existence(marc_df, zplm_marc_df, mara_df):
+    import pandas as pd
 
-    #Se faltar input, devolve DF vazio com colunas padrão
     if marc_df is None or marc_df.empty or zplm_marc_df is None or zplm_marc_df.empty:
         return pd.DataFrame(columns=["Material", "Plant", "Error"])
-    
-    # Normalizar colunas
+
+    # Normalize
     marc = marc_df.copy()
     marc.columns = [c.strip().upper() for c in marc.columns]
 
     zplm = zplm_marc_df.copy()
     zplm.columns = [c.strip().upper() for c in zplm.columns]
 
-    #Pick columns helper
-    def pick(df, candidates):
-        for c in candidates:
-            if c in df.columns:
-                return c
-        return None
-    
-    m_mat   = pick(marc, ["MATERIAL", "MATNR"])
-    m_plant = pick(marc, ["PLANT", "WERKS"])
+    mara = mara_df.copy()
+    mara.columns = [c.strip().upper() for c in mara.columns]
 
-    z_mat   = pick(zplm, ["MATERIAL", "MATNR"])
-    z_plant = pick(zplm, ["PLANT", "WERKS"])
+    # Pick cols
+    m_mat = next((c for c in ["MATERIAL", "MATNR"] if c in marc.columns), None)
+    m_plant = next((c for c in ["PLANT", "WERKS"] if c in marc.columns), None)
+    z_mat = next((c for c in ["MATERIAL", "MATNR"] if c in zplm.columns), None)
+    z_plant = next((c for c in ["PLANT", "WERKS"] if c in zplm.columns), None)
+    mt_col = next((c for c in ["MATERIAL TYPE", "MTART"] if c in mara.columns), None)
+    mara_mat = next((c for c in ["MATERIAL", "MATNR"] if c in mara.columns), None)
 
-    if not all([m_mat, m_plant, z_mat, z_plant]):
+    if not all([m_mat, m_plant, z_mat, z_plant, mt_col, mara_mat]):
         return pd.DataFrame(columns=["Material", "Plant", "Error"])
-    
-    #Normazilar valores
-    marc[m_mat]   = marc[m_mat].astype(str).str.strip()
+
+    # Normalize
+    marc[m_mat] = marc[m_mat].astype(str).str.strip()
     marc[m_plant] = marc[m_plant].astype(str).str.strip().str.upper()
 
-    zplm[z_mat]   = zplm[z_mat].astype(str).str.strip()
+    zplm[z_mat] = zplm[z_mat].astype(str).str.strip()
     zplm[z_plant] = zplm[z_plant].astype(str).str.strip().str.upper()
 
-    #Conjuntos de valores
-    marc_keys = set(zip(marc[m_mat], marc[m_plant]))
+    mara[mara_mat] = mara[mara_mat].astype(str).str.strip()
+    mara[mt_col] = mara[mt_col].astype(str).str.strip().str.upper()
+
+    # Filter materials by MT
+    valid_types = {"FERT", "HALB", "ROH"}
+    valid_mats = set(mara[mara[mt_col].isin(valid_types)][mara_mat].unique())
+
+    marc_filtered = marc[marc[m_mat].isin(valid_mats)]
+
+    marc_keys = set(zip(marc_filtered[m_mat], marc_filtered[m_plant]))
     zplm_keys = set(zip(zplm[z_mat], zplm[z_plant]))
 
-    #Fatlas = MARC - ZPLM
     missing = marc_keys - zplm_keys
-
-    if not missing:
-        return pd.DataFrame(columns=["Material", "Plant", "Error"])
-    
-    #Construir DF de erros
-    errors = [{"Material": mat, "Plant": plant, "Error": "Missing in ZPLM MARC"} for (mat, plant) in sorted(missing)]
-
-    return pd.DataFrame(errors, columns=["Material", "Plant", "Error"])
-
-def validar_zplm_marc_vs_marc_existence(zplm_marc_df, marc_df):
-    """
-    Verifica combinações (Material, Plant) que existem em ZPLM MARC mas NÃO existem na MARC.
-    Retorna: Material | Plant | Error
-    """
-    import pandas as pd
-
-    if zplm_marc_df is None or zplm_marc_df.empty or marc_df is None or marc_df.empty:
-        return pd.DataFrame(columns=["Material", "Plant", "Error"])
-
-    # Normalize headers
-    zplm = zplm_marc_df.copy()
-    zplm.columns = [str(c).strip().upper() for c in zplm.columns]
-
-    marc = marc_df.copy()
-    marc.columns = [str(c).strip().upper() for c in marc.columns]
-
-    # Pick columns
-    def pick(df, names):
-        for n in names:
-            if n in df.columns:
-                return n
-        return None
-
-    z_mat   = pick(zplm, ["MATERIAL", "MATNR"])
-    z_plant = pick(zplm, ["PLANT", "WERKS"])
-
-    m_mat   = pick(marc, ["MATERIAL", "MATNR"])
-    m_plant = pick(marc, ["PLANT", "WERKS"])
-
-    if not all([z_mat, z_plant, m_mat, m_plant]):
-        return pd.DataFrame(columns=["Material", "Plant", "Error"])
-
-    # Normalize values
-    zplm[z_mat]   = zplm[z_mat].astype(str).str.strip()
-    zplm[z_plant] = zplm[z_plant].astype(str).str.strip().str.upper()
-
-    marc[m_mat]   = marc[m_mat].astype(str).str.strip()
-    marc[m_plant] = marc[m_plant].astype(str).str.strip().str.upper()
-
-    z_keys = set(zip(zplm[z_mat], zplm[z_plant]))
-    m_keys = set(zip(marc[m_mat], marc[m_plant]))
-
-    missing = z_keys - m_keys
 
     if not missing:
         return pd.DataFrame(columns=["Material", "Plant", "Error"])
 
     return pd.DataFrame(
-        [{"Material": mat, "Plant": plant, "Error": "Exists in ZPLM MARC but missing in MARC"} 
-         for (mat, plant) in sorted(missing)],
+        [{"Material": m, "Plant": p, "Error": "Missing in ZPLM MARC"} for (m, p) in sorted(missing)],
+        columns=["Material", "Plant", "Error"]
+    )
+
+def validar_zplm_marc_vs_marc_existence(zplm_marc_df, marc_df, mara_df):
+    import pandas as pd
+
+    if zplm_marc_df is None or zplm_marc_df.empty or marc_df is None or marc_df.empty:
+        return pd.DataFrame(columns=["Material", "Plant", "Error"])
+
+    # Normalize
+    zplm = zplm_marc_df.copy()
+    zplm.columns = [c.strip().upper() for c in zplm.columns]
+
+    marc = marc_df.copy()
+    marc.columns = [c.strip().upper() for c in marc.columns]
+
+    mara = mara_df.copy()
+    mara.columns = [c.strip().upper() for c in mara.columns]
+
+    z_mat = next((c for c in ["MATERIAL", "MATNR"] if c in zplm.columns), None)
+    z_plant = next((c for c in ["PLANT", "WERKS"] if c in zplm.columns), None)
+    m_mat = next((c for c in ["MATERIAL", "MATNR"] if c in marc.columns), None)
+    m_plant = next((c for c in ["PLANT", "WERKS"] if c in marc.columns), None)
+    mara_mat = next((c for c in ["MATERIAL", "MATNR"] if c in mara.columns), None)
+    mt_col = next((c for c in ["MATERIAL TYPE", "MTART"] if c in mara.columns), None)
+
+    if not all([z_mat, z_plant, m_mat, m_plant, mara_mat, mt_col]):
+        return pd.DataFrame(columns=["Material", "Plant", "Error"])
+
+    # Normalize
+    zplm[z_mat] = zplm[z_mat].astype(str).str.strip()
+    zplm[z_plant] = zplm[z_plant].astype(str).str.strip().str.upper()
+
+    marc[m_mat] = marc[m_mat].astype(str).str.strip()
+    marc[m_plant] = marc[m_plant].astype(str).str.strip().str.upper()
+
+    mara[mara_mat] = mara[mara_mat].astype(str).str.strip()
+    mara[mt_col] = mara[mt_col].astype(str).str.strip().str.upper()
+
+    # Allowed materials
+    valid_types = {"FERT", "HALB", "ROH"}
+    valid_mats = set(mara[mara[mt_col].isin(valid_types)][mara_mat].unique())
+
+    zplm_filtered = zplm[zplm[z_mat].isin(valid_mats)]
+
+    z_keys = set(zip(zplm_filtered[z_mat], zplm_filtered[z_plant]))
+    m_keys = set(zip(marc[m_mat], marc[m_plant]))
+
+    extra = z_keys - m_keys
+
+    if not extra:
+        return pd.DataFrame(columns=["Material", "Plant", "Error"])
+
+    return pd.DataFrame(
+        [{"Material": m, "Plant": p, "Error": "Exists in ZPLM MARC but missing in MARC"} for (m, p) in sorted(extra)],
         columns=["Material", "Plant", "Error"]
     )
 
@@ -2828,76 +2816,128 @@ def fill_plant_and_validate_enterproj_from_zplm(
 
 def validar_neg_stocks_in_plant(marc_df, mara_df):
     """
-    Regras (apenas MARA/MARC) com filtro por Material Type:
-    - Só considerar materiais cujo Material Type ∈ {FERT, HALB, ROH}.
-    - Para ROH/HALB: campo obrigatório (não pode estar vazio).
-    - Valor 'marcado' (X/1/TRUE/YES/Y) apenas permitido quando Plant ∈ {PT01, PT02} e Material Type ∈ {ROH, HALB}.
-    Retorna lista de dicts (erros) para serem concatenados ao errors_df.
+    Regras finais (MARC + MARA):
+
+    Escopo: apenas MT ∈ {FERT, HALB, ROH}
+
+    Para FERT → não validar nada.
+
+    Para HALB e ROH, Neg. stocks in plant TEM DE ESTAR MARCADO quando:
+      1) Plant = PT01  AND Production Storage Location = P105
+      2) Plant = PT02  AND PSMS NOT IN {25, 75} AND Production Storage Location = P205
+      3) Plant = PT02  AND PSMS IN {25, 75} AND Production Storage Location = P220
+
+    Se estiver marcado fora destes 3 cenários → ERRO.
+    Se não estiver marcado quando deveria → ERRO.
     """
+
     import pandas as pd
 
-    # Requisitos mínimos
+    # Checks básicos
     if marc_df is None or marc_df.empty or mara_df is None or mara_df.empty:
         return []
-    if 'Material' not in marc_df.columns or 'Plant' not in marc_df.columns:
-        return []
-    if 'Material' not in mara_df.columns or 'Material Type' not in mara_df.columns:
-        return []
-    if 'Neg. stocks in plant' not in marc_df.columns:
+
+    needed_cols = {
+        'Material', 'Plant', 'Neg. stocks in plant',
+        'Production Storage Location', 'Plant Specific Material Status'
+    }
+    if not needed_cols.issubset(marc_df.columns):
         return []
 
-    # Mapa Material -> Material Type
+    if not {'Material', 'Material Type'}.issubset(mara_df.columns):
+        return []
+
+    # Map Material -> Material Type
     mt_map = dict(zip(
         mara_df['Material'].astype(str).str.strip(),
-        mara_df['Material Type'].astype(str).str.strip()
+        mara_df['Material Type'].astype(str).str.strip().upper()
     ))
-
-    consider_types = {'FERT', 'HALB', 'ROH'}
 
     def _s(x):
         return '' if pd.isna(x) else str(x).strip()
 
-    erros = []
-    for idx, row in marc_df.iterrows():
-        material = _s(row.get('Material'))
-        plant = _s(row.get('Plant'))
-        mt = _s(mt_map.get(material, ''))
+    def _is_marked(x):
+        return _s(x).upper() in {'X', '1', 'YES', 'Y', 'TRUE'}
 
-        # Ignorar fora do conjunto
-        if mt not in consider_types:
+    def _psms_int(x):
+        sx = _s(x)
+        if sx == '':
+            return None
+        try:
+            return int(float(sx))
+        except:
+            return None
+
+    erros = []
+
+    valid_types = {'FERT', 'HALB', 'ROH'}
+
+    for idx, row in marc_df.iterrows():
+
+        material = _s(row.get('Material'))
+        plant    = _s(row.get('Plant'))
+        mt       = mt_map.get(material, '')
+
+        # Não validar fora do escopo
+        if mt not in valid_types:
             continue
 
-        raw = row.get('Neg. stocks in plant')
-        val = _s(raw).upper()
+        # FERT → totalmente ignorado
+        if mt == 'FERT':
+            continue
 
-        # variantes de "marcado"
-        marcado = val in {'X', '1', 'TRUE', 'YES', 'Y'}
+        # HALB / ROH
+        neg_raw = row.get('Neg. stocks in plant')
+        marked  = _is_marked(neg_raw)
+        psl     = _s(row.get('Production Storage Location'))
+        psms    = _psms_int(row.get('Plant Specific Material Status'))
 
-        # 1) Obrigatório para ROH/HALB
-        if mt in {'ROH', 'HALB'} and val == '':
+        # ---------------------------------------
+        # Determinar se o campo TEM QUE ESTAR marcado
+        # ---------------------------------------
+        must_mark = False
+
+        # Caso 1: PT01 + P105
+        if plant == 'PT01' and psl == 'P105':
+            must_mark = True
+
+        # Caso 2: PT02 + P205 (regra geral)
+        if plant == 'PT02' and psl == 'P205' and psms not in {25, 75}:
+            must_mark = True
+
+        # Caso 3: PT02 + PSMS 25/75 + P220 (override)
+        if plant == 'PT02' and psms in {25, 75} and psl == 'P220':
+            must_mark = True
+
+        # ---------------------------------------
+        # Validações
+        # ---------------------------------------
+
+        # 1) Deveria estar marcado e não está
+        if must_mark and not marked:
             erros.append({
-                'Line': idx + 2,  # linha real do MARC.xlsx
+                'Line': idx + 2,
                 'Field': 'Neg. stocks in plant',
-                'Error': "Mandatory field blank (required for Material Type ROH/HALB)",
+                'Error': (
+                    "Must be marked for this combination "
+                    f"(Plant={plant}, PSL={psl}, PSMS={psms})"
+                ),
                 'Material': material,
                 'Plant': plant
             })
 
-        # 2) Se estiver marcado, tem de respeitar (Plant PT01/PT02 e MT ROH/HALB)
-        if marcado and (plant not in {'PT01', 'PT02'} or mt not in {'ROH', 'HALB'}):
-            # Nota: para FERT ignoramos (não reportar)
-            if mt in {'ROH', 'HALB'}:
-                erros.append({
-                    'Line': idx + 2,
-                    'Field': 'Neg. stocks in plant',
-                    'Error': (
-                        "Invalid value: marked only allowed for Plant PT01/PT02 and "
-                        "Material Type ROH or HALB "
-                        f"(Current: Plant='{plant}', Material Type='{mt}')"
-                    ),
-                    'Material': material,
-                    'Plant': plant
-                })
+        # 2) Está marcado mas não é permitido -> erro
+        elif not must_mark and marked:
+            erros.append({
+                'Line': idx + 2,
+                'Field': 'Neg. stocks in plant',
+                'Error': (
+                    "Invalid marking: allowed only for the combinations "
+                    "PT01+P105, PT02+P205 (PSMS≠25/75), or PT02+P220 (PSMS=25/75)"
+                ),
+                'Material': material,
+                'Plant': plant
+            })
 
     return erros
 
@@ -4263,7 +4303,8 @@ def save_run_log(payload: dict, *, base_dir: str = ".history"):
         "SAP_VALIDATION": "sap",
         "PLM_WORKFLOW_ATL": "atl",
         "SAP_VALIDATION_PROGRESS": "progress",
-        "MRP_VALIDATION": "mrp", 
+        "MRP_VALIDATION": "mrp",
+        "DATA_CLEANUPS": "dataclean", 
     }.get(run_type, "misc")
 
     out_dir = os.path.join(base_dir, subdir)
@@ -4280,7 +4321,7 @@ def save_run_log(payload: dict, *, base_dir: str = ".history"):
 
 def list_run_logs(run_type: str, *, base_dir: str = ".history", limit: int = 25):
     """Lista os últimos 'limit' logs para um run_type: 'sap' | 'atl' | 'progress'."""
-    subdir = {"sap": "sap", "atl": "atl", "progress": "progress"}.get(run_type, "")
+    subdir = {"sap": "sap", "atl": "atl", "progress": "progress","mrp": "mrp", "dataclean": "dataclean",}.get(run_type, "")
     if not subdir:
         return []
     folder = os.path.join(base_dir, subdir)
@@ -4979,7 +5020,7 @@ def run_data_cleanups_validation(
     results["No Standard Cost"] = df_std_price
 
     # --- Cobertura: MARC -> ZPLM MARC ---
-    df_marc_cov = validar_marc_vs_zplm_marc_existence(marc, zplm_marc)
+    df_marc_cov = validar_marc_vs_zplm_marc_existence(marc, zplm_marc, mara)
     results["Missing in ZPLM_MARC"] = df_marc_cov
 
     # --- Cobertura: MARA -> ZPLM MARA ---
@@ -4987,7 +5028,7 @@ def run_data_cleanups_validation(
     results["Missing in ZPLM_MARA"] = df_mara_cov
 
     # --- Inverso: ZPLM MARC -> MARC ---
-    df_zplm_marc_cov = validar_zplm_marc_vs_marc_existence(zplm_marc, marc)
+    df_zplm_marc_cov = validar_zplm_marc_vs_marc_existence(zplm_marc, marc, mara)
     results["Missing in MARC"] = df_zplm_marc_cov
 
     # --- Inverso: ZPLM MARA -> MARA ---
@@ -5199,26 +5240,51 @@ def build_fp_log_payload(
         }
     }
 
-def build_dc_log_payload(user, plant_filter, mara_file, marc_file,
-                         zplm_marc_file, zplm_mara_file, mbew_file,
-                         df_result):
-    """
-    Build log payload for Data Cleanups validations.
-    """
+def build_dc_log_payload(
+    *,
+    user,
+    plant_filter,
+    mara_file,
+    marc_file,
+    zplm_marc_file,
+    zplm_mara_file,
+    mbew_file,
+    df_result
+):
+    import pandas as pd
+    from datetime import datetime
+
+    def _name(f, default):
+        return getattr(f, "name", default) if f else default
+
+    # KPIs
+    if df_result is None or df_result.empty:
+        mats = plants = outdated = correct = 0
+    else:
+        mats = df_result["Material"].nunique() if "Material" in df_result else 0
+        plants = df_result["Plant"].nunique() if "Plant" in df_result else 0
+        if "Status" in df_result:
+            outdated = int((df_result["Status"] == "Outdated").sum())
+            correct = int((df_result["Status"] == "Correct").sum())
+        else:
+            outdated = correct = 0
+
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "run_type": "DATA_CLEANUPS",   # <<<<<< ESSENCIAL!
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
         "user": user,
         "plant_filter": plant_filter if plant_filter else "ALL",
-        "metrics": {
-            "materials": int(df_result.shape[0]) if df_result is not None else 0,
-            "outdated": int(df_result["Outdated"].sum()) if "Outdated" in df_result.columns else 0,
-            "plants": df_result["Plant"].nunique() if "Plant" in df_result.columns else 0,
-        },
         "files": {
-            "mara": getattr(mara_file, "name", None),
-            "marc": getattr(marc_file, "name", None),
-            "zplm_marc": getattr(zplm_marc_file, "name", None),
-            "zplm_mara": getattr(zplm_mara_file, "name", None),
-            "mbew": getattr(mbew_file, "name", None),
-        }
+            "mara": _name(mara_file, "MARA.xlsx"),
+            "marc": _name(marc_file, "MARC.xlsx"),
+            "zplm_marc": _name(zplm_marc_file, "ZPLM MARC.xlsx"),
+            "zplm_mara": _name(zplm_mara_file, "ZPLM MARA.xlsx"),
+            "mbew": _name(mbew_file, "MBEW.xlsx"),
+        },
+        "metrics": {
+            "materials": mats,
+            "plants": plants,
+            "outdated": outdated,
+            "correct": correct,
+        },
     }

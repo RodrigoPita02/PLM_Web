@@ -592,7 +592,7 @@ def render_mrp_history_charts(logs: list[dict]) -> None:
         st.pyplot(fig)
 
 # =========================
-# Evolution Dashboartd (NOVO)
+# Evolution Dashboard (REV9 — fixed)
 # =========================
 def render_evolution_dashboard():
     """
@@ -606,7 +606,6 @@ def render_evolution_dashboard():
       - Tick spacing inteligente
       - Paleta Visteon
       - Trend Detection
-      - Forecast
       - Anomaly Detection
       - Auto-Insights
       - Exportação Excel
@@ -622,17 +621,13 @@ def render_evolution_dashboard():
             year, week = iso_str.split("-W")
             year = int(year)
             week = int(week)
-
             start = datetime.fromisocalendar(year, week, 1)  # Monday
             end = datetime.fromisocalendar(year, week, 7)    # Sunday
-
-            # Mesmos mês → 05–11 Jan 2026
             if start.month == end.month:
                 return f"{start.strftime('%d')}–{end.strftime('%d %b %Y')}"
             else:
-                # Meses diferentes → 28 Jan–03 Feb 2026
                 return f"{start.strftime('%d %b')}–{end.strftime('%d %b %Y')}"
-        except:
+        except Exception:
             return iso_str
 
     st.subheader("📈 Evolution Dashboard")
@@ -655,7 +650,6 @@ def render_evolution_dashboard():
     selected_sources = st.sidebar.multiselect(
         "Choose sources:", options=available_sources, default=available_sources
     )
-
     if not selected_sources:
         st.info("Please select at least one source.")
         return
@@ -669,7 +663,7 @@ def render_evolution_dashboard():
     if "SAP" in selected_sources:
         for log in sap_logs:
             entries.append({
-                "ts": pd.to_datetime(log["timestamp"]),
+                "ts": pd.to_datetime(log.get("timestamp")),
                 "plant": log.get("plant_filter", "ALL"),
                 "source": "SAP",
                 "value": log.get("metrics", {}).get("total_errors", 0)
@@ -678,7 +672,7 @@ def render_evolution_dashboard():
     # PLM Workflow
     if "PLM Workflow" in selected_sources:
         for log in atl_logs:
-            ts = pd.to_datetime(log["timestamp"])
+            ts = pd.to_datetime(log.get("timestamp"))
             entries.append({
                 "ts": ts, "plant": "PT01", "source": "PLM Workflow PT01",
                 "value": log.get("metrics", {}).get("PT01_rows", 0)
@@ -688,11 +682,11 @@ def render_evolution_dashboard():
                 "value": log.get("metrics", {}).get("PT02_rows", 0)
             })
 
-    # Cleanups
+    # Cleanups (use “outdated” como métrica por omissão)
     if "Cleanups" in selected_sources:
         for log in dc_logs:
             entries.append({
-                "ts": pd.to_datetime(log["timestamp"]),
+                "ts": pd.to_datetime(log.get("timestamp")),
                 "plant": log.get("plant_filter", "ALL"),
                 "source": "Cleanups",
                 "value": log.get("metrics", {}).get("outdated", 0)
@@ -709,9 +703,13 @@ def render_evolution_dashboard():
     # ---------------------------------------------------------
     st.sidebar.markdown("### 📅 Date Range")
     dmin, dmax = df["ts"].min().date(), df["ts"].max().date()
-    start_date, end_date = st.sidebar.date_input(
-        "Period:", value=(dmin, dmax), min_value=dmin, max_value=dmax
-    )
+    start_end = st.sidebar.date_input("Period:", value=(dmin, dmax), min_value=dmin, max_value=dmax)
+    # Streamlit devolve tuple(range); garantir desembrulho robusto
+    if isinstance(start_end, (list, tuple)) and len(start_end) == 2:
+        start_date, end_date = start_end
+    else:
+        start_date, end_date = dmin, dmax
+
     df = df[(df["ts"].dt.date >= start_date) & (df["ts"].dt.date <= end_date)]
 
     # ---------------------------------------------------------
@@ -721,11 +719,9 @@ def render_evolution_dashboard():
 
     if mode == "Daily":
         df["period"] = df["ts"].dt.strftime("%Y-%m-%d")
-
     elif mode == "Weekly":
         iso = df["ts"].dt.isocalendar()
         df["period"] = iso["year"].astype(str) + "-W" + iso["week"].astype(str)
-
     else:
         df["period"] = df["ts"].dt.strftime("%Y-%m")
 
@@ -734,11 +730,7 @@ def render_evolution_dashboard():
     # ---------------------------------------------------------
     plants = sorted(df["plant"].dropna().unique().tolist())
     real_plants = [p for p in plants if p != "ALL"]
-
-    selected_plants = st.sidebar.multiselect(
-        "Plants:", ["ALL"] + real_plants, default=["ALL"]
-    )
-
+    selected_plants = st.sidebar.multiselect("Plants:", ["ALL"] + real_plants, default=["ALL"])
     if "ALL" in selected_plants:
         df = df[df["plant"].isin(real_plants + ["ALL"])]
     else:
@@ -758,7 +750,7 @@ def render_evolution_dashboard():
         try:
             year, week = iso_str.split("-W")
             return datetime.fromisocalendar(int(year), int(week), 1)
-        except:
+        except Exception:
             return pd.NaT
 
     grouped["sort_col"] = grouped["period"].apply(iso_to_date)
@@ -772,8 +764,6 @@ def render_evolution_dashboard():
                .sum()
                .sort_values("sort_col", kind="stable")
     )
-
-    # >>>>>>> NOVO: coluna friendly <<<<<<<<<
     sum_by_period["pretty_period"] = sum_by_period["period"].apply(iso_week_to_range)
     grouped["pretty_period"] = grouped["period"].apply(iso_week_to_range)
 
@@ -782,7 +772,7 @@ def render_evolution_dashboard():
         current_val = float(sum_by_period["value"].iloc[-1])
         current_label = str(sum_by_period["pretty_period"].iloc[-1])
     else:
-        current_val, current_label = 0, "—"
+        current_val, current_label = 0.0, "—"
 
     # Δ %
     if len(sum_by_period) >= 2:
@@ -800,20 +790,18 @@ def render_evolution_dashboard():
         worst_val = float(sum_by_period.loc[worst_idx, "value"])
         worst_label = str(sum_by_period.loc[worst_idx, "pretty_period"])
     else:
-        best_val = worst_val = 0
+        best_val = worst_val = 0.0
         best_label = worst_label = "—"
 
     # ---------------------------------------------------------
     # Render KPIs
     # ---------------------------------------------------------
     k1, k2, k3 = st.columns(3)
-
     with k1:
         if delta_pct is None:
             st.metric("Current Value", f"{current_val:,.0f}", delta="—", delta_color="inverse")
         else:
-            st.metric("Current Value", f"{current_val:,.0f}",
-                      delta=f"{delta_pct:.1f}%", delta_color="inverse")
+            st.metric("Current Value", f"{current_val:,.0f}", delta=f"{delta_pct:.1f}%", delta_color="inverse")
 
         if PLOTLY_AVAILABLE and len(sum_by_period) > 1:
             spark = px.line(sum_by_period, x="pretty_period", y="value")
@@ -821,12 +809,11 @@ def render_evolution_dashboard():
                                 margin=dict(l=0,r=0,t=0,b=0), showlegend=False)
             spark.update_xaxes(visible=False)
             spark.update_yaxes(visible=False)
-            st.plotly_chart(spark, width='stretch')
+            st.plotly_chart(spark, use_container_width=True)
         st.caption(f"Last period: {current_label}")
 
     with k2:
         st.metric("Best Period (min)", f"{best_val:,.0f}", delta=best_label)
-
     with k3:
         st.metric("Worst Period (max)", f"{worst_val:,.0f}", delta=worst_label)
 
@@ -834,17 +821,13 @@ def render_evolution_dashboard():
     # Trend Detection
     # ---------------------------------------------------------
     st.markdown("### 📊 Trend Analysis")
-
     if len(sum_by_period) >= 3:
         y = sum_by_period["value"].to_numpy(dtype=float)
         x = np.arange(len(y))
-
         lr = linregress(x, y)
         slope = lr.slope
         r2 = lr.rvalue ** 2
-
         threshold = np.std(y) * 0.15
-
         if slope > threshold:
             trend_label = "📈 Strong Uptrend"
         elif slope > 0:
@@ -855,7 +838,6 @@ def render_evolution_dashboard():
             trend_label = "↘ Weak Downtrend"
         else:
             trend_label = "➖ Sideways"
-
         st.info(
             f"**Trend:** {trend_label}\n\n"
             f"**Slope:** `{slope:.3f}`\n"
@@ -870,37 +852,32 @@ def render_evolution_dashboard():
     # ---------------------------------------------------------
     st.markdown(f"### 📉 Evolution Over Time ({mode})")
 
+    # paleta por fonte — usada em ambos os caminhos (plotly / matplotlib)
+    COLOR_MAP = {
+        "SAP": "#FF7200",
+        "PLM Workflow PT01": "#6EC6FF",
+        "PLM Workflow PT02": "#00A6A6",
+        "Cleanups": "#4D4D4D"
+    }
+
     if PLOTLY_AVAILABLE:
         fig = px.line(
             grouped, x="pretty_period", y="value",
             color="source", line_dash="plant",
             markers=True, title="Evolution of Validation Metrics"
         )
-
         fig.update_traces(marker=dict(size=8))
-
-        COLOR_MAP = {
-            "SAP": "#FF7200",
-            "PLM Workflow PT01": "#6EC6FF",
-            "PLM Workflow PT02": "#00A6A6",
-            "Cleanups": "#4D4D4D"
-        }
-
         fig.update_layout(
             colorway=[COLOR_MAP[s] for s in grouped["source"].unique() if s in COLOR_MAP]
         )
-
         unique_sorted = sum_by_period["pretty_period"].tolist()
         n = len(unique_sorted)
         step = 1 if n <= 12 else (2 if n <= 20 else (3 if n <= 35 else 4))
-
         fig.update_xaxes(tickmode="array", tickvals=unique_sorted[::step])
         fig.update_layout(xaxis_tickangle=-45, xaxis_tickfont=dict(size=11))
-
         fig = style_plotly(fig, height=480)
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     else:
-        # Fallback Matplotlib
         fig, ax = plt.subplots(figsize=(10, 5))
         for (src, pl), grp in grouped.groupby(["source", "plant"]):
             ax.plot(grp["pretty_period"], grp["value"],
@@ -911,132 +888,138 @@ def render_evolution_dashboard():
         st.pyplot(fig)
 
     # ---------------------------------------------------------
-    # Forecast (Next Period)
-    # ---------------------------------------------------------
-    st.markdown("### 🔮 Forecast (Next Period)")
-
-    if len(sum_by_period) >= 3:
-
-        y = sum_by_period["value"].to_numpy(dtype=float)
-        x = np.arange(len(y))
-
-        slope_f, intercept_f = np.polyfit(x, y, 1)
-        next_x = len(y)
-        forecast_next = slope_f * next_x + intercept_f
-
-        conf = np.std(y) * 0.20
-        lower = forecast_next - conf
-        upper = forecast_next + conf
-
-        if slope_f > 0:
-            forecast_label = "📈 Expected increase"
-        elif slope_f < 0:
-            forecast_label = "📉 Expected decrease"
-        else:
-            forecast_label = "➖ Stable expectation"
-
-        st.success(
-            f"**Forecast:** {forecast_label}\n\n"
-            f"**Next period estimate:** `{forecast_next:,.0f}`\n"
-            f"**Range:** `{lower:,.0f}` → `{upper:,.0f}`"
-        )
-
-        if PLOTLY_AVAILABLE:
-            fhist = sum_by_period.copy()
-            fhist["type"] = "Historical"
-
-            fnext = pd.DataFrame({
-                "pretty_period": [f"Forecast +1 {mode}"],
-                "value": [forecast_next],
-                "type": ["Forecast"]
-            })
-
-            fig_f = px.line(fhist, x="pretty_period", y="value")
-            fig_f.add_scatter(
-                x=fnext["pretty_period"], y=fnext["value"],
-                mode="markers+lines",
-                name="Forecast", line=dict(dash="dash")
-            )
-            fig_f.add_scatter(
-                x=fnext["pretty_period"], y=[upper],
-                mode="markers", marker=dict(color="lightgray"),
-                name="Upper Bound"
-            )
-            fig_f.add_scatter(
-                x=fnext["pretty_period"], y=[lower],
-                mode="markers", marker=dict(color="lightgray"),
-                name="Lower Bound"
-            )
-
-            fig_f.update_layout(
-                template="simple_white",
-                height=300,
-                margin=dict(l=10, r=10, t=20, b=10),
-                showlegend=True
-            )
-
-            st.plotly_chart(fig_f, width='stretch')
-
-    else:
-        st.info("Not enough data points to generate forecast.")
-
-    # ---------------------------------------------------------
-    # Anomaly Detection
+    # Anomaly Detection (Enhanced UX)
     # ---------------------------------------------------------
     st.markdown("### 🚨 Anomaly Detection")
+    if len(sum_by_period) < 5:
+        st.info("Need at least 5 periods to run anomaly detection.")
+    else:
+        with st.expander("How anomalies are detected", expanded=False):
+            st.write(
+                "- **Z-score**: distance from the mean in standard deviations.\n"
+                "- **Modified Z-score (MAD)**: robust alternative using median and MAD.\n"
+                "- We flag periods whose absolute score exceeds the chosen thresholds."
+            )
 
-    if len(sum_by_period) >= 5:
+        # Controls
+        c1, c2, c3, c4 = st.columns([1,1,1,1])
+        with c1:
+            metric = st.selectbox("Scoring", ["Modified Z (MAD)", "Z-score"], index=0)
+        with c2:
+            thr_mild = st.slider("Mild ≥", min_value=1.0, max_value=3.0, value=1.8, step=0.1)
+        with c3:
+            thr_mod  = st.slider("Moderate ≥", min_value=2.0, max_value=4.0, value=2.5, step=0.1)
+        with c4:
+            thr_sev  = st.slider("Severe ≥", min_value=3.0, max_value=5.0, value=3.5, step=0.1)
 
+        # Series
         vals = sum_by_period["value"].to_numpy(dtype=float)
+        periods = sum_by_period["pretty_period"].astype(str).tolist()
 
-        mean = np.mean(vals)
-        std  = np.std(vals)
-        median = np.median(vals)
-        mad = np.median(np.abs(vals - median)) if np.median(np.abs(vals - median)) != 0 else 1e-6
+        mean = float(np.mean(vals))
+        std  = float(np.std(vals)) or 1e-6   # evita div/0
+        median = float(np.median(vals))
+        mad = float(np.median(np.abs(vals - median))) or 1e-6  # evita div/0
 
-        anomalies = []
+        # Scores
+        z_scores = (vals - mean) / std
+        mod_z_scores = 0.6745 * (vals - median) / mad
+        score = mod_z_scores if metric == "Modified Z (MAD)" else z_scores
 
-        for i, row in sum_by_period.iterrows():
-            v = row["value"]
-            period = row["pretty_period"]   # <= now uses pretty
-            z = (v - mean) / std if std > 0 else 0
-            mod_z = 0.6745 * (v - median) / mad
-
-            if abs(mod_z) > 3.5 or abs(z) > 3.5:
-                severity = "🔥 Severe"
-            elif abs(mod_z) > 2.5 or abs(z) > 2.5:
-                severity = "🟠 Moderate"
-            elif abs(mod_z) > 1.8 or abs(z) > 1.8:
-                severity = "🟡 Mild"
+        # Classify
+        severities = []
+        for s in np.abs(score):
+            if s >= thr_sev:
+                severities.append("🔥 Severe")
+            elif s >= thr_mod:
+                severities.append("🟠 Moderate")
+            elif s >= thr_mild:
+                severities.append("🟡 Mild")
             else:
-                continue
+                severities.append("")
 
-            anomalies.append({
-                "period": period,
-                "value": v,
-                "zscore": float(z),
-                "mod_z": float(mod_z),
-                "severity": severity
-            })
+        # DataFrame de anomalias
+        anomalies_df = pd.DataFrame({
+            "period": periods,
+            "value": vals,
+            "zscore": z_scores,
+            "mod_z": mod_z_scores,
+            "severity": severities
+        })
+        anomalies_df = anomalies_df[anomalies_df["severity"] != ""].copy()
 
-        if anomalies:
-            st.warning(f"**Detected {len(anomalies)} anomalies**:")
-            for a in anomalies:
+        # Ordenar por |score| da métrica ativa
+        key_col = "mod_z" if metric == "Modified Z (MAD)" else "zscore"
+        anomalies_df["abs_score"] = anomalies_df[key_col].abs()
+        anomalies_df.sort_values("abs_score", ascending=False, inplace=True)
+
+        # Visual: linha + marcadores
+        try:
+            fig = px.line(sum_by_period, x="pretty_period", y="value",
+                          title="Time Series with Anomalies")
+            if not anomalies_df.empty:
+                color_map = {"🟡 Mild": "#F4D03F", "🟠 Moderate": "#E67E22", "🔥 Severe": "#E74C3C"}
+                anomalies_df["color"] = anomalies_df["severity"].map(color_map)
+                fig.add_scatter(
+                    x=anomalies_df["period"],
+                    y=anomalies_df["value"],
+                    mode="markers",
+                    marker=dict(size=11, color=anomalies_df["color"]),
+                    name="Anomalies",
+                    text=[
+                        f"{sev}<br>{p}<br>Value: {v:,.0f}"
+                        f"<br>Z={z:.2f} | MAD={m:.2f}"
+                        for sev, p, v, z, m in zip(
+                            anomalies_df["severity"], anomalies_df["period"],
+                            anomalies_df["value"], anomalies_df["zscore"], anomalies_df["mod_z"]
+                        )
+                    ],
+                    hovertemplate="%{text}<extra></extra>"
+                )
+            fig.update_layout(template="simple_white", height=400, margin=dict(l=40, r=40, t=60, b=40))
+            fig.update_xaxes(tickangle=-45)
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception:
+            # Fallback (no-plotly)
+            st.line_chart(sum_by_period.set_index("pretty_period")["value"])
+            if not anomalies_df.empty:
+                st.write("Anomaly markers not available without Plotly.")
+
+        # --- Summary panel (robusto para 0/1 anomalias) ---
+        if anomalies_df.empty:
+            st.success("No anomalies detected for the current thresholds.")
+        else:
+            st.warning(f"**Detected {len(anomalies_df)} anomalies** (sorted by |{metric}|):")
+
+            max_n = int(min(10, len(anomalies_df)))  # limita a 10 para UI
+            if max_n <= 1:
+                # 1 anomalia: não usar slider
+                a = anomalies_df.iloc[0]
                 st.markdown(
-                    f"- {a['severity']} — **{a['period']}** → `{a['value']}` "
+                    f"- {a['severity']} — **{a['period']}** → `{int(a['value'])}` "
                     f"(Z={a['zscore']:.2f}, MAD={a['mod_z']:.2f})"
                 )
-        else:
-            st.success("No anomalies detected in this period.")
+            else:
+                default_n = int(min(5, max_n))
+                top_n = st.slider("Show top N anomalies", min_value=1, max_value=max_n, value=default_n)
+                for _, a in anomalies_df.head(top_n).iterrows():
+                    st.markdown(
+                        f"- {a['severity']} — **{a['period']}** → `{int(a['value'])}` "
+                        f"(Z={a['zscore']:.2f}, MAD={a['mod_z']:.2f})"
+                    )
 
-    else:
-        st.info("Need at least 5 periods for anomaly detection.")
+            # Download (quando existe ≥1)
+            st.download_button(
+                label="⬇️ Download anomalies (CSV)",
+                data=anomalies_df.drop(columns=["abs_score"]).to_csv(index=False).encode("utf-8"),
+                file_name="anomalies.csv",
+                mime="text/csv"
+            )
 
     # ---------------------------------------------------------
     # Auto-Insights
     # ---------------------------------------------------------
     st.markdown("### 🧠 Auto‑Insights")
-
     context_lines = []
 
     if len(sum_by_period) >= 2:
@@ -1044,7 +1027,6 @@ def render_evolution_dashboard():
         final = float(sum_by_period["value"].iloc[-1])
         total_change = final - initial
         pct_change = (total_change / initial * 100) if initial != 0 else None
-
         if pct_change is not None:
             if pct_change > 0:
                 context_lines.append(
@@ -1057,33 +1039,20 @@ def render_evolution_dashboard():
                     f"moving from **{initial:,.0f}** to **{final:,.0f}**."
                 )
             else:
-                context_lines.append(
-                    "Across the selected period, total errors remained stable."
-                )
+                context_lines.append("Across the selected period, total errors remained stable.")
 
     if len(sum_by_period) >= 3:
+        trend_clean = (trend_label.replace('📈', '').replace('📉', '')
+                                     .replace('↗', '').replace('↘', '')
+                                     .strip()) if 'trend_label' in locals() else "—"
         context_lines.append(
-            f"The regression model indicates a **{trend_label.replace('📈','').replace('📉','').strip()}**, "
+            f"The regression model indicates a **{trend_clean}**, "
             f"with slope **{slope:.3f}** and confidence (R²) **{r2:.3f}**."
         )
 
-    if len(sum_by_period) >= 3:
-        if slope > 0:
-            context_lines.append(
-                f"Forecast suggests an increase next period, near **{forecast_next:,.0f}**."
-            )
-        elif slope < 0:
-            context_lines.append(
-                f"Forecast points to a further reduction, around **{forecast_next:,.0f}**."
-            )
-        else:
-            context_lines.append(
-                f"Forecast indicates stable results around **{forecast_next:,.0f}**."
-            )
-
-    if "anomalies" in locals() and anomalies:
-        severe = [a for a in anomalies if "Severe" in a["severity"]]
-        if severe:
+    if "anomalies_df" in locals() and not anomalies_df.empty:
+        severe = anomalies_df[anomalies_df["severity"].str.contains("Severe")]
+        if len(severe):
             context_lines.append(
                 f"Detected **{len(severe)} severe anomalies**, indicating significant irregularities."
             )
@@ -1096,11 +1065,12 @@ def render_evolution_dashboard():
 
     if len(selected_plants) > 1 or ("ALL" in selected_plants):
         plant_stats = grouped.groupby("plant")["value"].mean().sort_values()
-        best_plant = plant_stats.index[0]
-        worst_plant = plant_stats.index[-1]
-        context_lines.append(
-            f"Best performing plant: **{best_plant}**. Worst: **{worst_plant}**."
-        )
+        if not plant_stats.empty:
+            best_plant = plant_stats.index[0]
+            worst_plant = plant_stats.index[-1]
+            context_lines.append(
+                f"Best performing plant: **{best_plant}**. Worst: **{worst_plant}**."
+            )
 
     final_text = " ".join(context_lines)
     st.write(final_text)
@@ -1109,16 +1079,14 @@ def render_evolution_dashboard():
     # EXPORTAÇÃO
     # ---------------------------------------------------------
     st.markdown("### 📤 Export Data")
-
     import io
     export_buffer = io.BytesIO()
 
     with pd.ExcelWriter(export_buffer, engine="openpyxl") as writer:
-
         sum_by_period.to_excel(writer, sheet_name="Historical_Summary", index=False)
 
-        if "anomalies" in locals() and anomalies:
-            pd.DataFrame(anomalies).to_excel(
+        if "anomalies_df" in locals() and not anomalies_df.empty:
+            anomalies_df.drop(columns=["abs_score"], errors="ignore").to_excel(
                 writer, sheet_name="Anomalies", index=False
             )
         else:
@@ -1152,22 +1120,6 @@ def render_evolution_dashboard():
                 "Trend Classification": ["Not enough data"]
             })
         trend_df.to_excel(writer, sheet_name="Trend", index=False)
-
-        if len(sum_by_period) >= 3:
-            forecast_df = pd.DataFrame({
-                "Forecast Next Period": [forecast_next],
-                "Lower Bound": [lower],
-                "Upper Bound": [upper],
-                "Forecast Classification": [forecast_label]
-            })
-        else:
-            forecast_df = pd.DataFrame({
-                "Forecast Next Period": ["—"],
-                "Lower Bound": ["—"],
-                "Upper Bound": ["—"],
-                "Forecast Classification": ["Not enough data"]
-            })
-        forecast_df.to_excel(writer, sheet_name="Forecast", index=False)
 
     st.download_button(
         label="⬇️ Download Evolution Report (Excel)",

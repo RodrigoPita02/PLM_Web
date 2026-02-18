@@ -267,7 +267,7 @@ def classify_uploaded_files(files):
         name = f.name.lower()
 
         # SAP
-        if "sapui5" in name or "item" in name:
+        if any(key in name for key in ["sapui5", "Item", "browse", "report", "sap"]):
             mapping["sap"] = f
             continue
         if "mara" in name and "zplm" not in name:
@@ -330,7 +330,7 @@ def classify_uploaded_files(files):
 def required_keys_for_page(page_choice: str) -> list[str]:
     if page_choice == "📦 SAP Material Validation":
         return [
-            "Item Browse Report.xlsx",
+            "SAPUI5 Export (Item Browse Report.xlsx)",
             "MARA.xlsx",
             "MARC.xlsx",
             "MVKE.xlsx",
@@ -2033,6 +2033,8 @@ elif main_choice == "🧹 Data Cleanups":
 
             
             if save_history:
+                df_for_log = results_dict.get("FR_Status", pd.DataFrame())
+                
                 payload = build_dc_log_payload(
                     user=effective_executor,
                     plant_filter=plant_filter_export,
@@ -2041,7 +2043,7 @@ elif main_choice == "🧹 Data Cleanups":
                     zplm_marc_file=zplm_marc_file,
                     zplm_mara_file=zplm_mara_file,
                     mbew_file=mbew_file,
-                    df_result=results_dict.get("FP_Status")  # Ou outro DF que represente o módulo
+                    df_result=df_for_log
                 )
                 save_run_log(payload)
 
