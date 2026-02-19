@@ -809,7 +809,7 @@ def render_evolution_dashboard():
                                 margin=dict(l=0,r=0,t=0,b=0), showlegend=False)
             spark.update_xaxes(visible=False)
             spark.update_yaxes(visible=False)
-            st.plotly_chart(spark, use_container_width=True)
+            st.plotly_chart(spark, width='stretch')
         st.caption(f"Last period: {current_label}")
 
     with k2:
@@ -876,7 +876,7 @@ def render_evolution_dashboard():
         fig.update_xaxes(tickmode="array", tickvals=unique_sorted[::step])
         fig.update_layout(xaxis_tickangle=-45, xaxis_tickfont=dict(size=11))
         fig = style_plotly(fig, height=480)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         fig, ax = plt.subplots(figsize=(10, 5))
         for (src, pl), grp in grouped.groupby(["source", "plant"]):
@@ -978,7 +978,7 @@ def render_evolution_dashboard():
                 )
             fig.update_layout(template="simple_white", height=400, margin=dict(l=40, r=40, t=60, b=40))
             fig.update_xaxes(tickangle=-45)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         except Exception:
             # Fallback (no-plotly)
             st.line_chart(sum_by_period.set_index("pretty_period")["value"])

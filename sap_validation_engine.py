@@ -479,6 +479,80 @@ def validar_consumption_mode(df, resultados):
                 'Plant': plant
             })
 
+def validar_consumption_per(marc_df, mara_df, resultados):
+    """
+    Valida os campos MARC:
+      - Bwd consumption per.
+      - Fwd consumption per.
+    Regras:
+      - Apenas para Material Type ∈ {FERT, HALB, ROH}
+      - Ambos têm de ser 0 (ou equivalentes: 0, 0.0, '0', etc.)
+    """
+    import pandas as pd
+
+    # Verificar se as colunas existem
+    needed_cols = {
+        'Material', 'Plant', 
+        'Bwd consumption per.', 
+        'Fwd consumption per.'
+    }
+    if not needed_cols.issubset(marc_df.columns):
+        print("⚠️ MARC não tem as colunas necessárias para validar Bwd/Fwd consumption per.")
+        return
+
+    # Mapa Material → Material Type (MARA)
+    mt_map = dict(zip(
+        mara_df['Material'].astype(str).str.strip(),
+        mara_df['Material Type'].astype(str).str.strip().str.upper()
+    ))
+
+    valid_types = {'FERT', 'HALB', 'ROH'}
+
+    for idx, row in marc_df.iterrows():
+        material = str(row['Material']).strip()
+        plant = str(row['Plant']).strip()
+
+        mt = mt_map.get(material, '')
+
+        # Apenas validar tipos pretendidos
+        if mt not in valid_types:
+            continue
+
+        # Obter valores
+        bwd = row.get('Bwd consumption per.')
+        fwd = row.get('Fwd consumption per.')
+
+        # Normalizar
+        def normalize(val):
+            try:
+                if pd.isna(val): 
+                    return None
+                return float(val)
+            except:
+                return None
+
+        bwd_norm = normalize(bwd)
+        fwd_norm = normalize(fwd)
+
+        # Validar ≠ 0
+        if bwd_norm not in (0, None):
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'Bwd consumption per.',
+                'Error': f"Invalid value: '{bwd}' (must be 0 for {mt})",
+                'Material': material,
+                'Plant': plant
+            })
+
+        if fwd_norm not in (0, None):
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'Fwd consumption per.',
+                'Error': f"Invalid value: '{fwd}' (must be 0 for {mt})",
+                'Material': material,
+                'Plant': plant
+            })
+
 def validar_division(df, resultados):
     """Valida se o Field 'Division' é sempre '00' e não está vazio (aceitando '0'/'0.0' e normalizando)."""
     if 'Division' not in df.columns:
@@ -3223,6 +3297,7 @@ def postprocess_with_views_roles_and_classification(
     field_rules = {
         'Production Scheduling Profile': lambda mt, pt: mt in ['FERT', 'HALB'],
         'Repetitive Manufacturing Profile': lambda mt, pt: mt in ['FERT', 'HALB'],
+        'Indicator: Repetitive Manufa. Allow': lambda mt, pt: True,
         'Enterproj Number': lambda mt, pt: mt == 'FERT',
         'Procurement Type': lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'] and pt in ['PP', 'MP'],
         'Account Assignment Group': lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
@@ -3236,6 +3311,7 @@ def postprocess_with_views_roles_and_classification(
         'With Qty Structure': lambda mt, pt: mt in ['FERT', 'HALB'],
         'Item Category Group': lambda mt, pt: True,
         'General Item Category Group': lambda mt, pt: True,
+        'Item Category Group (MVKE)': lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
         'Loading Group': lambda mt, pt: True,
         'Division': lambda mt, pt: True,
         'Export/Import Group': lambda mt, pt: True,
@@ -3249,12 +3325,20 @@ def postprocess_with_views_roles_and_classification(
         'Period Type': lambda mt, pt: True,
         'Strategy Group': lambda mt, pt: True,
         'Inspection Type': lambda mt, pt: mt in ['HALB', 'ROH'],
+        'Inspection Type (QMAT 08)': lambda mt, pt: mt in ['HALB', 'ROH'],
         'MRP Controller': lambda mt, pt: True,
         'Plant Specific Material Status': lambda mt, pt: True,
         'Backflush': lambda mt, pt: True,
         'Product-Related Origin': lambda mt, pt: True,
         'Availability Check': lambda mt, pt: True,
         'Neg. stocks in plant': lambda mt, pt: mt in ['ROH', 'HALB'],
+        'Consumption Mode': lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Bwd consumption per.': lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Fwd consumption per.': lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Profit Center': lambda mt, pt: True,
+        'Material Group': lambda mt, pt: True,
+        'JIT Delivery Sched.': lambda mt, pt: pt == 'PP',
+        'Issue Storage Location': lambda mt, pt: True,
     }
 
     def is_view_required(material_type, plant_type, view_code):
@@ -3453,7 +3537,10 @@ def run_full_validation(
         progress_callback(30, "Running field validations...")
     validar_consumption_mode(sap_df, resultados)
     if progress_callback:
-        progress_callback(32, "Running field validations...")   
+        progress_callback(32, "Running field validations...")
+    validar_consumption_per(marc_df, mara_df, resultados)
+    if progress_callback:
+        progress_callback(33, "Running field validations...")  
     validar_division(sap_df, resultados)
     if progress_callback:   
         progress_callback(34, "Running field validations...")
