@@ -2714,6 +2714,162 @@ def validar_zplm_marc_vs_marc_existence(zplm_marc_df, marc_df, mara_df):
         columns=["Material", "Plant", "Error"]
     )
 
+def validar_ltb_fields(zplm_marc, marc, mara):
+    """
+    Data Cleanups: Validação LTB (ZPLM MARC + MARC + MARA)
+
+    Regras:
+      - Apenas materiais com:
+          * Material Plant Type == 'FP' (ZPLM MARC)  AND
+          * Material Type ∈ {FERT, HALB, ROH} (MARA) AND
+          * Plant-Specific Material Status ∈ {55, 70, 99} (MARC)
+        podem ter valores em: LTB Quantity ou LTB Start Date.
+
+      - Se qualquer outro material tiver valores LTB → ERRO (Tipo A).
+
+      - NÃO existe mais a regra antiga:
+            "status 55 tem de ter LTB preenchido"  → REMOVIDA.
+    """
+
+    import pandas as pd
+
+    # -----------------------------
+    # 0) Normalização de colunas
+    # -----------------------------
+    z = zplm_marc.copy()
+    m = marc.copy()
+    a = mara.copy()
+
+    z_alias = {
+        'Material': 'Material',
+        'Plant': 'Plant',
+        'Material Plant Type': 'Material Plant Type',
+        'LTB Quantity': 'LTB Quantity',
+        'LTB Start Date': 'LTB Start Date',
+    }
+    m_alias = {
+        'Material': 'Material',
+        'Plant': 'Plant',
+        'Plant-Specific Material Status': 'Plant-Specific Material Status',
+    }
+    a_alias = {
+        'Material': 'Material',
+        'Material Type': 'Material Type',
+    }
+
+    z.rename({k: v for k, v in z_alias.items() if k in z.columns and k != v}, axis=1, inplace=True)
+    m.rename({k: v for k, v in m_alias.items() if k in m.columns and k != v}, axis=1, inplace=True)
+    a.rename({k: v for k, v in a_alias.items() if k in a.columns and k != v}, axis=1, inplace=True)
+
+    req_z = {'Material', 'Plant', 'Material Plant Type', 'LTB Quantity', 'LTB Start Date'}
+    req_m = {'Material', 'Plant', 'Plant-Specific Material Status'}
+    req_a = {'Material', 'Material Type'}
+
+    missing = []
+    if not req_z.issubset(z.columns): missing.append(f"ZPLM_MARC: {sorted(req_z - set(z.columns))}")
+    if not req_m.issubset(m.columns): missing.append(f"MARC: {sorted(req_m - set(m.columns))}")
+    if not req_a.issubset(a.columns): missing.append(f"MARA: {sorted(req_a - set(a.columns))}")
+
+    if missing:
+        cols = [
+            'Material','Plant','Material Plant Type','Material Type','Plant-Specific Material Status',
+            'LTB Quantity','LTB Start Date','Field','Error'
+        ]
+        return pd.DataFrame(columns=cols)
+
+    # -----------------------------
+    # 1) Enriquecimento (merges)
+    # -----------------------------
+    a_use = a[['Material','Material Type']].copy()
+    a_use['Material'] = a_use['Material'].astype(str).str.strip()
+    a_use['Material Type'] = a_use['Material Type'].astype(str).str.strip().str.upper()
+
+    m_use = m[['Material','Plant','Plant-Specific Material Status']].copy()
+    m_use['Material'] = m_use['Material'].astype(str).str.strip()
+    m_use['Plant']    = m_use['Plant'].astype(str).str.strip()
+
+    # NORMALIZAÇÃO ROBUSTA DO STATUS (55.0 → 55)
+    status_num = pd.to_numeric(m_use['Plant-Specific Material Status'], errors='coerce')
+    m_use['Plant-Specific Material Status'] = (
+        status_num.astype('Int64').astype(str)
+        .str.replace('<NA>', '', regex=False)
+        .str.strip()
+    )
+
+    z['Material'] = z['Material'].astype(str).str.strip()
+    z['Plant']    = z['Plant'].astype(str).str.strip()
+
+    z = z.merge(a_use, on='Material', how='left')
+    z = z.merge(m_use, on=['Material','Plant'], how='left')
+
+    # -----------------------------
+    # 2) Flags / condições
+    # -----------------------------
+    valid_mtypes = {'FERT', 'HALB', 'ROH'}
+    valid_status = {'55', '70', '99'}
+
+    is_fp       = z['Material Plant Type'].astype(str).str.upper().eq('FP')
+    is_valid_mt = z['Material Type'].astype(str).str.upper().isin(valid_mtypes)
+    is_valid_st = z['Plant-Specific Material Status'].astype(str).isin(valid_status)
+
+    # -----------------------------
+    # 3) Normalização do LTB (0 conta como vazio)
+    # -----------------------------
+
+    # --- Quantity ---
+    ltb_qty_raw = z['LTB Quantity']
+    ltb_qty_num = pd.to_numeric(ltb_qty_raw, errors='coerce')
+
+    is_qty_empty = (
+        ltb_qty_raw.isna()
+        | (ltb_qty_raw.astype(str).str.strip().isin(["", "0", "0.0"]))
+        | (ltb_qty_num.fillna(0) == 0)
+    )
+
+    has_qty = ~is_qty_empty
+
+    # --- Start Date ---
+    ltb_date_raw = z['LTB Start Date']
+    ltb_date_dt  = pd.to_datetime(ltb_date_raw, errors='coerce')
+
+    is_date_empty = (
+        ltb_date_raw.isna()
+        | (ltb_date_raw.astype(str).str.strip().isin(["", "0", "0.0"]))
+        | (ltb_date_dt.isna())
+    )
+
+    has_date = ~is_date_empty
+
+    has_any_ltb = has_qty | has_date
+
+    # -----------------------------
+    # 4) Determinar autorizados
+    # -----------------------------
+    authorized = is_fp & is_valid_mt & is_valid_st
+
+    # -----------------------------
+    # 5) Só existe Tipo A
+    # -----------------------------
+    mask_A = (~authorized) & has_any_ltb
+
+    df_A = z.loc[mask_A, [
+        'Material','Plant','Material Plant Type','Material Type',
+        'Plant-Specific Material Status','LTB Quantity','LTB Start Date'
+    ]].copy()
+
+    df_A['Field'] = 'LTB Quantity / LTB Start Date'
+    df_A['Error'] = (
+        "Material not authorized to have LTB (requires FP + MT∈{F/H/R} + Status∈{55,70,99}) "
+        "but it has values in one of the LTB fields. LTB Quantity=[" + df_A['LTB Quantity'].astype(str) + "], LTB Start Date=[" + df_A['LTB Start Date'].astype(str) + "]"
+    )
+
+    df_err = df_A.copy()
+
+    if not df_err.empty:
+        df_err.sort_values(by=['Plant','Material'], inplace=True)
+
+    return df_err
+
 # ------------------------
 # Cruzamentos MARA/MARC/ZPLM
 # ------------------------
@@ -5122,6 +5278,9 @@ def run_data_cleanups_validation(
     df_zplm_mara_cov = validar_zplm_mara_vs_mara_existence(zplm_mara, mara)
     results["Missing in MARA"] = df_zplm_mara_cov
 
+    df_fp_ltb = validar_ltb_fields(zplm_marc, marc, mara)
+    results["FP LTB Fields"] = df_fp_ltb
+
     # =======================================================
     # 5) WRITE THE EXCEL (SUMMARY + VALIDATION SHEETS)
     # =======================================================
@@ -5327,51 +5486,31 @@ def build_fp_log_payload(
         }
     }
 
-def build_dc_log_payload(
-    *,
-    user,
-    plant_filter,
-    mara_file,
-    marc_file,
-    zplm_marc_file,
-    zplm_mara_file,
-    mbew_file,
-    df_result
-):
-    import pandas as pd
-    from datetime import datetime
-
-    def _name(f, default):
-        return getattr(f, "name", default) if f else default
-
-    # KPIs
-    if df_result is None or df_result.empty:
-        mats = plants = outdated = correct = 0
-    else:
-        mats = df_result["Material"].nunique() if "Material" in df_result else 0
-        plants = df_result["Plant"].nunique() if "Plant" in df_result else 0
-        if "Status" in df_result:
-            outdated = int((df_result["Status"] == "Outdated").sum())
-            correct = int((df_result["Status"] == "Correct").sum())
-        else:
-            outdated = correct = 0
+def build_dc_log_payload(user, plant_filter, mara_file, marc_file, zplm_marc_file,
+                         zplm_mara_file, mbew_file, df_result, kpis):
+    """
+    Log payload para Data Cleanups.
+    Aceita KPIs da execução (kpis dict).
+    """
+    # kpis contém "outdated", "correct", etc.
+    metrics = {
+        "outdated": int(kpis.get("outdated", 0)),
+        "materials": int(kpis.get("materials", 0)),
+        "plants": int(kpis.get("plants", 0)),
+        "correct": int(kpis.get("correct", 0)),
+    }
 
     return {
-        "run_type": "DATA_CLEANUPS",   # <<<<<< ESSENCIAL!
+        "run_type": "DATA_CLEANUPS",
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "user": user,
-        "plant_filter": plant_filter if plant_filter else "ALL",
+        "plant_filter": plant_filter or "ALL",
+        "metrics": metrics,
         "files": {
-            "mara": _name(mara_file, "MARA.xlsx"),
-            "marc": _name(marc_file, "MARC.xlsx"),
-            "zplm_marc": _name(zplm_marc_file, "ZPLM MARC.xlsx"),
-            "zplm_mara": _name(zplm_mara_file, "ZPLM MARA.xlsx"),
-            "mbew": _name(mbew_file, "MBEW.xlsx"),
-        },
-        "metrics": {
-            "materials": mats,
-            "plants": plants,
-            "outdated": outdated,
-            "correct": correct,
-        },
+            "mara": getattr(mara_file, "name", None),
+            "marc": getattr(marc_file, "name", None),
+            "zplm_marc": getattr(zplm_marc_file, "name", None),
+            "zplm_mara": getattr(zplm_mara_file, "name", None),
+            "mbew": getattr(mbew_file, "name", None),
+        }
     }

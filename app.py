@@ -2043,7 +2043,8 @@ elif main_choice == "🧹 Data Cleanups":
                     zplm_marc_file=zplm_marc_file,
                     zplm_mara_file=zplm_mara_file,
                     mbew_file=mbew_file,
-                    df_result=df_for_log
+                    df_result=df_for_log,
+                    kpis=kpis
                 )
                 save_run_log(payload)
 
