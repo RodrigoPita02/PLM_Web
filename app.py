@@ -258,6 +258,9 @@ def classify_uploaded_files(files):
         "marc": None,
         "zplm_mara": None,
         "zplm_marc": None,
+        "mbew": None,
+        "ekpo": None,
+        "mard": None,
     }
 
     if not files:
@@ -321,6 +324,15 @@ def classify_uploaded_files(files):
         if "zplm" in name and "marc" in name:
             mapping["zplm_marc"] = f
             continue
+        if "mbew" in name:
+            mapping["mbew"] = f
+            continue
+        if "ekpo" in name:
+            mapping["ekpo"] = f
+            continue
+        if "mard" in name:
+            mapping["mard"] = f
+            continue
 
     return mapping
 
@@ -364,6 +376,9 @@ def required_keys_for_page(page_choice: str) -> list[str]:
             "MARC.xlsx",
             "ZPLM MARA.xlsx",
             "ZPLM MARC.xlsx",
+            "MBEW.xlsx",
+            "EKPO.xlsx",
+            "MARD.xlsx",
         ]
 
     return []
@@ -396,6 +411,9 @@ LABELS_PT = {
     "zplm_marc": "ZPLM MARC.xlsx",
     "zplm_mara": "ZPLM MARA.xlsx",
     "qmat": "QMAT.xlsx",
+    "mbew": "MBEW.xlsx",
+    "ekpo": "EKPO.xlsx",
+    "mard": "MARD.xlsx",
 
     "auto": "PLM Automotive Validation.xlsx",
     "plm": "PLM TimingLetter Validation.xlsx",
@@ -1891,7 +1909,7 @@ elif main_choice == "🧹 Data Cleanups":
     # ----------------------------------------------------------
     if st.session_state.dataclean_step == 1:
         st.markdown("### 📂 Step 1 — Load Files")
-        st.caption("Upload **MARA + MARC + ZPLM MARA + ZPLM MARC + MBEW** (all required).")
+        st.caption("Upload **MARA + MARC + ZPLM MARA + ZPLM MARC + MBEW + EKPO + MARD** (all required).")
 
         uploads = st.file_uploader(
             "Drop the 5 Excel files here",
@@ -1907,7 +1925,9 @@ elif main_choice == "🧹 Data Cleanups":
                 "marc": None,
                 "zplm_marc": None,
                 "zplm_mara": None,
-                "mbew": None
+                "mbew": None,
+                "ekpo": None,
+                "mard": None
             }
             if not files:
                 return mapping
@@ -1923,6 +1943,10 @@ elif main_choice == "🧹 Data Cleanups":
                     mapping["marc"] = f
                 elif "mbew" in name:
                     mapping["mbew"] = f
+                elif "ekpo" in name:
+                    mapping["ekpo"] = f
+                elif "mard" in name:
+                    mapping["mard"] = f
             return mapping
 
         files = classify_dc(uploads)
@@ -1936,7 +1960,9 @@ elif main_choice == "🧹 Data Cleanups":
                 "MARC.xlsx": "marc",
                 "ZPLM MARA.xlsx": "zplm_mara",
                 "ZPLM MARC.xlsx": "zplm_marc",
-                "MBEW.xlsx": "mbew"
+                "MBEW.xlsx": "mbew",
+                "EKPO.xlsx": "ekpo",
+                "MARD.xlsx": "mard"
             }
             for display_name, key in expected.items():
                 f = files.get(key)
@@ -1951,7 +1977,7 @@ elif main_choice == "🧹 Data Cleanups":
                 st.write("No files stored yet.")
 
         # Required:
-        needed = ["mara", "marc", "zplm_marc", "zplm_mara", "mbew"]
+        needed = ["mara", "marc", "zplm_marc", "zplm_mara", "mbew", "ekpo", "mard"]
         persisted = st.session_state.get("dc_files_persisted", {}) or {}
         disabled = any(k not in persisted for k in needed)
 
@@ -2011,6 +2037,8 @@ elif main_choice == "🧹 Data Cleanups":
         zplm_marc_file = files.get("zplm_marc")
         zplm_mara_file = files.get("zplm_mara")
         mbew_file      = files.get("mbew")
+        ekpo_file      = files.get("ekpo")
+        mard_file      = files.get("mard")
 
         plant_filter_export  = st.session_state.dc_plant_export
         plant_filter_display = st.session_state.dc_plant_display
@@ -2024,6 +2052,8 @@ elif main_choice == "🧹 Data Cleanups":
                     zplm_marc_file=zplm_marc_file,
                     zplm_mara_file=zplm_mara_file,
                     mbew_file=mbew_file,                # <--- NOVO
+                    ekpo_file=ekpo_file,                # <--- NOVO
+                    mard_file=mard_file,                # <--- NOVO
                     plant_filter=plant_filter_display
                 )
 
@@ -2043,6 +2073,8 @@ elif main_choice == "🧹 Data Cleanups":
                     zplm_marc_file=zplm_marc_file,
                     zplm_mara_file=zplm_mara_file,
                     mbew_file=mbew_file,
+                    ekpo_file=ekpo_file,
+                    mard_file=mard_file,
                     df_result=df_for_log,
                     kpis=kpis
                 )

@@ -867,7 +867,7 @@ def render_evolution_dashboard():
             spark.update_layout(template="simple_white", height=75,
                                 margin=dict(l=0, r=0, t=0, b=0), showlegend=False)
             spark.update_xaxes(visible=False); spark.update_yaxes(visible=False)
-            st.plotly_chart(spark, use_container_width=True)
+            st.plotly_chart(spark, width='stretch')
         st.caption(f"Last period: {current_label}")
 
     with k2:
@@ -937,7 +937,7 @@ def render_evolution_dashboard():
 
         # Altura e margens agradáveis
         fig.update_layout(height=480, margin=dict(l=40, r=40, t=60, b=80))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     else:
         # Fallback Matplotlib (inclui dual-axis com twinx)
@@ -1080,7 +1080,7 @@ def render_evolution_dashboard():
                 )
             fig.update_layout(template="simple_white", height=400, margin=dict(l=40, r=40, t=60, b=40))
             fig.update_xaxes(tickangle=-45)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             st.line_chart(sum_by_period.set_index("pretty_period")["value"])
             if not anomalies_df.empty:
