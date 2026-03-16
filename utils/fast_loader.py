@@ -19,25 +19,28 @@ def _to_bytesio(uploaded_or_path):
     return uploaded_or_path  # polars/pandas aceitam str path diretamente
 
 
-# utils/fast_loader.py (apenas o miolo da função)
 def _read_with_polars(src, sheet_name):
-    import polars as pl
+    # Polars não aceita sheet_name como inteiro — converter para None e
+    # seleccionar pelo índice manualmente quando necessário
+    sheet_by_index = isinstance(sheet_name, int)
 
     # 1) tentativa direta com override global para texto
-    try:
-        return pl.read_excel(
-            src,
-            sheet_name=sheet_name,
-            # força texto por defeito – evita avisos e mantém consistência SAP
-            dtype=str,
-        )
-    except Exception:
-        pass
+    if not sheet_by_index:
+        try:
+            return pl.read_excel(src, sheet_name=sheet_name, dtype=str)
+        except Exception:
+            pass
 
-    # 2) enumerar folhas e escolher a 1ª não vazia (também como texto)
+    # 2) ler todas as folhas e escolher pela posição ou pela 1ª não vazia
     try:
         sheets = pl.read_excel(src, sheet_name=None, dtype=str)
         if isinstance(sheets, dict) and sheets:
+            if sheet_by_index:
+                keys = list(sheets.keys())
+                idx  = sheet_name if sheet_name < len(keys) else 0
+                df   = sheets[keys[idx]]
+                if df is not None and df.shape[0] > 0:
+                    return df
             for name, df in sheets.items():
                 try:
                     if df is not None and df.shape[0] > 0 and df.shape[1] > 0:

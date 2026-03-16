@@ -1,0 +1,19 @@
+{
+  "run_type": "SAP_VALIDATION",
+  "type": "sap",
+  "timestamp": "2026-03-06T13:30:59",
+  "user": "RPITA",
+  "plant_filter": "ALL",
+  "metrics": {
+    "total_errors": 2646,
+    "fields_with_error": 16,
+    "materials_with_error": 2036
+  },
+  "files": {
+    "sap": "Item Browse Report.xlsx",
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "mvke": "MVKE.xlsx"
+  },
+  "report_path": "C:\\Users\\RPITA\\OneDrive - Visteon\\Desktop\\Rodrigo\\PLM_WebV2\\reports\\sap\\2026-03\\20260306_133059_SAP_Validation_Adjusted_Report_ALL.xlsx"
+}

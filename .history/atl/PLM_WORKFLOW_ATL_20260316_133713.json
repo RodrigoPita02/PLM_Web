@@ -1,0 +1,14 @@
+{
+  "run_type": "PLM_WORKFLOW_ATL",
+  "timestamp": "2026-03-16T13:37:13",
+  "user": "RPITA",
+  "plant_scope": "All",
+  "metrics": {
+    "PT01_rows": 174,
+    "PT02_rows": 17,
+    "PT01_with_TLN": 27,
+    "PT02_with_TLN": 3,
+    "PT01_unique_CNs": 165,
+    "PT02_unique_CNs": 17
+  }
+}

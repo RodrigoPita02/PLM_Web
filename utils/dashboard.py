@@ -1,4 +1,3 @@
-
 # utils/dashboard.py
 # -*- coding: utf-8 -*-
 """
@@ -15,8 +14,6 @@ Design:
 from __future__ import annotations
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import matplotlib.pyplot as plt
 import numpy as np
 from datetime import datetime
 from scipy.stats import linregress
@@ -28,7 +25,6 @@ try:
     PLOTLY_AVAILABLE = True
 except Exception:
     PLOTLY_AVAILABLE = False
-    # Importa matplotlib apenas se necessário (fallback)
     import matplotlib.pyplot as plt
 
 # Palete oficial
@@ -104,9 +100,16 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
             .head(top_n)
         )
         if PLOTLY_AVAILABLE:
+            # Destaque para campos MVKE (nova regra)
+            HIGHLIGHT_FIELDS = {'MVKE Combinations', 'Account Assignment Group',
+                                 'Item Category Group', 'Product Hierarchy'}
+            colors = [
+                "#FF6A13" if f in HIGHLIGHT_FIELDS else "#6EC6FF"
+                for f in top_fields['Field']
+            ]
             fig = px.bar(top_fields, x='Field', y='Errors',
                          title=f"Top {top_n} Fields with more errors", text='Errors')
-            fig.update_traces(textposition='outside')
+            fig.update_traces(textposition='outside', marker_color=colors)
             fig = style_plotly(fig, height=480)
             fig.update_layout(xaxis_tickangle=-45)
             st.plotly_chart(fig, width='stretch')
@@ -238,7 +241,9 @@ def render_atl_run_kpis(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
     """
     KPIs para ATL:
       - Contagem de linhas PT01/PT02
-      - Aging médio (se coluna existir)
+      - Aging médio por planta
+      - Change Numbers únicos por planta
+      - CNs com Timing Letter Number associado
     """
     pt01_rows = int(df_pt01.shape[0]) if df_pt01 is not None else 0
     pt02_rows = int(df_pt02.shape[0]) if df_pt02 is not None else 0
@@ -251,14 +256,39 @@ def render_atl_run_kpis(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
         except Exception:
             return 0.0
 
+    def _unique_cns(df: pd.DataFrame) -> int:
+        if df is None or df.empty or 'Trigger ID' not in df.columns:
+            return 0
+        return int(df['Trigger ID'].astype(str).str.strip().nunique())
+
+    def _cns_with_tln(df: pd.DataFrame) -> int:
+        if df is None or df.empty or 'Timing Letter Number' not in df.columns:
+            return 0
+        return int(
+            df['Timing Letter Number'].astype(str).str.strip()
+            .replace('', pd.NA).notna().sum()
+        )
+
     avg_pt01 = _avg_aging(df_pt01)
     avg_pt02 = _avg_aging(df_pt02)
+    cns_pt01 = _unique_cns(df_pt01)
+    cns_pt02 = _unique_cns(df_pt02)
+    tln_pt01 = _cns_with_tln(df_pt01)
+    tln_pt02 = _cns_with_tln(df_pt02)
 
+    st.markdown("#### PT01")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("PT01 — Lines", f"{pt01_rows:,}")
-    c2.metric("PT02 — Lines", f"{pt02_rows:,}")
-    c3.metric("PT01 — Aging Average (days)", avg_pt01)
-    c4.metric("PT02 — Aging Average (days)", avg_pt02)
+    c2.metric("PT01 — Unique CNs", f"{cns_pt01:,}")
+    c3.metric("PT01 — CNs with TLN", f"{tln_pt01:,}")
+    c4.metric("PT01 — Aging Avg (days)", avg_pt01)
+
+    st.markdown("#### PT02")
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("PT02 — Lines", f"{pt02_rows:,}")
+    c6.metric("PT02 — Unique CNs", f"{cns_pt02:,}")
+    c7.metric("PT02 — CNs with TLN", f"{tln_pt02:,}")
+    c8.metric("PT02 — Aging Avg (days)", avg_pt02)
 
 def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
     """
@@ -339,20 +369,85 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
             plt.xticks(rotation=45, ha='right')
             st.pyplot(fig)
 
+    # --- Timing Letter Number coverage por Source ---
+    if 'Timing Letter Number' in df_all.columns and 'Source' in df_all.columns:
+        tln_summary = []
+        for src in df_all['Source'].unique():
+            grp = df_all[df_all['Source'] == src]
+            total = len(grp)
+            with_tln = int(
+                grp['Timing Letter Number'].astype(str).str.strip()
+                .replace('', pd.NA).notna().sum()
+            )
+            without_tln = total - with_tln
+            tln_summary.append({'Source': str(src), 'With TLN': with_tln, 'Without TLN': without_tln})
+        tln_df = pd.DataFrame(tln_summary)
+
+        if PLOTLY_AVAILABLE:
+            tln_melted = tln_df.melt(id_vars='Source', value_vars=['With TLN', 'Without TLN'],
+                                     var_name='TLN Status', value_name='Count')
+            fig = px.bar(tln_melted, x='Source', y='Count', color='TLN Status', barmode='stack',
+                         title="Timing Letter Number Coverage by Source",
+                         color_discrete_map={'With TLN': '#00A6A6', 'Without TLN': '#D9D9D9'})
+            fig.update_traces(texttemplate='%{y}', textposition='inside')
+            fig = style_plotly(fig, height=380)
+            st.plotly_chart(fig, width='stretch')
+        else:
+            fig, ax = plt.subplots(figsize=(6, 4))
+            for row in tln_df.itertuples():
+                ax.bar(row.Source, row._2, label='With TLN', color='#00A6A6')  # With TLN
+                ax.bar(row.Source, row._3, bottom=row._2, label='Without TLN', color='#D9D9D9')
+            ax.set_title("TLN Coverage by Source")
+            ax.set_ylabel("Count")
+            st.pyplot(fig)
+
+    # --- Top 15 CNs mais antigos (maior Aging) ---
+    if 'Aging' in df_all.columns and 'Trigger ID' in df_all.columns:
+        aging_num = pd.to_numeric(df_all['Aging'], errors='coerce')
+        top_aging = (
+            df_all.assign(_aging=aging_num)
+            .dropna(subset=['_aging'])
+            .sort_values('_aging', ascending=False)
+            .drop_duplicates(subset=['Trigger ID'])
+            .head(15)[['Trigger ID', 'Source', 'Plant', 'Timing Letter Number', '_aging']]
+            .rename(columns={'_aging': 'Aging (days)'})
+            .reset_index(drop=True)
+        )
+        if not top_aging.empty:
+            if PLOTLY_AVAILABLE:
+                fig = px.bar(top_aging, x='Trigger ID', y='Aging (days)', color='Plant',
+                             title="Top 15 Oldest Change Numbers (by Aging)",
+                             text='Aging (days)',
+                             hover_data=['Source', 'Timing Letter Number'])
+                fig.update_traces(textposition='outside')
+                fig = style_plotly(fig, height=420)
+                fig.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(fig, width='stretch')
+            else:
+                fig, ax = plt.subplots(figsize=(10, 4))
+                ax.bar(top_aging['Trigger ID'], top_aging['Aging (days)'], color='#FF7200')
+                ax.set_title("Top 15 Oldest Change Numbers")
+                ax.set_xlabel("Change Number"); ax.set_ylabel("Aging (days)")
+                plt.xticks(rotation=45, ha='right')
+                st.pyplot(fig)
+
 def render_atl_history_charts(logs: list[dict]) -> None:
     """
     Evolução temporal do ATL:
       - Curvas PT01 / PT02 com contagem de linhas ao longo do tempo.
+      - Curvas de CNs com Timing Letter Number associado.
     """
     if not logs:
         st.info("No ATL history for charts.")
         return
 
     df = pd.DataFrame([{
-        'timestamp': l.get('timestamp'),
-        'user': l.get('user'),
-        'PT01_rows': l.get('metrics', {}).get('PT01_rows', 0),
-        'PT02_rows': l.get('metrics', {}).get('PT02_rows', 0),
+        'timestamp':     l.get('timestamp'),
+        'user':          l.get('user'),
+        'PT01_rows':     l.get('metrics', {}).get('PT01_rows', 0),
+        'PT02_rows':     l.get('metrics', {}).get('PT02_rows', 0),
+        'PT01_with_TLN': l.get('metrics', {}).get('PT01_with_TLN', 0),
+        'PT02_with_TLN': l.get('metrics', {}).get('PT02_with_TLN', 0),
     } for l in logs])
 
     try:
@@ -360,12 +455,13 @@ def render_atl_history_charts(logs: list[dict]) -> None:
     except Exception:
         df['ts'] = df['timestamp']
 
-    st.markdown("### ⏱️ Temporal Evolution (ATL History)")
     dsorted = df.sort_values('ts')
+
+    st.markdown("### ⏱️ Temporal Evolution (ATL History)")
     if PLOTLY_AVAILABLE:
         fig = px.line(dsorted, x='ts', y=['PT01_rows', 'PT02_rows'],
                       markers=True, title="Lines by Plant over Time")
-        fig = style_plotly(fig, height=480) 
+        fig = style_plotly(fig, height=400)
         st.plotly_chart(fig, width='stretch')
     else:
         fig, ax = plt.subplots(figsize=(8, 4))
@@ -375,6 +471,24 @@ def render_atl_history_charts(logs: list[dict]) -> None:
         ax.set_xlabel("Time"); ax.set_ylabel("Lines")
         ax.legend()
         st.pyplot(fig)
+
+    # Timing Letter Number coverage over time (only if data exists in logs)
+    has_tln_history = (df['PT01_with_TLN'].sum() + df['PT02_with_TLN'].sum()) > 0
+    if has_tln_history:
+        st.markdown("### 🔗 Timing Letter Number Coverage over Time")
+        if PLOTLY_AVAILABLE:
+            fig = px.line(dsorted, x='ts', y=['PT01_with_TLN', 'PT02_with_TLN'],
+                          markers=True, title="CNs with Timing Letter Number — over Time")
+            fig = style_plotly(fig, height=380)
+            st.plotly_chart(fig, width='stretch')
+        else:
+            fig, ax = plt.subplots(figsize=(8, 4))
+            ax.plot(dsorted['ts'], dsorted['PT01_with_TLN'], marker='o', label='PT01 TLN')
+            ax.plot(dsorted['ts'], dsorted['PT02_with_TLN'], marker='o', label='PT02 TLN')
+            ax.set_title("CNs with TLN over Time")
+            ax.set_xlabel("Time"); ax.set_ylabel("Count")
+            ax.legend()
+            st.pyplot(fig)
 
 # =========================
 #   SAP VALIDATION PROGRESS (DIFF)
@@ -445,8 +559,59 @@ def render_progress_charts(diff_dfs: dict[str, pd.DataFrame]) -> None:
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_view['View'], by_view['Amount'], color="#8c564b")
-            ax.set_title("VLost Views by Code")
+            ax.set_title("Lost Views by Code")
             ax.set_xlabel("View"); ax.set_ylabel("Amount")
+            st.pyplot(fig)
+
+    # New Errors breakdown by Field
+    df_new_errors = diff_dfs.get("New Errors", pd.DataFrame())
+    if not df_new_errors.empty and 'Field' in df_new_errors.columns:
+        by_field = (
+            df_new_errors['Field']
+            .value_counts()
+            .rename_axis('Field')
+            .reset_index(name='New Errors')
+            .head(20)
+        )
+        if PLOTLY_AVAILABLE:
+            fig = px.bar(by_field, x='Field', y='New Errors', text='New Errors',
+                         title="New Errors — Breakdown by Field (Top 20)")
+            fig.update_traces(textposition='outside')
+            fig = style_plotly(fig, height=440)
+            fig.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig, width='stretch')
+        else:
+            fig, ax = plt.subplots(figsize=(8, 4))
+            ax.bar(by_field['Field'], by_field['New Errors'], color="#5e3a8c")
+            ax.set_title("New Errors — Breakdown by Field")
+            ax.set_xlabel("Field"); ax.set_ylabel("Count")
+            plt.xticks(rotation=45, ha='right')
+            st.pyplot(fig)
+
+    # Resolved Errors breakdown by Field
+    df_resolved = diff_dfs.get("Resolved Errors", pd.DataFrame())
+    if not df_resolved.empty and 'Field' in df_resolved.columns:
+        by_field_r = (
+            df_resolved['Field']
+            .value_counts()
+            .rename_axis('Field')
+            .reset_index(name='Resolved Errors')
+            .head(20)
+        )
+        if PLOTLY_AVAILABLE:
+            fig = px.bar(by_field_r, x='Field', y='Resolved Errors', text='Resolved Errors',
+                         title="Resolved Errors — Breakdown by Field (Top 20)",
+                         color_discrete_sequence=["#00A6A6"])
+            fig.update_traces(textposition='outside')
+            fig = style_plotly(fig, height=440)
+            fig.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig, width='stretch')
+        else:
+            fig, ax = plt.subplots(figsize=(8, 4))
+            ax.bar(by_field_r['Field'], by_field_r['Resolved Errors'], color="#00A6A6")
+            ax.set_title("Resolved Errors — Breakdown by Field")
+            ax.set_xlabel("Field"); ax.set_ylabel("Count")
+            plt.xticks(rotation=45, ha='right')
             st.pyplot(fig)
 
 # =========================
@@ -622,10 +787,12 @@ def render_evolution_dashboard():
 
     # Paleta consistente
     COLOR_MAP = {
-        "SAP": "#FF7200",
-        "PLM Workflow PT01": "#6EC6FF",
-        "PLM Workflow PT02": "#00A6A6",
-        "Cleanups": "#4D4D4D"
+        "SAP":              "#FF7200",
+        "PLM Workflow PT01":"#6EC6FF",
+        "PLM Workflow PT02":"#00A6A6",
+        "PLM TLN PT01":     "#2176AE",
+        "PLM TLN PT02":     "#1A936F",
+        "Cleanups":         "#4D4D4D",
     }
 
     # ---------- Aux: formata período ISO week em intervalo legível ----------
@@ -670,6 +837,13 @@ def render_evolution_dashboard():
     available_sources = []
     if sap_logs: available_sources.append("SAP")
     if atl_logs: available_sources.append("PLM Workflow")
+    # PLM TLN only offered if at least one log has TLN data
+    _has_tln_logs = any(
+        l.get("metrics", {}).get("PT01_with_TLN", 0) + l.get("metrics", {}).get("PT02_with_TLN", 0) > 0
+        for l in atl_logs
+    )
+    if atl_logs and _has_tln_logs:
+        available_sources.append("PLM TLN")
     if dc_logs:  available_sources.append("Cleanups")
 
     st.sidebar.markdown("### 📌 Data Sources")
@@ -695,18 +869,31 @@ def render_evolution_dashboard():
                 "value": log.get("metrics", {}).get("total_errors", 0)
             })
 
-    # PLM Workflow → linhas PT01/PT02
+    # PLM Workflow → linhas PT01/PT02 + CNs com TLN
     if "PLM Workflow" in selected_sources:
         for log in atl_logs:
             ts = pd.to_datetime(log.get("timestamp"))
+            m  = log.get("metrics", {})
             entries.append({
                 "ts": ts, "plant": "PT01", "source": "PLM Workflow PT01",
-                "value": log.get("metrics", {}).get("PT01_rows", 0)
+                "value": m.get("PT01_rows", 0)
             })
             entries.append({
                 "ts": ts, "plant": "PT02", "source": "PLM Workflow PT02",
-                "value": log.get("metrics", {}).get("PT02_rows", 0)
+                "value": m.get("PT02_rows", 0)
             })
+            # Extra series for TLN coverage — only if user selected "PLM TLN"
+            if "PLM TLN" in selected_sources:
+                if m.get("PT01_with_TLN", 0) > 0:
+                    entries.append({
+                        "ts": ts, "plant": "PT01", "source": "PLM TLN PT01",
+                        "value": m.get("PT01_with_TLN", 0)
+                    })
+                if m.get("PT02_with_TLN", 0) > 0:
+                    entries.append({
+                        "ts": ts, "plant": "PT02", "source": "PLM TLN PT02",
+                        "value": m.get("PT02_with_TLN", 0)
+                    })
 
     # Cleanups → métrica "outdated" (confirmado nos logs)
     if "Cleanups" in selected_sources:

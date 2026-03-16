@@ -2,13 +2,12 @@
 /* ============================================================================
    VISTEON PREMIUM CORPORATE THEME (FULL APP)
    Gradient + Glass + Glow • Light & Dark Mode
-   ========================================================================== */
+   ============================================================================ */
 
 /* ============================================================
    STREAMLIT THEME INTEGRATION (LIGHT / DARK / SYSTEM)
    ============================================================ */
 
-/* 1) LIGHT MODE explícito do Streamlit */
 html[data-theme="light"] {
     --app-bg: #ffffff !important;
     --app-bg-secondary: #f5f7fa !important;
@@ -32,7 +31,6 @@ html[data-theme="light"] {
     --card-bg-2: #ffffff !important;
 }
 
-/* 2) DARK MODE explícito do Streamlit */
 html[data-theme="dark"] {
     --app-bg: #0b0b0b !important;
     --app-bg-secondary: #131313 !important;
@@ -57,7 +55,6 @@ html[data-theme="dark"] {
     --card-bg-2: #1f1f1f !important;
 }
 
-/* 3) SYSTEM MODE (segue o prefers-color-scheme) */
 @media (prefers-color-scheme: dark) {
     html:not([data-theme="light"]):not([data-theme="dark"]) {
         --app-bg: #0b0b0b;
@@ -65,11 +62,9 @@ html[data-theme="dark"] {
         --app-fg: #f3f4f6;
         --app-fg-muted: #9ca3af;
         --app-border: rgba(255,255,255,.12);
-
         --primary: #FF6A13;
         --primary-hover: #ff7f38;
         --primary-dark: #e65f18;
-
         --menu-bg: #0b0b0b;
         --menu-item-bg: #1a1a1a;
         --menu-item-hover: #252525;
@@ -77,7 +72,6 @@ html[data-theme="dark"] {
         --menu-border: rgba(255,255,255,.12);
         --menu-text: #e5e5e5;
         --menu-text-muted: #9ca3af;
-
         --card-bg-1: #161616;
         --card-bg-2: #1f1f1f;
     }
@@ -85,103 +79,76 @@ html[data-theme="dark"] {
 
 /* =============================================================================
    1) BASE VARIABLES (LIGHT MODE)
-   ========================================================================== */
+   ============================================================================ */
 :root {
-  --vs-orange: #FF6A13;
+  --vs-orange:       #FF6A13;
   --vs-orange-light: #ff7f38;
-  --vs-orange-dark: #d8560f;
+  --vs-orange-dark:  #d8560f;
 
-  --vs-black: #0b0b0b;
-  --vs-gray-dark: #1a1a1a;
-  --vs-gray: #2c2c2c;
+  --vs-black:      #0b0b0b;
+  --vs-gray-dark:  #1a1a1a;
+  --vs-gray:       #2c2c2c;
   --vs-gray-light: #d1d5db;
 
-  /* Main app colors */
-  --app-bg: #ffffff;
+  --app-bg:           #ffffff;
   --app-bg-secondary: #f5f7fa;
-  --app-fg: #1f2937;
-  --app-fg-muted: #6b7280;
-  --app-border: rgba(0,0,0,.12);
+  --app-fg:           #1f2937;
+  --app-fg-muted:     #6b7280;
+  --app-border:       rgba(0,0,0,.12);
 
-  /* Highlights */
-  --primary: var(--vs-orange);
+  --primary:       var(--vs-orange);
   --primary-hover: var(--vs-orange-light);
-  --primary-dark: var(--vs-orange-dark);
-  --accent: #2563eb;
-  --glow: rgba(255,106,19,.35);
+  --primary-dark:  var(--vs-orange-dark);
+  --accent:        #2563eb;
+  --glow:          rgba(255,106,19,.35);
 
-  /* Sidebar + Menu */
-  --menu-bg: #f3f4f6;
-  --menu-item-bg: #ffffff;
-  --menu-item-hover: #ececec;
+  /* Status colors */
+  --color-ok:      #22c55e;
+  --color-warn:    #f59e0b;
+  --color-error:   #ef4444;
+
+  --menu-bg:          #f3f4f6;
+  --menu-item-bg:     #ffffff;
+  --menu-item-hover:  #ececec;
   --menu-item-active: rgba(255,106,19,.18);
-  --menu-border: #e5e7eb;
-  --menu-text: #1f2937;
-  --menu-text-muted: #6b7280;
-  --menu-radio: var(--vs-orange);
+  --menu-border:      #e5e7eb;
+  --menu-text:        #1f2937;
+  --menu-text-muted:  #6b7280;
+  --menu-radio:       var(--vs-orange);
 
-  /* Cards */
   --card-bg-1: #fafafa;
   --card-bg-2: #ffffff;
 }
 
 /* =============================================================================
-   2) DARK MODE VARIABLES (AUTO + STREAMLIT THEME)
-   ========================================================================== */
+   2) DARK MODE VARIABLES
+   ============================================================================ */
 @media (prefers-color-scheme: dark) {
   :root {
-    --app-bg: #0b0b0b;
+    --app-bg:           #0b0b0b;
     --app-bg-secondary: #131313;
-    --app-fg: #f3f4f6;
-    --app-fg-muted: #9ca3af;
-    --app-border: rgba(255,255,255,.12);
-
-    --primary: var(--vs-orange);
-    --primary-hover: #ff7f38;
-    --primary-dark: #e65f18;
-    --glow: rgba(255,106,19,.45);
-
-    --menu-bg: #0b0b0b;
-    --menu-item-bg: #1a1a1a;
-    --menu-item-hover: #252525;
+    --app-fg:           #f3f4f6;
+    --app-fg-muted:     #9ca3af;
+    --app-border:       rgba(255,255,255,.12);
+    --primary:          var(--vs-orange);
+    --primary-hover:    #ff7f38;
+    --primary-dark:     #e65f18;
+    --glow:             rgba(255,106,19,.45);
+    --menu-bg:          #0b0b0b;
+    --menu-item-bg:     #1a1a1a;
+    --menu-item-hover:  #252525;
     --menu-item-active: rgba(255,106,19,.25);
-    --menu-border: rgba(255,255,255,.12);
-    --menu-text: #e5e5e5;
-    --menu-text-muted: #9ca3af;
-
-    --card-bg-1: #161616;
-    --card-bg-2: #1f1f1f;
+    --menu-border:      rgba(255,255,255,.12);
+    --menu-text:        #e5e5e5;
+    --menu-text-muted:  #9ca3af;
+    --card-bg-1:        #161616;
+    --card-bg-2:        #1f1f1f;
   }
-    /* DARK MODE — Streamlit theme override */
-    html[data-theme="dark"] {
-        --app-bg: #0b0b0b !important;
-        --app-bg-secondary: #131313 !important;
-        --app-fg: #f3f4f6 !important;
-        --app-fg-muted: #9ca3af !important;
-        --app-border: rgba(255,255,255,.12) !important;
-
-        --primary: #FF6A13 !important;
-        --primary-hover: #ff7f38 !important;
-        --primary-dark: #d8560f !important;
-        --glow: rgba(255,106,19,.45) !important;
-
-        --menu-bg: #0b0b0b !important;
-        --menu-item-bg: #1a1a1a !important;
-        --menu-item-hover: #252525 !important;
-        --menu-item-active: rgba(255,106,19,.25) !important;
-        --menu-border: rgba(255,255,255,.12) !important;
-        --menu-text: #e5e5e5 !important;
-        --menu-text-muted: #9ca3af !important;
-        --menu-radio: #FF6A13 !important;
-
-        --card-bg-1: #161616 !important;
-        --card-bg-2: #1f1f1f !important;
-    }
 }
 
 /* =============================================================================
-   3) GLOBAL APP BACKGROUND + TYPOGRAPHY
-   ========================================================================== */
+   3) GLOBAL BACKGROUND + TYPOGRAPHY
+   ============================================================================ */
 body, .stApp, .main, section.main {
   background-color: var(--app-bg) !important;
   color: var(--app-fg) !important;
@@ -197,8 +164,8 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* =============================================================================
-   4) SIDEBAR — VISTEON GRADIENT + MENU FULL-WIDTH (STYLE C)
-   ========================================================================== */
+   4) SIDEBAR
+   ============================================================================ */
 section[data-testid="stSidebar"] {
   background: linear-gradient(180deg, var(--menu-bg), var(--app-bg)) !important;
   border-right: 1px solid var(--menu-border);
@@ -211,7 +178,6 @@ section[data-testid="stSidebar"] .stRadio > label {
   font-size: 15px !important;
 }
 
-/* FULL-WIDTH MENU ITEMS */
 section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label {
   width: 100% !important;
   display: flex !important;
@@ -227,13 +193,11 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label {
   font-size: 15px !important;
 }
 
-/* Hover */
 section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label:hover {
   background-color: var(--menu-item-hover) !important;
   transform: translateX(5px);
 }
 
-/* Selected */
 section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label:has(input:checked) {
   background-color: var(--menu-item-active) !important;
   border-color: var(--menu-radio) !important;
@@ -241,7 +205,6 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label:has(inp
   transform: translateX(4px) scale(1.02);
 }
 
-/* Radio circle */
 section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:first-child {
   width: 18px !important;
   height: 18px !important;
@@ -250,8 +213,8 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:f
 }
 
 /* =============================================================================
-   5) BUTTONS — GRADIENT VISTEON
-   ========================================================================== */
+   5) BUTTONS
+   ============================================================================ */
 .stButton > button {
   background: linear-gradient(90deg, var(--primary), var(--primary-dark));
   color: white !important;
@@ -271,13 +234,22 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:f
   box-shadow: 0 6px 18px rgba(0,0,0,.35);
 }
 
+/* Disabled state */
+.stButton > button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
 /* =============================================================================
-   6) WIZARD — GLASS + GLOW (ANIMAÇÃO 2)
-   ========================================================================== */
+   6) WIZARD — Glass + Glow
+   ============================================================================ */
 .wizard-step {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 16px;
+  gap: 8px;
   padding: 6px 0;
 }
 
@@ -293,6 +265,7 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:f
   justify-content: center;
   color: var(--app-fg);
   font-weight: 700;
+  font-size: 15px;
   transition: all .3s ease;
   box-shadow: 0 0 12px var(--glow);
 }
@@ -300,69 +273,101 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:f
 .step-circle.active {
   background: var(--primary);
   color: white;
-  transform: scale(1.08);
+  transform: scale(1.12);
+  box-shadow: 0 0 20px var(--glow);
 }
 
-/* badges (passos concluídos) */
 .step-circle.done {
-  background: var(--ok);
-  color: orange !important;  /* PRETO EM LIGHT MODE */
+  background: var(--color-ok);
+  border-color: var(--color-ok);
+  color: white;
 }
 
 .step-circle.pending {
   background: var(--app-bg-secondary);
+  border-color: var(--app-border);
   color: var(--app-fg-muted);
+  box-shadow: none;
 }
 
 .step-label {
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
+  color: var(--app-fg-muted);
+  text-align: center;
 }
 
-/* progress bar */
+.wizard-step:has(.step-circle.active) .step-label {
+  color: var(--primary);
+}
+
+/* Progress bar — full width baseline track + fill */
+.wizard-progress-track {
+  position: relative;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--app-border);
+  margin: 12px 0 18px 0;
+  overflow: hidden;
+}
+
 .progress-line {
   height: 5px;
   border-radius: 999px;
-  margin-top: 10px;
-
-  /* 100% LARANJA VISTEON */
+  margin: 12px 0 18px 0;
   background: linear-gradient(90deg, var(--vs-orange), var(--vs-orange-dark)) !important;
-
   box-shadow: 0 0 10px var(--glow);
-  transition: width .3s ease;
+  transition: width .4s ease;
+  min-width: 4px;
 }
 
 /* =============================================================================
    7) KPI CARDS
-   ========================================================================== */
+   ============================================================================ */
 .card {
   background: linear-gradient(135deg, var(--card-bg-1), var(--card-bg-2));
   border-radius: 14px;
-  padding: 16px;
+  padding: 18px 20px;
   border: 1px solid var(--app-border);
-  box-shadow: 0 2px 12px rgba(0,0,0,.25);
+  box-shadow: 0 2px 12px rgba(0,0,0,.15);
   transition: all .25s ease;
 }
 
 .card:hover {
   transform: translateY(-3px);
-  box-shadow: 0 6px 18px rgba(0,0,0,.35);
+  box-shadow: 0 6px 20px rgba(0,0,0,.25);
 }
 
 .card h4 {
   color: var(--app-fg-muted);
-  margin: 0 0 6px 0;
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .5px;
 }
 
 .card .big {
   color: var(--app-fg);
-  font-size: 26px;
+  font-size: 30px;
   font-weight: 800;
+  line-height: 1;
 }
+
+/* File status icons inside expander */
+.file-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--app-border);
+  font-size: 14px;
+}
+.file-status-row:last-child { border-bottom: none; }
 
 /* =============================================================================
    8) TABS
-   ========================================================================== */
+   ============================================================================ */
 .stTabs [data-baseweb="tab-list"] {
   border-bottom: 2px solid var(--app-border) !important;
   margin-bottom: 12px;
@@ -373,6 +378,7 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:f
   color: var(--app-fg-muted) !important;
   font-weight: 600 !important;
   font-size: 15px !important;
+  transition: color .2s;
 }
 
 .stTabs [aria-selected="true"] {
@@ -382,7 +388,7 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:f
 
 /* =============================================================================
    9) EXPANDER
-   ========================================================================== */
+   ============================================================================ */
 .st-expander {
   background-color: var(--app-bg-secondary) !important;
   border: 1px solid var(--app-border) !important;
@@ -391,8 +397,8 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:f
 }
 
 /* =============================================================================
-   10) FILE UPLOADER — PREMIUM
-   ========================================================================== */
+   10) FILE UPLOADER
+   ============================================================================ */
 .stFileUploader > div {
   border: 2px dashed var(--primary);
   border-radius: 14px;
@@ -402,13 +408,13 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:f
 }
 
 .stFileUploader > div:hover {
-  background: rgba(255,106,19,.15);
+  background: rgba(255,106,19,.12);
   transform: translateY(-2px);
 }
 
 /* =============================================================================
    11) TABLES / DATAFRAMES
-   ========================================================================== */
+   ============================================================================ */
 .stDataFrame, .stTable {
   background-color: var(--app-bg-secondary) !important;
   color: var(--app-fg) !important;
@@ -420,99 +426,120 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:f
   font-weight: 700 !important;
 }
 
-
-/* ========================================================================== */
-/*  SUBMENU (Dropdown embutido logo abaixo do item principal)                 */
-/* ========================================================================== */
-
-/* Container que empurra o submenu para dentro (indentação) */
+/* =============================================================================
+   12) SIDEBAR SUBMENU
+   ============================================================================ */
 .sidebar-submenu-wrap {
-    margin-top: -12px !important;
-    margin-left: 32px !important;
-    padding-left: 8px !important;
-    border-left: 2px solid var(--menu-border) !important;
+  margin-top: -12px !important;
+  margin-left: 32px !important;
+  padding-left: 8px !important;
+  border-left: 2px solid var(--menu-border) !important;
 }
 
-/* Label "▼ Options" que fica colado ao item principal */
 .sidebar-submenu-title {
-    font-size: 14px !important;
-    font-weight: 700 !important;
-    color: var(--menu-text-muted) !important;
-    margin: 4px 0 -4px 6px !important;
-    cursor: default;
+  font-size: 14px !important;
+  font-weight: 700 !important;
+  color: var(--menu-text-muted) !important;
+  margin: 4px 0 -4px 6px !important;
+  cursor: default;
 }
 
-/* Ajustar os radios do submenu para ficarem menores e mais “internos” */
 .sidebar-submenu-wrap .stRadio > div[role="radiogroup"] > label {
-    background-color: var(--menu-item-bg) !important;
-    border: 1px solid var(--menu-border) !important;
-    border-radius: 10px;
-    padding: 10px 12px !important;
-    margin-bottom: 6px;
-    font-size: 14px !important;
-    transition: all .20s ease;
+  background-color: var(--menu-item-bg) !important;
+  border: 1px solid var(--menu-border) !important;
+  border-radius: 10px;
+  padding: 10px 12px !important;
+  margin-bottom: 6px;
+  font-size: 14px !important;
+  transition: all .20s ease;
 }
 
-/* Hover suave */
 .sidebar-submenu-wrap .stRadio > div[role="radiogroup"] > label:hover {
-    background-color: var(--menu-item-hover) !important;
-    transform: translateX(4px);
+  background-color: var(--menu-item-hover) !important;
+  transform: translateX(4px);
 }
 
-/* Active (selecionado) */
 .sidebar-submenu-wrap .stRadio > div[role="radiogroup"] > label:has(input:checked) {
-    background-color: var(--menu-item-active) !important;
-    border-color: var(--menu-radio) !important;
-    box-shadow: 0 0 8px var(--glow);
-    transform: translateX(3px) scale(1.01);
+  background-color: var(--menu-item-active) !important;
+  border-color: var(--menu-radio) !important;
+  box-shadow: 0 0 8px var(--glow);
+  transform: translateX(3px) scale(1.01);
 }
 
-/* Reduz o tamanho da bolinha do radio no submenu */
 .sidebar-submenu-wrap .stRadio > div[role="radiogroup"] > label > div:first-child {
-    width: 14px !important;
-    height: 14px !important;
-    border-width: 2px !important;
+  width: 14px !important;
+  height: 14px !important;
+  border-width: 2px !important;
 }
 
-/* === LAYOUT V2: Header / Separator / Footer / Sections ===================== */
+/* =============================================================================
+   13) LAYOUT — Header / Separator / Footer / Sections
+   ============================================================================ */
 .app-header-wrap {
-  display: flex; flex-direction: column; gap: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   padding: 6px 4px 2px 4px;
 }
+
 .app-page-title {
-  font-size: 24px; font-weight: 800; letter-spacing: .2px;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: .2px;
   color: var(--app-fg);
 }
+
 .app-separator {
-  height: 1px; width: 100%;
+  height: 1px;
+  width: 100%;
   background: var(--app-border);
   margin: 10px 0 14px 0;
 }
+
 .app-footer {
-  margin-top: 18px;
-  padding: 8px 10px;
+  margin-top: 24px;
+  padding: 10px 12px;
   border-top: 1px solid var(--app-border);
+  border-radius: 0 0 10px 10px;
   color: var(--app-fg-muted);
-  display: flex; gap: 14px; align-items: center;
+  display: flex;
+  gap: 14px;
+  align-items: center;
   justify-content: space-between;
   font-size: 12.5px;
-}
-.section-title {
-  font-size: 18px; font-weight: 700; margin: 8px 0 4px;
-}
-.section-subtitle {
-  font-size: 13.5px; color: var(--app-fg-muted); margin-bottom: 10px;
+  background: var(--app-bg-secondary);
 }
 
-/* micro-interações base (para o Passo 7) */
-.fade-in-up { animation: fadeInUp .35s ease-out; }
+.section-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 8px 0 4px;
+}
+
+.section-subtitle {
+  font-size: 13.5px;
+  color: var(--app-fg-muted);
+  margin-bottom: 10px;
+}
+
+/* =============================================================================
+   14) ANIMATIONS
+   ============================================================================ */
+.fade-in-up {
+  animation: fadeInUp .35s ease-out;
+}
+
 @keyframes fadeInUp {
   from { opacity: 0; transform: translate3d(0, 8px, 0); }
   to   { opacity: 1; transform: translate3d(0, 0, 0); }
 }
-.pulse-glow { animation: pulseGlow 1.6s ease-in-out infinite; }
+
+.pulse-glow {
+  animation: pulseGlow 1.6s ease-in-out infinite;
+}
+
 @keyframes pulseGlow {
-  0% { box-shadow: 0 0 0px var(--glow); }
-  50% { box-shadow: 0 0 14px var(--glow); }
+  0%   { box-shadow: 0 0 0px var(--glow); }
+  50%  { box-shadow: 0 0 16px var(--glow); }
   100% { box-shadow: 0 0 0px var(--glow); }
 }
