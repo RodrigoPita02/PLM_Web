@@ -32,12 +32,20 @@ from sap_validation_engine import (
     build_dc_log_payload,
     save_report_to_vault,
     _coerce_df_for_display,
+    # Assignment system
+    get_owner,
+    set_owner,
+    remove_owner,
+    list_all_assignments,
+    merge_assignments,
+    save_open_assignments,
+    build_assignments_sheet,
 )
 
 # ==========================================================
 # CONFIGURAÇÃO INICIAL
 # ==========================================================
-st.set_page_config(page_title="SAP & ATL Validation Hub", layout="wide")
+st.set_page_config(page_title="Validation Hub", layout="wide", page_icon="🧪")
 start_time = time.time()
 
 # ==========================================================
@@ -56,7 +64,7 @@ def inject_css(css_path: str):
 inject_css("assets/styles.css")
 
 # Header global
-theme_name = render_header("🧪 Validation Hub — SAP & ATL", show_theme_picker=True)
+theme_name = render_header("🧪 Validation Hub", show_theme_picker=True)
 
 # ==========================================================
 # WIZARD UNIVERSAL — uma única função para todas as páginas
@@ -103,7 +111,7 @@ _CLASSIFY_RULES: list[tuple[str, object]] = [
     ("csr_item",    lambda n: "csr" in n and "item" in n),
     ("csr_head",    lambda n: "csr" in n and "head" in n),
     # SAP export
-    ("sap",         lambda n: any(k in n for k in ["sapui5", "item", "browse", "report"])),
+    ("sap",         lambda n: "sapui5" in n or ("item" in n and "browse" in n)),
     # Tabelas base
     ("mara",        lambda n: "mara" in n),
     ("marc",        lambda n: "marc" in n),
@@ -115,7 +123,7 @@ _CLASSIFY_RULES: list[tuple[str, object]] = [
     # ATL
     ("auto",        lambda n: "automotive" in n),
     ("plm",         lambda n: "timingletter" in n or "timing_letter" in n),
-    ("timing",      lambda n: "timing" in n and "letter" in n and "timingletter" not in n and "timing_letter" not in n),
+    ("timing",      lambda n: "timing" in n),
     # Progress
     ("current",     lambda n: any(k in n for k in ["current", "novo", "atual"])),
     ("previous",    lambda n: any(k in n for k in ["previous", "anterior", "old"])),
@@ -166,12 +174,78 @@ DISPLAY_TO_INTERNAL = {v.lower(): k for k, v in LABELS_PT.items()}
 def display_to_internal_key(display_name: str):
     return DISPLAY_TO_INTERNAL.get((display_name or "").strip().lower())
 
+# Colunas-chave esperadas por tipo de ficheiro (basta ter UMA das alternativas)
+FILE_EXPECTED_COLS: dict[str, list[list[str]]] = {
+    "sap":       [["Material", "Plant", "Material Type", "MRP Type"]],
+    "mara":      [["Material", "Material Type"]],
+    "marc":      [["Material", "Plant", "Maintenance status"]],
+    "mvke":      [["Material", "Sales Organization"]],
+    "zplm_marc": [["Material", "Plant", "Material Plant Type"]],
+    "zplm_mara": [["Material", "Enterproj Number"]],
+    "qmat":      [["Material", "Plant"]],
+    "mbew":      [["Material"]],
+    "ekpo":      [["Material"]],
+    "mard":      [["Material", "Plant"]],
+    "auto":      [["Plant", "Approval Status", "Trigger ID"]],
+    "plm":       [["Plant", "Approval Status", "Trigger ID"]],
+    "timing":    [["Timing Letter Number", "Change Number"]],
+    "csr_item":  [["Material"]],
+    "csr_head":  [["Plant"]],
+}
+
+def _check_file_cols(file_obj, expected_col_sets: list[list[str]]) -> tuple[bool, str]:
+    """
+    Returns (ok, message).
+    ok=True if at least one column set is fully present in the file.
+    Uses only the first 5 rows for speed.
+    """
+    try:
+        import io as _io
+        if hasattr(file_obj, "getvalue"):
+            bio = _io.BytesIO(file_obj.getvalue())
+        elif hasattr(file_obj, "read"):
+            file_obj.seek(0)
+            bio = _io.BytesIO(file_obj.read())
+        else:
+            bio = file_obj
+        bio.seek(0)
+        df_head = pd.read_excel(bio, engine="openpyxl", nrows=5)
+        actual = set(str(c).strip() for c in df_head.columns)
+        for col_set in expected_col_sets:
+            if all(col in actual for col in col_set):
+                return True, ""
+        # All sets failed — report what the best match was
+        best = max(expected_col_sets, key=lambda s: sum(c in actual for c in s))
+        missing = [c for c in best if c not in actual]
+        return False, f"Expected columns not found: {', '.join(missing)}"
+    except Exception as e:
+        return False, f"Could not read file: {e}"
+
+def validate_uploaded_files(persisted: dict, keys_to_check: list[str]) -> dict[str, str]:
+    """
+    Returns a dict key -> error_message for every file that fails column validation.
+    Only checks files that are present in persisted.
+    """
+    errors = {}
+    for key in keys_to_check:
+        meta = persisted.get(key)
+        if not meta:
+            continue
+        expected = FILE_EXPECTED_COLS.get(key)
+        if not expected:
+            continue
+        bio = __import__("io").BytesIO(meta.get("bytes", b""))
+        ok, msg = _check_file_cols(bio, expected)
+        if not ok:
+            errors[key] = msg
+    return errors
+
 # Keys obrigatórias por página
 REQUIRED_KEYS: dict[str, list[str]] = {
     "📦 SAP Material Validation":         ["sap", "mara", "marc", "mvke", "zplm_marc", "zplm_mara", "qmat"],
     "🧮 MRP Validation":                  ["mara", "marc"],
     "Automotive + Timing Letter (A & TL)":["auto", "plm", "timing"],
-    "📈 SAP Material Validation Progress": [],   # gerido pelo modo Auto/Manual
+    "📊 SAP Validation Progress": [],   # gerido pelo modo Auto/Manual
     "🧹 Data Cleanups":                   ["mara", "marc", "zplm_marc", "zplm_mara", "mbew", "ekpo", "mard"],
 }
 
@@ -222,6 +296,8 @@ def show_file_status(required_keys: list[str], files: dict, persisted: dict,
 
     Se optional_keys for fornecido, mostra também uma secção de opcionais
     com ⬜ (não carregado) ou ✅ (presente).
+
+    Também mostra ficheiros não reconhecidos com sugestão de renomeação.
     """
     with st.expander("📋 File Status", expanded=True):
         for key in required_keys:
@@ -260,6 +336,45 @@ def show_file_status(required_keys: list[str], files: dict, persisted: dict,
                     detail = "Not uploaded (optional)"
 
                 st.markdown(f"{icon} **{label}** — `{detail}`")
+
+        # ── Unrecognised files ────────────────────────────────────────────────
+        known_keys  = set(required_keys) | set(optional_keys or [])
+        all_matched = {k for k, v in files.items() if v is not None}
+        # Files that were uploaded but didn't match any known slot
+        # We need to check the raw upload list — files dict has None for unmatched
+        # So: any uploaded file whose name doesn't map to a recognised key
+        unrecognised = []
+        for key, fobj in files.items():
+            if fobj is not None and key not in known_keys:
+                fname = getattr(fobj, "name", "")
+                if fname:
+                    unrecognised.append(fname)
+
+        if unrecognised:
+            st.markdown("---")
+            st.caption("⚠️ Unrecognised files — could not be automatically matched:")
+            # Build suggestion map: keyword in filename → what it might be
+            _SUGGESTIONS = {
+                "mara":       "MARA.xlsx",
+                "marc":       "MARC.xlsx",
+                "mvke":       "MVKE.xlsx",
+                "qmat":       "QMAT.xlsx",
+                "mbew":       "MBEW.xlsx",
+                "ekpo":       "EKPO.xlsx",
+                "mard":       "MARD.xlsx",
+                "zplm":       "ZPLM MARC.xlsx or ZPLM MARA.xlsx",
+                "sapui5":     "SAPUI5 Export.xlsx",
+                "automotive": "PLM Automotive Validation.xlsx",
+                "timing":     "Timing Letters.xlsx",
+            }
+            for fname in unrecognised:
+                name_lower = fname.lower()
+                suggestion = next(
+                    (label for kw, label in _SUGGESTIONS.items() if kw in name_lower),
+                    None
+                )
+                hint = f" → might be **{suggestion}**?" if suggestion else                        " → rename to match expected filename (e.g. MARA.xlsx, MARC.xlsx)"
+                st.markdown(f"❓ `{fname}`{hint}")
 
 # ==========================================================
 # HELPERS — Timestamp / Progress mode
@@ -338,17 +453,7 @@ def has_sheet(uploaded, sheet_name: str):
     except Exception as e:
         return False, [f"Error opening file: {e}"]
 
-def colorize_errors(df):
-    def highlight_row(row):
-        error_text = str(row.get("Error", "")).lower()
-        if "mandatory" in error_text or "obrigatório" in error_text:
-            return ["background-color: #ffcccc"] * len(row)
-        if "invalid" in error_text or "inválido" in error_text:
-            return ["background-color: #ffe5b4"] * len(row)
-        if "view" in error_text and "missing" in error_text:
-            return ["background-color: #fff7a8"] * len(row)
-        return [""] * len(row)
-    return df.style.apply(highlight_row, axis=1)
+# colorize_errors removed — superseded by Error_Type column and _coerce_df_for_display
 
 # ==========================================================
 # IDENTIDADE
@@ -357,17 +462,290 @@ if "executor_name" not in st.session_state:
     st.session_state["executor_name"] = ""
 
 def identity_input(label: str, key: str) -> str:
+    """
+    FIX 9: All pages share a single CDS ID stored in session_state["executor_name"].
+    The per-page key is kept only for widget uniqueness but the value is always
+    read from and written to the shared session key — so navigating between pages
+    never clears the CDS ID the user already typed.
+    """
     executor_name = st.text_input(
         label,
-        value=st.session_state["executor_name"],
+        value=st.session_state.get("executor_name", ""),
         placeholder="CDS ID...",
         key=key,
     )
-    st.session_state["executor_name"] = executor_name.strip()
-    if not st.session_state["executor_name"]:
+    if executor_name.strip():
+        st.session_state["executor_name"] = executor_name.strip()
+    if not st.session_state.get("executor_name", ""):
         st.warning("⚠ Please enter your CDS ID to continue.")
         st.stop()
     return st.session_state["executor_name"]
+
+
+def render_history_with_download(run_type: str, limit: int = 10,
+                                  col_map: dict | None = None,
+                                  label: str = "History") -> None:
+    """
+    Renders a history expander that shows the last N runs.
+    For runs that have a saved report on disk, shows an inline download button.
+
+    col_map: dict of {display_label: log_key_path}
+      e.g. {"When": "timestamp", "Who": "user", "Errors": "metrics.total_errors"}
+    """
+    def _get(log, dotted_key):
+        parts = dotted_key.split(".")
+        v = log
+        for p in parts:
+            v = v.get(p, {}) if isinstance(v, dict) else {}
+        return v if v != {} else "—"
+
+    with st.expander(f"🕘 {label} (last {limit} runs)", expanded=False):
+        logs = list_run_logs(run_type, limit=limit)
+        if not logs:
+            st.caption("No history yet.")
+            return
+
+        if col_map is None:
+            col_map = {"When": "timestamp", "Who": "user"}
+
+        for log in logs:
+            row_cols = list(col_map.keys())
+            # Add a Download column if a report_path exists on disk
+            has_file = bool(log.get("report_path") and os.path.exists(log["report_path"]))
+            n_cols = len(row_cols) + (1 if has_file else 0)
+            cols = st.columns([3] * len(row_cols) + ([2] if has_file else []))
+
+            for i, (display, key) in enumerate(col_map.items()):
+                with cols[i]:
+                    val = _get(log, key)
+                    st.caption(display)
+                    st.markdown(f"**{val}**")
+
+            if has_file:
+                with cols[-1]:
+                    st.caption("Report")
+                    try:
+                        with open(log["report_path"], "rb") as _f:
+                            _data = _f.read()
+                        st.download_button(
+                            "⬇️",
+                            data=_data,
+                            file_name=os.path.basename(log["report_path"]),
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"dl_{run_type}_{log.get('timestamp','').replace(':','-')}",
+                            help=f"Download: {os.path.basename(log['report_path'])}",
+                        )
+                    except Exception:
+                        st.caption("—")
+            st.divider()
+
+# ==========================================================
+# ASSIGNMENT PANEL — render in SAP Step 4
+# ==========================================================
+def render_assignment_panel(errors_df: pd.DataFrame) -> None:
+    """
+    Renders the 📋 Assign & Track panel in SAP Step 4.
+    Shows all distinct fields with errors, their current owner,
+    and allows inline editing — with changes saved immediately to master.json.
+    """
+    if errors_df is None or errors_df.empty:
+        return
+
+    st.markdown("## 📋 Assign & Track")
+    st.markdown(
+        """<div style="background:var(--app-bg-secondary);border-left:4px solid var(--primary);
+        border-radius:6px;padding:10px 16px;margin-bottom:16px;font-size:0.85rem;color:var(--app-fg)">
+        Assign each error field to a responsible person. Assignments are <strong>saved permanently</strong>
+        — on the next validation run, owners are pre-filled automatically. Edit any time with the ✏️ button.
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+    # Build summary: distinct (Field, Plant) combinations with error counts
+    _fe = errors_df[errors_df.get("Error_Type", pd.Series("Field Error", index=errors_df.index)) == "Field Error"]         if "Error_Type" in errors_df.columns else errors_df
+
+    if _fe.empty:
+        st.info("No field errors to assign.")
+        return
+
+    # Group by Field (global) — plant overrides handled via expander
+    field_counts = (
+        _fe.groupby("Field")
+           .agg(Errors=("Field","count"),
+                Plants=("Plant", lambda x: ", ".join(sorted(x.astype(str).str.strip().unique()))))
+           .reset_index()
+           .sort_values("Errors", ascending=False)
+    ) if "Field" in _fe.columns else pd.DataFrame()
+
+    if field_counts.empty:
+        return
+
+    # Header row
+    hcols = st.columns([4, 2, 3, 2, 1])
+    for col, label in zip(hcols, ["Field", "Errors", "Owner", "Team", "Action"]):
+        col.markdown(f"<div style='font-size:0.75rem;font-weight:700;text-transform:uppercase;"
+                     f"letter-spacing:.06em;color:var(--app-fg-muted)'>{label}</div>",
+                     unsafe_allow_html=True)
+
+    st.markdown("<hr style='margin:4px 0 8px 0;border-color:var(--app-border)'>",
+                unsafe_allow_html=True)
+
+    # Load master once — avoid repeated disk reads inside the loop
+    from sap_validation_engine import _load_master
+    _master_cache = _load_master()
+
+    for _, row in field_counts.iterrows():
+        field  = row["Field"]
+        n_errs = row["Errors"]
+        plants = row.get("Plants", "")
+
+        current_owner = get_owner(field, master=_master_cache)
+        _fd = _master_cache.get("field_assignments", {}).get(field, {})
+        current_team = _fd.get("team", "") if isinstance(_fd, dict) else ""
+
+        edit_key = f"asgn_edit_{field}"
+        if edit_key not in st.session_state:
+            st.session_state[edit_key] = False
+
+        cols = st.columns([4, 2, 3, 2, 1])
+
+        with cols[0]:
+            st.markdown(f"**{field}**<br>"
+                        f"<span style='font-size:0.75rem;color:var(--app-fg-muted)'>{plants}</span>",
+                        unsafe_allow_html=True)
+        with cols[1]:
+            _badge_color = "var(--color-error)" if n_errs > 50 else                            "var(--color-warn)"  if n_errs > 10 else "var(--app-fg-muted)"
+            st.markdown(f"<span style='font-weight:700;color:{_badge_color}'>{n_errs:,}</span>",
+                        unsafe_allow_html=True)
+        with cols[2]:
+            if st.session_state[edit_key]:
+                new_owner = st.text_input("Owner", value=current_owner,
+                                          key=f"inp_owner_{field}", label_visibility="collapsed",
+                                          placeholder="Name or CDS ID…")
+            else:
+                if current_owner:
+                    st.markdown(f"👤 **{current_owner}**", unsafe_allow_html=True)
+                else:
+                    st.markdown("<span style='color:var(--app-fg-muted);font-style:italic'>"
+                                "Unassigned</span>", unsafe_allow_html=True)
+        with cols[3]:
+            if st.session_state[edit_key]:
+                new_team = st.text_input("Team", value=current_team,
+                                         key=f"inp_team_{field}", label_visibility="collapsed",
+                                         placeholder="Team (optional)…")
+            else:
+                if current_team:
+                    st.markdown(f"<span style='font-size:0.8rem;color:var(--app-fg-muted)'>"
+                                f"{current_team}</span>", unsafe_allow_html=True)
+
+        with cols[4]:
+            if st.session_state[edit_key]:
+                if st.button("💾", key=f"save_{field}",
+                             help=f"Save assignment for {field}"):
+                    _owner_val = st.session_state.get(f"inp_owner_{field}", "").strip()
+                    _team_val  = st.session_state.get(f"inp_team_{field}",  "").strip()
+                    set_owner(field, _owner_val, team=_team_val)
+                    st.session_state[edit_key] = False
+                    st.rerun()
+            else:
+                if st.button("✏️", key=f"edit_{field}",
+                             help=f"Edit assignment for {field}"):
+                    st.session_state[edit_key] = True
+                    st.rerun()
+
+        st.markdown("<hr style='margin:4px 0;border-color:var(--app-border)'>",
+                    unsafe_allow_html=True)
+
+    # ── Bulk assign by plant override ─────────────────────────────────────
+    with st.expander("🏭 Plant-level overrides (assign a field differently per plant)", expanded=False):
+        st.caption("Use this when PT01 and PT02 have different responsible people for the same field.")
+        _ov_field  = st.selectbox("Field", options=sorted(field_counts["Field"].tolist()),
+                                  key="ov_field")
+        _ov_plant  = st.selectbox("Plant", options=["PT01", "PT02"], key="ov_plant")
+        _ov_owner  = st.text_input("Owner for this plant", key="ov_owner",
+                                   placeholder="Name or CDS ID…")
+        _ov_team   = st.text_input("Team (optional)", key="ov_team")
+        if st.button("💾 Save plant override", key="ov_save"):
+            if _ov_owner.strip():
+                set_owner(_ov_field, _ov_owner.strip(),
+                          plant=_ov_plant, team=_ov_team.strip())
+                st.success(f"✅ Saved: {_ov_field} / {_ov_plant} → {_ov_owner.strip()}")
+                st.rerun()
+            else:
+                st.warning("Please enter an owner name.")
+
+    # ── View all current assignments + export ─────────────────────────────
+    with st.expander("📜 All current assignments", expanded=False):
+        _all_asgn = list_all_assignments()
+        if _all_asgn.empty:
+            st.caption("No assignments saved yet.")
+        else:
+            st.dataframe(_all_asgn, use_container_width=True)
+
+            # Export: per-owner summary
+            _exp_cols = st.columns([2, 1])
+            with _exp_cols[0]:
+                # Allow removing an assignment
+                _rm_cols = st.columns(3)
+                with _rm_cols[0]:
+                    _rm_field = st.selectbox("Remove assignment for field",
+                                             options=["—"] + sorted(_all_asgn["Field"].unique().tolist()),
+                                             key="rm_field")
+                with _rm_cols[1]:
+                    _rm_plant = st.selectbox("Plant (leave blank for default)",
+                                             options=["(default)", "PT01", "PT02"],
+                                             key="rm_plant")
+                with _rm_cols[2]:
+                    st.markdown("<div style='margin-top:22px'>", unsafe_allow_html=True)
+                    if st.button("🗑️ Remove", key="rm_confirm"):
+                        if _rm_field != "—":
+                            _plant_arg = "" if _rm_plant == "(default)" else _rm_plant
+                            remove_owner(_rm_field, plant=_plant_arg)
+                            st.success(f"Removed assignment for {_rm_field}" +
+                                       (f" / {_rm_plant}" if _plant_arg else ""))
+                            st.rerun()
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+            with _exp_cols[1]:
+                st.markdown("<div style='margin-top:4px'>", unsafe_allow_html=True)
+                # Build per-owner summary Excel
+                try:
+                    _enriched_exp = merge_assignments(errors_df) if errors_df is not None else pd.DataFrame()
+                    if not _enriched_exp.empty and "Owner" in _enriched_exp.columns:
+                        # Summary by owner
+                        _owner_summary = (
+                            _enriched_exp[_enriched_exp["Owner"] != ""]
+                            .groupby(["Owner", "Team"])
+                            .agg(
+                                Fields=("Field", lambda x: ", ".join(sorted(x.unique()))),
+                                Total_Errors=("Field", "count"),
+                                Overdue=("Status", lambda x: (x == "Overdue").sum()),
+                                Avg_Days_Open=("Days_Open", "mean"),
+                            )
+                            .round(1)
+                            .reset_index()
+                            .sort_values("Total_Errors", ascending=False)
+                        )
+                        # Full assignments sheet
+                        _asgn_sheet = build_assignments_sheet(_enriched_exp)
+                        _exp_buf = io.BytesIO()
+                        with pd.ExcelWriter(_exp_buf, engine="openpyxl") as _ew:
+                            _owner_summary.to_excel(_ew, sheet_name="By Owner", index=False)
+                            _asgn_sheet.to_excel(_ew, sheet_name="All Assignments", index=False)
+                            _all_asgn.to_excel(_ew, sheet_name="Field Owners", index=False)
+                        _exp_buf.seek(0)
+                        st.download_button(
+                            "⬇️ Export Assignments",
+                            data=_exp_buf.getvalue(),
+                            file_name=f"Assignments_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_assignments_export",
+                            help="Download per-owner summary + full assignment list",
+                        )
+                except Exception:
+                    st.caption("Export unavailable")
+                st.markdown("</div>", unsafe_allow_html=True)
+
 
 # ==========================================================
 # SIDEBAR MENU
@@ -381,7 +759,7 @@ main_choice = st.sidebar.radio(
         "📦 SAP Material Validation",
         "🚗 PLM Workflow",
         "🧮 MRP Validation",
-        "📈 SAP Material Validation Progress",
+        "📊 SAP Validation Progress",
         "🧹 Data Cleanups",
     ],
     label_visibility="collapsed",
@@ -403,12 +781,30 @@ if main_choice == "🚗 PLM Workflow":
         )
         st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
+# ── About / Changelog ────────────────────────────────────────────────────────
+st.sidebar.markdown("---")
+with st.sidebar.expander("ℹ️ About Validation Hub", expanded=False):
+    st.markdown("""
+    **Version:** v1.4  
+    **Build:** """ + datetime.now().strftime("%Y-%m-%d") + """
+
+    **Recent changes:**
+    - 📋 Assignment system — assign fields to owners, track overdue
+    - 📊 Assignment Health in Evolution Dashboard
+    - ✅ File column validation before running
+    - 🔍 Unrecognised file detection with suggestions
+    - ⬇️ Re-download previous reports from history
+    - 🌙 Full dark mode support (CSS variables)
+
+    **Modules:** SAP Validation · PLM Workflow · MRP Validation · Data Cleanups · Progress · Evolution Dashboard
+    """)
+
 # ==========================================================
 # 📈 EVOLUTION DASHBOARD
 # ==========================================================
 if main_choice == "📈 Evolution Dashboard":
     render_evolution_dashboard()
-    render_footer(start_time, version="v1.2")
+    render_footer(start_time, version="v1.4")
 
 # ==========================================================
 # PAGE 1 — SAP MATERIAL VALIDATION
@@ -436,6 +832,20 @@ elif main_choice == "📦 SAP Material Validation":
     # --- STEP 1: FILES ---
     if st.session_state.sap_step == 1:
         st.markdown("### 📂 Step 1 — Load Files")
+        st.markdown("""
+        <div style="background:var(--app-bg-secondary);border-left:4px solid var(--accent);border-radius:6px;padding:12px 16px;margin-bottom:12px;font-size:0.85rem;color:var(--app-fg)">
+        <strong>📋 What files do you need?</strong><br><br>
+        <table style="border-collapse:collapse;width:100%">
+        <tr><td style="padding:3px 8px">📄 <strong>SAPUI5 Export</strong></td><td style="color:var(--app-fg-muted)">SAP → Logistics → Item Browse Report (export as .xlsx)</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>MARA</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MARA (general material data)</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>MARC</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MARC (plant-level material data)</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>MVKE</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MVKE (sales organisation data)</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>ZPLM MARC / MARA</strong></td><td style="color:var(--app-fg-muted)">PLM custom tables (ZPLM_MARC / ZPLM_MARA export)</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>QMAT</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → QMAT (inspection types)</td></tr>
+        <tr><td style="padding:3px 8px; color:var(--color-ok)">🔓 <strong>CSR Item / Head</strong></td><td style="color:var(--app-fg-muted)">Optional — enables CSR exemption rules for MRP Type</td></tr>
+        </table>
+        </div>
+        """, unsafe_allow_html=True)
 
         uploads = st.file_uploader(
             "Drop all necessary files here",
@@ -452,7 +862,13 @@ elif main_choice == "📦 SAP Material Validation":
         show_file_status(required_keys, files, persisted,
                          optional_keys=["csr_item", "csr_head"])
 
-        disabled = any(k not in persisted for k in required_keys)
+        # Quick column validation
+        _col_errs_sap = validate_uploaded_files(persisted, required_keys)
+        if _col_errs_sap:
+            for _k, _msg in _col_errs_sap.items():
+                st.warning(f"⚠️ **{LABELS_PT.get(_k, _k)}** — {_msg}")
+
+        disabled = any(k not in persisted for k in required_keys) or bool(_col_errs_sap)
         c1, c2 = st.columns(2)
         with c1:
             with st.expander("🧹 Clear uploaded files"):
@@ -461,13 +877,20 @@ elif main_choice == "📦 SAP Material Validation":
                     st.success("Cleared.")
                     st.rerun()
         with c2:
-            if st.button("➡️ Continue to Scope", disabled=disabled, key="sap_next1", width='stretch'):
+            if st.button("➡️ Continue to Scope", disabled=disabled, key="sap_next1", use_container_width=True):
                 st.session_state.sap_step = 2
                 st.rerun()
 
     # --- STEP 2: SCOPE ---
     elif st.session_state.sap_step == 2:
         st.markdown("### 🌍 Step 2 — Select Scope")
+        st.markdown("""
+        <div style="background:var(--app-bg-secondary);border-left:4px solid var(--color-ok);border-radius:6px;padding:10px 16px;margin-bottom:12px;font-size:0.85rem;color:var(--app-fg)">
+        <strong>ℹ️ What does scope mean?</strong><br>
+        <strong>Scope of download</strong> controls which plant's data appears in the exported Excel report.<br>
+        <strong>Apply filter to displayed tables</strong> also filters the results shown here in the app — leave unchecked to see all plants in the UI while exporting only the chosen plant.
+        </div>
+        """, unsafe_allow_html=True)
 
         export_scope = st.radio("Scope of download:", ["All", "Only PT01", "Only PT02"], horizontal=True)
         plant_filter_export = {"Only PT01": "PT01", "Only PT02": "PT02"}.get(export_scope)
@@ -481,18 +904,38 @@ elif main_choice == "📦 SAP Material Validation":
 
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("⬅️ Back", key="sap_back2", width='stretch'):
+            if st.button("⬅️ Back", key="sap_back2", use_container_width=True):
                 st.session_state.sap_step = 1
                 st.rerun()
         with c2:
-            if st.button("➡️ Continue to Validation", key="sap_next2", width='stretch'):
+            if st.button("➡️ Continue to Validation", key="sap_next2", use_container_width=True):
                 st.session_state.sap_step = 3
                 st.rerun()
 
     # --- STEP 3: VALIDATE ---
     elif st.session_state.sap_step == 3:
         st.markdown("### ⚙️ Step 3 — Run Validation")
-        st.info("Click the button below to validate the uploaded files.")
+
+        # Confirmation summary
+        _persisted3 = st.session_state.get("sap_files_persisted") or {}
+        _scope3     = st.session_state.get("sap_export_scope", "All")
+        _exec3      = st.session_state.get("executor_name", "—")
+        _n_files    = len(_persisted3)
+        _optional3  = [k for k in ["csr_item","csr_head"] if k in _persisted3]
+
+        st.markdown(f"""
+        <div style="background:var(--app-bg-secondary);border:1px solid var(--app-border);border-radius:10px;padding:16px 20px;margin-bottom:16px">
+        <div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--app-fg-muted);margin-bottom:10px">
+            ✅ Ready to validate — confirm before running
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:0.87rem;color:var(--app-fg)">
+            <div><span style="color:var(--app-fg-muted)">Executor</span><br><strong>{_exec3}</strong></div>
+            <div><span style="color:var(--app-fg-muted)">Scope</span><br><strong>{_scope3}</strong></div>
+            <div><span style="color:var(--app-fg-muted)">Files loaded</span><br><strong>{_n_files} required{"  +  " + str(len(_optional3)) + " optional" if _optional3 else ""}</strong></div>
+        </div>
+        {"<div style='margin-top:10px;font-size:0.8rem;color:var(--color-ok)'>🔓 CSR exemption rules <strong>enabled</strong> — active CSRs will exempt FP materials from MRP = ND errors.</div>" if _optional3 else "<div style='margin-top:10px;font-size:0.8rem;color:var(--app-fg-muted)'>🔓 CSR files not uploaded — CSR exemption rules disabled.</div>"}
+        </div>
+        """, unsafe_allow_html=True)
 
         if st.button("▶️ Validate now", type="primary", key="sap_run"):
             files = rehydrate_persisted_mapping("sap_files_persisted")
@@ -514,7 +957,8 @@ elif main_choice == "📦 SAP Material Validation":
                 st.error(f"Sheet 'SAPUI5 Export' not found. Available: {sheets}")
                 st.stop()
 
-            progress_bar = st.progress(0, text="Initializing validation...")
+            _pb_slot = st.empty()
+            progress_bar = _pb_slot.progress(0, text="Initializing validation...")
 
             def update_progress(percent: int, message: str = ""):
                 progress_bar.progress(percent, text=message)
@@ -535,15 +979,46 @@ elif main_choice == "📦 SAP Material Validation":
                 except Exception:
                     st.session_state["sap_view_missing_df"] = pd.DataFrame()
 
-                # Exportação com filtro diferente só se necessário
+                # FIX 1: Avoid running the full engine twice.
+                # When the export scope is different from the display scope,
+                # we only need to re-run the styling step on the already-computed
+                # errors_df filtered to the export scope — not re-run all validations.
+                # The engine already supports plant_filter on _style_sap_report.
                 if plant_filter_export != plant_filter_display:
-                    excel_export, _, _ = run_full_validation(
-                        sap_file=sap_file, mara_file=mara_file, marc_file=marc_file,
-                        mvke_file=mvke_file, qmat_file=qmat_file,
-                        zplm_marc_file=zplm_marc, zplm_mara_file=zplm_mara,
-                        previous_report=None, plant_filter=plant_filter_export,
-                        csr_item_file=csr_item, csr_head_file=csr_head,
-                    )
+                    from sap_validation_engine import _style_sap_report
+                    from sap_validation_engine import postprocess_with_views_roles_and_classification
+                    from rolesviews_data import get_rolesviews_bytesio
+                    from utils.fast_loader import load_xlsx_fast as _lxf
+                    import io as _io
+                    # Re-filter errors to export scope and rebuild Excel
+                    _rv = _lxf(get_rolesviews_bytesio(), sheet_name=None)
+                    _roles = _rv.get("Roles"); _views = _rv.get("Views")
+                    _mara_df = _lxf(mara_file, sheet_name=0)
+                    _marc_df = _lxf(marc_file, sheet_name=0)
+                    (_edf, _, _vmout, _cdf, _covdf, _vtabs) =                         postprocess_with_views_roles_and_classification(
+                            errors_df, _mara_df, _marc_df, _roles, _views,
+                            plant_filter=plant_filter_export)
+                    _vis_df = pd.concat(
+                        [df for df in _vtabs.values() if df is not None and not df.empty],
+                        ignore_index=True
+                    ) if _vtabs else pd.DataFrame()
+                    _buf = _io.BytesIO()
+                    with pd.ExcelWriter(_buf, engine="openpyxl") as _w:
+                        pd.DataFrame().to_excel(_w, sheet_name="Executive Summary", index=False)
+                        _cdf.to_excel(_w, sheet_name="Adjusted Summary", index=False, startrow=1)
+                        _vmout.to_excel(_w, sheet_name="Field With Error", index=False)
+                        _edf.to_excel(_w, sheet_name="All Errors", index=False)
+                        _vis_df.to_excel(_w, sheet_name="View is Missing", index=False)
+                        for _vc, _vdf in _vtabs.items():
+                            _vdf.to_excel(_w, sheet_name=f"Missing_{_vc}"[:31], index=False)
+                        _lxf(sap_file, sheet_name="SAPUI5 Export").to_excel(
+                            _w, sheet_name="Original Data", index=False)
+                    _buf.seek(0)
+                    excel_export = _style_sap_report(
+                        _buf, errors_df=_edf, views_missing_output_df=_vmout,
+                        contagem_final_df=_cdf, coverage_df=_covdf,
+                        view_tabs_dict=_vtabs, sap_df=None,
+                        plant_filter=plant_filter_export)
                 else:
                     excel_export = excel_display
 
@@ -563,6 +1038,7 @@ elif main_choice == "📦 SAP Material Validation":
                 )
                 save_run_log(payload)
 
+            _pb_slot.empty()  # clear progress bar before navigating
             st.session_state.sap_step = 4
             st.rerun()
 
@@ -575,21 +1051,44 @@ elif main_choice == "📦 SAP Material Validation":
         excel_export = st.session_state.sap_excel_export
         report_path  = st.session_state.sap_report_path
 
+        # FIX 4: count fields/materials consistently with Adjusted Summary
+        # (Field Errors only — excludes Missing View errors)
+        _fe_only = (errors_df[errors_df["Error_Type"] == "Field Error"]
+                    if "Error_Type" in errors_df.columns else errors_df)
+        _fe_cnt   = int(_fe_only.shape[0])
+        _f_cnt    = int(_fe_only["Field"].nunique())    if "Field"    in _fe_only.columns else 0
+        _m_cnt    = int(_fe_only["Material"].nunique()) if "Material" in _fe_only.columns else 0
+
         c = st.columns(3)
         with c[0]:
-            st.markdown(f'<div class="card"><h4>Total Errors</h4><div class="big">{errors_df.shape[0]}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="card"><h4>Field Errors (Actionable)</h4><div class="big">{_fe_cnt:,}</div></div>', unsafe_allow_html=True)
         with c[1]:
-            total_fields = int(errors_df["Field"].nunique()) if "Field" in errors_df.columns else 0
-            st.markdown(f'<div class="card"><h4>Distinct Fields</h4><div class="big">{total_fields}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="card"><h4>Distinct Fields</h4><div class="big">{_f_cnt}</div></div>', unsafe_allow_html=True)
         with c[2]:
-            total_mats = int(errors_df["Material"].nunique()) if "Material" in errors_df.columns else 0
-            st.markdown(f'<div class="card"><h4>Materials with Errors</h4><div class="big">{total_mats}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="card"><h4>Materials with Errors</h4><div class="big">{_m_cnt:,}</div></div>', unsafe_allow_html=True)
 
-        st.header("All Errors")
-        st.dataframe(_coerce_df_for_display(errors_df), width='stretch')
-        st.header("Summary")
-        st.dataframe(_coerce_df_for_display(summary_df), width='stretch')
+        # Auto-insight — a plain-language summary of the results
+        _top_field = _fe_only['Field'].value_counts().index[0] if (not _fe_only.empty and 'Field' in _fe_only.columns) else "—"
+        _top_plant = (
+            _fe_only['Plant'].astype(str).str.strip().replace('', 'General')
+            .value_counts().index[0]
+            if (not _fe_only.empty and 'Plant' in _fe_only.columns) else "—"
+        )
+        _mv_count = int((errors_df['Error_Type'] == 'Missing View').sum()) if 'Error_Type' in errors_df.columns else 0
+        _insight_color = "var(--app-bg-secondary)" if _fe_cnt > 1000 else ("var(--app-bg-secondary)" if _fe_cnt > 200 else "var(--app-bg-secondary)")
+        _insight_border = "var(--color-error)" if _fe_cnt > 1000 else ("var(--color-warn)" if _fe_cnt > 200 else "var(--color-ok)")
+        st.markdown(f"""
+        <div style="background:{_insight_color};border-left:4px solid {_insight_border};border-radius:8px;
+                    padding:12px 16px;margin-bottom:16px;font-size:0.9rem;line-height:1.6;color:var(--app-fg)">
+            <strong>📋 Validation Summary</strong><br>
+            Found <strong>{_fe_cnt:,} actionable errors</strong> across <strong>{_m_cnt:,} materials</strong>
+            in <strong>{_f_cnt} distinct fields</strong>.
+            The most affected field is <strong>{_top_field}</strong> and the most affected plant is <strong>{_top_plant}</strong>.
+            {"Additionally, " + str(_mv_count) + " errors were suppressed because the required SAP View is not yet active." if _mv_count else ""}
+        </div>
+        """, unsafe_allow_html=True)
 
+        # FIX 7: Charts first, then tables in expanders
         st.markdown("## 📈 Dashboard — SAP Material Validation")
         render_sap_run_kpis(errors_df)
         render_sap_run_charts(errors_df)
@@ -599,29 +1098,42 @@ elif main_choice == "📦 SAP Material Validation":
                            file_name=download_name,
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        with st.expander("🕘 SAP History (last 10 runs)"):
-            logs = list_run_logs("sap", limit=10)
-            if logs:
-                st.dataframe(pd.DataFrame([
-                    {"When": l.get("timestamp"), "Who": l.get("user"),
-                     "Filter": l.get("plant_filter"), "Errors": l.get("metrics", {}).get("total_errors", 0)}
-                    for l in logs
-                ]), width='stretch')
-            else:
-                st.write("No history.")
+        # ── Assignment panel ──────────────────────────────────────────────
+        render_assignment_panel(errors_df)
+
+        with st.expander("📋 All Errors", expanded=False):
+            # Quick search filter
+            search = st.text_input("🔍 Filter by Material, Field or Error", key="sap_err_search")
+            df_show = _coerce_df_for_display(errors_df)
+            if search.strip():
+                mask = df_show.apply(
+                    lambda col: col.astype(str).str.contains(search.strip(), case=False, na=False)
+                ).any(axis=1)
+                df_show = df_show[mask]
+            st.caption(f"Showing {len(df_show):,} of {len(errors_df):,} rows")
+            st.dataframe(df_show, use_container_width=True)
+
+        with st.expander("📋 Adjusted Summary", expanded=False):
+            st.dataframe(_coerce_df_for_display(summary_df), use_container_width=True)
+
+        render_history_with_download(
+            "sap", limit=10, label="SAP History",
+            col_map={"When": "timestamp", "Who": "user",
+                     "Plant": "plant_filter", "Errors": "metrics.total_errors"}
+        )
 
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("🔁 New Validation", key="sap_new", width='stretch'):
+            if st.button("🔁 New Validation", key="sap_new", use_container_width=True):
                 st.session_state.sap_step = 1
                 st.rerun()
         with c2:
-            if st.button("🧹 Clear uploads & start over", key="sap_clear4", width='stretch'):
+            if st.button("🧹 Clear uploads & start over", key="sap_clear4", use_container_width=True):
                 st.session_state["sap_files_persisted"] = {}
                 st.session_state.sap_step = 1
                 st.rerun()
 
-    render_footer(start_time, version="v1.2")
+    render_footer(start_time, version="v1.4")
 
 # ==========================================================
 # PAGE 2A — PLM WORKFLOW: ATL
@@ -643,6 +1155,16 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing L
     # --- STEP 1 ---
     if st.session_state.atl_step == 1:
         st.markdown("### 📂 Step 1 — Load Files")
+        st.markdown("""
+        <div style="background:var(--app-bg-secondary);border-left:4px solid var(--accent);border-radius:6px;padding:12px 16px;margin-bottom:12px;font-size:0.85rem;color:var(--app-fg)">
+        <strong>📋 What files do you need?</strong><br><br>
+        <table style="border-collapse:collapse;width:100%">
+        <tr><td style="padding:3px 8px">📄 <strong>Automotive Validation</strong></td><td style="color:var(--app-fg-muted)">PLM → Automotive validation export (filename must contain <em>automotive</em>)</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>TimingLetter Validation</strong></td><td style="color:var(--app-fg-muted)">PLM → Timing Letter validation export (filename must contain <em>timingletter</em>)</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>Timing Letters</strong></td><td style="color:var(--app-fg-muted)">PLM → Active Timing Letters list (filename must contain <em>timing</em>)</td></tr>
+        </table>
+        </div>
+        """, unsafe_allow_html=True)
 
         uploads = st.file_uploader(
             "Drop Automotive + TimingLetter + Timing Letter files",
@@ -655,7 +1177,12 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing L
         persisted = st.session_state.get("atl_files_persisted") or {}
         show_file_status(required_keys, files, persisted)
 
-        disabled = any(k not in persisted for k in required_keys)
+        _col_errs_atl = validate_uploaded_files(persisted, required_keys)
+        if _col_errs_atl:
+            for _k, _msg in _col_errs_atl.items():
+                st.warning(f"⚠️ **{LABELS_PT.get(_k, _k)}** — {_msg}")
+
+        disabled = any(k not in persisted for k in required_keys) or bool(_col_errs_atl)
         c1, c2 = st.columns(2)
         with c1:
             with st.expander("🧹 Clear persistent uploads"):
@@ -664,7 +1191,7 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing L
                     st.success("Cleared.")
                     st.rerun()
         with c2:
-            if st.button("➡️ Continue to Scope", disabled=disabled, key="atl_next1", width='stretch'):
+            if st.button("➡️ Continue to Scope", disabled=disabled, key="atl_next1", use_container_width=True):
                 st.session_state.atl_step = 2
                 st.rerun()
 
@@ -683,17 +1210,38 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing L
 
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("⬅️ Back", key="atl_back2", width='stretch'):
+            if st.button("⬅️ Back", key="atl_back2", use_container_width=True):
                 st.session_state.atl_step = 1
                 st.rerun()
         with c2:
-            if st.button("➡️ Continue to Validation", key="atl_next2", width='stretch'):
+            if st.button("➡️ Continue to Validation", key="atl_next2", use_container_width=True):
                 st.session_state.atl_step = 3
                 st.rerun()
 
     # --- STEP 3 ---
     elif st.session_state.atl_step == 3:
         st.markdown("### ⚙️ Step 3 — Run ATL Workflow")
+
+        _exec_atl   = st.session_state.get("executor_name", "—")
+        _scope_atl  = st.session_state.get("atl_scope", "All")
+        _pers_atl   = st.session_state.get("atl_files_persisted") or {}
+
+        st.markdown(f"""
+        <div style="background:var(--app-bg-secondary);border:1px solid var(--app-border);border-radius:10px;padding:16px 20px;margin-bottom:16px">
+        <div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--app-fg-muted);margin-bottom:10px">
+            ✅ Ready to process — confirm before running
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:0.87rem;color:var(--app-fg)">
+            <div><span style="color:var(--app-fg-muted)">Executor</span><br><strong>{_exec_atl}</strong></div>
+            <div><span style="color:var(--app-fg-muted)">Scope</span><br><strong>{_scope_atl}</strong></div>
+            <div><span style="color:var(--app-fg-muted)">Files loaded</span><br><strong>{len(_pers_atl)} of 3</strong></div>
+        </div>
+        <div style="margin-top:10px;font-size:0.8rem;color:var(--app-fg-muted)">
+            The workflow will match Change Numbers from Automotive and TimingLetter sources,
+            filter active Timing Letters (excludes Complete/Rejected), and compute Aging for each CN.
+        </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         if st.button("▶️ Run Workflow ATL", type="primary", key="atl_run"):
             files = rehydrate_persisted_mapping("atl_files_persisted")
@@ -733,17 +1281,45 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing L
         excel_all = st.session_state.atl_excel_all
         scope     = st.session_state.atl_filter_display
 
-        if scope == "PT01":
-            st.header("PT01"); st.dataframe(df_pt01, width='stretch')
-        elif scope == "PT02":
-            st.header("PT02"); st.dataframe(df_pt02, width='stretch')
-        else:
-            st.header("PT01"); st.dataframe(df_pt01, width='stretch')
-            st.header("PT02"); st.dataframe(df_pt02, width='stretch')
+        _total_cns = (len(df_pt01) if df_pt01 is not None else 0) + (len(df_pt02) if df_pt02 is not None else 0)
+        _tln_cns   = 0
+        for _df_tln in [df_pt01, df_pt02]:
+            if _df_tln is not None and not _df_tln.empty and 'Timing Letter Number' in _df_tln.columns:
+                _tln_cns += int(_df_tln['Timing Letter Number'].astype(str).str.strip().replace('', pd.NA).notna().sum())
+        _no_tln = _total_cns - _tln_cns
+        _ic_plm = "var(--app-bg-secondary)" if _total_cns > 50 else ("var(--app-bg-secondary)" if _total_cns > 20 else "var(--app-bg-secondary)")
+        _ib_plm = "var(--color-error)" if _total_cns > 50 else ("var(--color-warn)" if _total_cns > 20 else "var(--color-ok)")
+        st.markdown(f"""
+        <div style="background:{_ic_plm};border-left:4px solid {_ib_plm};border-radius:8px;
+                    padding:12px 16px;margin-bottom:16px;font-size:0.9rem;line-height:1.6;color:var(--app-fg)">
+            <strong>📋 PLM Workflow Summary</strong><br>
+            Found <strong>{_total_cns:,} open Change Numbers</strong> pending approval.
+            <strong>{_tln_cns:,}</strong> have a Timing Letter Number assigned.
+            {"<strong>" + str(_no_tln) + " CNs have no Timing Letter</strong> — these may need follow-up." if _no_tln else "All CNs have a Timing Letter assigned. ✅"}
+        </div>
+        """, unsafe_allow_html=True)
 
         st.markdown("## 📈 Dashboard — PLM Workflow (ATL)")
         render_atl_run_kpis(df_pt01, df_pt02)
         render_atl_run_charts(df_pt01, df_pt02)
+
+        with st.expander("📋 PT01 Change Numbers", expanded=False):
+            _srch_pt01 = st.text_input("🔍 Filter PT01", key="plm_pt01_search")
+            _df_pt01_s = _coerce_df_for_display(df_pt01) if df_pt01 is not None else pd.DataFrame()
+            if _srch_pt01.strip() and not _df_pt01_s.empty:
+                _mask_p01 = _df_pt01_s.apply(lambda col: col.astype(str).str.contains(_srch_pt01.strip(), case=False, na=False)).any(axis=1)
+                _df_pt01_s = _df_pt01_s[_mask_p01]
+            st.caption(f"{len(_df_pt01_s):,} rows")
+            st.dataframe(_df_pt01_s, use_container_width=True)
+
+        with st.expander("📋 PT02 Change Numbers", expanded=False):
+            _srch_pt02 = st.text_input("🔍 Filter PT02", key="plm_pt02_search")
+            _df_pt02_s = _coerce_df_for_display(df_pt02) if df_pt02 is not None else pd.DataFrame()
+            if _srch_pt02.strip() and not _df_pt02_s.empty:
+                _mask_p02 = _df_pt02_s.apply(lambda col: col.astype(str).str.contains(_srch_pt02.strip(), case=False, na=False)).any(axis=1)
+                _df_pt02_s = _df_pt02_s[_mask_p02]
+            st.caption(f"{len(_df_pt02_s):,} rows")
+            st.dataframe(_df_pt02_s, use_container_width=True)
 
         suffix = st.session_state.atl_filter_export or "ALL"
         st.download_button(
@@ -752,29 +1328,24 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing L
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-        with st.expander("🕑 ATL History (last 10 runs)"):
-            logs = list_run_logs("atl", limit=10)
-            if logs:
-                st.dataframe(pd.DataFrame([
-                    {"When": l["timestamp"], "Who": l["user"], "Scope": l["plant_scope"],
-                     "PT01 rows": l["metrics"]["PT01_rows"], "PT02 rows": l["metrics"]["PT02_rows"]}
-                    for l in logs
-                ]), width='stretch')
-            else:
-                st.write("No history.")
+        render_history_with_download(
+            "atl", limit=10, label="ATL History",
+            col_map={"When": "timestamp", "Who": "user",
+                     "Scope": "plant_scope", "PT01": "metrics.PT01_rows", "PT02": "metrics.PT02_rows"}
+        )
 
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("🔄 New Run ATL", key="atl_new", width='stretch'):
+            if st.button("🔄 New Run ATL", key="atl_new", use_container_width=True):
                 st.session_state.atl_step = 1
                 st.rerun()
         with c2:
-            if st.button("🧹 Clear uploads & start over", key="atl_clear4", width='stretch'):
+            if st.button("🧹 Clear uploads & start over", key="atl_clear4", use_container_width=True):
                 st.session_state["atl_files_persisted"] = {}
                 st.session_state.atl_step = 1
                 st.rerun()
 
-    render_footer(start_time, version="v1.2")
+    render_footer(start_time, version="v1.4")
 
 # ==========================================================
 # PAGE 2B — PLM WORKFLOW: CHANGE COCKPIT
@@ -797,7 +1368,7 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Change Cockpit":
         # TODO: define required CC files and classify
         c1, c2 = st.columns(2)
         with c2:
-            if st.button("➡️ Continue to Scope", key="cc_next1", width='stretch'):
+            if st.button("➡️ Continue to Scope", key="cc_next1", use_container_width=True):
                 st.session_state.cc_step = 2
                 st.rerun()
 
@@ -807,10 +1378,10 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Change Cockpit":
         st.session_state.cc_scope = cc_scope
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("⬅️ Back", key="cc_back2", width='stretch'):
+            if st.button("⬅️ Back", key="cc_back2", use_container_width=True):
                 st.session_state.cc_step = 1; st.rerun()
         with c2:
-            if st.button("➡️ Continue to Validation", key="cc_next2", width='stretch'):
+            if st.button("➡️ Continue to Validation", key="cc_next2", use_container_width=True):
                 st.session_state.cc_step = 3; st.rerun()
 
     elif st.session_state.cc_step == 3:
@@ -827,15 +1398,15 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Change Cockpit":
         st.success("Results placeholder — plug your tables and dashboards here.")
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("🔄 New Run", key="cc_new", width='stretch'):
+            if st.button("🔄 New Run", key="cc_new", use_container_width=True):
                 st.session_state.cc_step = 1; st.rerun()
         with c2:
-            if st.button("🧹 Clear & Start Over", key="cc_clear4", width='stretch'):
+            if st.button("🧹 Clear & Start Over", key="cc_clear4", use_container_width=True):
                 for k in ["cc_result_df", "cc_excel"]:
                     st.session_state.pop(k, None)
                 st.session_state.cc_step = 1; st.rerun()
 
-    render_footer(start_time, version="v1.2")
+    render_footer(start_time, version="v1.4")
 
 # ==========================================================
 # PAGE 3 — MRP VALIDATION
@@ -855,6 +1426,16 @@ elif main_choice == "🧮 MRP Validation":
 
     if st.session_state.mrp_step == 1:
         st.markdown("### 📂 Step 1 — Load Files")
+        st.markdown("""
+        <div style="background:var(--app-bg-secondary);border-left:4px solid var(--accent);border-radius:6px;padding:12px 16px;margin-bottom:12px;font-size:0.85rem;color:var(--app-fg)">
+        <strong>📋 What files do you need?</strong><br><br>
+        <table style="border-collapse:collapse;width:100%">
+        <tr><td style="padding:3px 8px">📄 <strong>MARA</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MARA (general material data, required for Material Type)</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>MARC</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MARC (contains Advanced Planning, Heuristic, PP Plng Procedure fields)</td></tr>
+        <tr><td style="padding:3px 8px; color:var(--color-ok)">🔓 <strong>ZPLM MARC</strong></td><td style="color:var(--app-fg-muted)">Optional — enables Material Transfer detection for MRP rules</td></tr>
+        </table>
+        </div>
+        """, unsafe_allow_html=True)
         uploads = st.file_uploader("Drop MARA + MARC + (optional) ZPLM MARC",
                                    type="xlsx", accept_multiple_files=True, key="mrp_multi_uploader")
         files = classify_uploaded_files(uploads)
@@ -864,7 +1445,12 @@ elif main_choice == "🧮 MRP Validation":
         persisted = st.session_state.get("mrp_files_persisted") or {}
         show_file_status(required_keys, files, persisted)
 
-        disabled = any(k not in persisted for k in required_keys)
+        _col_errs_mrp = validate_uploaded_files(persisted, required_keys)
+        if _col_errs_mrp:
+            for _k, _msg in _col_errs_mrp.items():
+                st.warning(f"⚠️ **{LABELS_PT.get(_k, _k)}** — {_msg}")
+
+        disabled = any(k not in persisted for k in required_keys) or bool(_col_errs_mrp)
         c1, c2 = st.columns(2)
         with c1:
             with st.expander("🧹 Clear persistent uploads"):
@@ -872,11 +1458,18 @@ elif main_choice == "🧮 MRP Validation":
                     st.session_state["mrp_files_persisted"] = {}
                     st.success("Cleared."); st.rerun()
         with c2:
-            if st.button("➡️ Continue to Scope", disabled=disabled, key="mrp_next1", width='stretch'):
+            if st.button("➡️ Continue to Scope", disabled=disabled, key="mrp_next1", use_container_width=True):
                 st.session_state.mrp_step = 2; st.rerun()
 
     elif st.session_state.mrp_step == 2:
         st.markdown("### 🌍 Step 2 — Choose Scope")
+        st.markdown("""
+        <div style="background:var(--app-bg-secondary);border-left:4px solid var(--color-ok);border-radius:6px;padding:10px 16px;margin-bottom:12px;font-size:0.85rem;color:var(--app-fg)">
+        <strong>ℹ️ What does scope mean?</strong><br>
+        Choose which plant to validate. <strong>All</strong> validates both PT01 and PT02 together.
+        The scope also determines which plant appears in the exported Excel report.
+        </div>
+        """, unsafe_allow_html=True)
         export_scope = st.radio("Scope:", ["All", "Only PT01", "Only PT02"], horizontal=True)
         plant_filter_export = {"Only PT01": "PT01", "Only PT02": "PT02"}.get(export_scope)
         apply_filter_display = st.checkbox("Apply filter to displayed tables", value=False)
@@ -888,15 +1481,32 @@ elif main_choice == "🧮 MRP Validation":
 
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("⬅️ Back", key="mrp_back2", width='stretch'):
+            if st.button("⬅️ Back", key="mrp_back2", use_container_width=True):
                 st.session_state.mrp_step = 1; st.rerun()
         with c2:
-            if st.button("➡️ Continue to Validation", key="mrp_next2", width='stretch'):
+            if st.button("➡️ Continue to Validation", key="mrp_next2", use_container_width=True):
                 st.session_state.mrp_step = 3; st.rerun()
 
     elif st.session_state.mrp_step == 3:
         st.markdown("### ⚙️ Step 3 — Run MRP Validation")
-        st.info("Run all MRP Validation files.")
+
+        _persisted_mrp = st.session_state.get("mrp_files_persisted") or {}
+        _scope_mrp     = st.session_state.get("mrp_export_scope", "All")
+        _exec_mrp      = st.session_state.get("executor_name", "—")
+        _has_zplm      = "zplm_marc" in _persisted_mrp
+
+        st.markdown(f"""
+        <div style="background:var(--app-bg-secondary);border:1px solid var(--app-border);border-radius:10px;padding:16px 20px;margin-bottom:16px">
+        <div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--app-fg-muted);margin-bottom:10px">
+            ✅ Ready to validate — confirm before running
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:0.87rem;color:var(--app-fg)">
+            <div><span style="color:var(--app-fg-muted)">Executor</span><br><strong>{_exec_mrp}</strong></div>
+            <div><span style="color:var(--app-fg-muted)">Scope</span><br><strong>{_scope_mrp}</strong></div>
+            <div><span style="color:var(--app-fg-muted)">ZPLM MARC</span><br><strong>{"✅ Loaded — Material Transfer detection enabled" if _has_zplm else "⬜ Not loaded — Transfer detection disabled"}</strong></div>
+        </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         if st.button("▶️ Execute MRP Validation", type="primary", key="mrp_run"):
             files     = rehydrate_persisted_mapping("mrp_files_persisted")
@@ -941,35 +1551,58 @@ elif main_choice == "🧮 MRP Validation":
         summary_df   = st.session_state.mrp_summary_df
         excel_export = st.session_state.mrp_excel_export
 
+        # FIX 4: count fields/materials consistently with Adjusted Summary
+        # (Field Errors only — excludes Missing View errors)
+        _fe_only = (errors_df[errors_df["Error_Type"] == "Field Error"]
+                    if "Error_Type" in errors_df.columns else errors_df)
+        _fe_cnt   = int(_fe_only.shape[0])
+        _f_cnt    = int(_fe_only["Field"].nunique())    if "Field"    in _fe_only.columns else 0
+        _m_cnt    = int(_fe_only["Material"].nunique()) if "Material" in _fe_only.columns else 0
+
         c = st.columns(3)
         with c[0]:
-            st.markdown(f'<div class="card"><h4>Total Errors</h4><div class="big">{errors_df.shape[0]}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="card"><h4>Field Errors (Actionable)</h4><div class="big">{_fe_cnt:,}</div></div>', unsafe_allow_html=True)
         with c[1]:
-            total_fields = int(errors_df["Field"].nunique()) if "Field" in errors_df.columns else 0
-            st.markdown(f'<div class="card"><h4>Distinct Fields</h4><div class="big">{total_fields}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="card"><h4>Distinct Fields</h4><div class="big">{_f_cnt}</div></div>', unsafe_allow_html=True)
         with c[2]:
-            total_mats = int(errors_df["Material"].nunique()) if "Material" in errors_df.columns else 0
-            st.markdown(f'<div class="card"><h4>Materials with Errors</h4><div class="big">{total_mats}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="card"><h4>Materials with Errors</h4><div class="big">{_m_cnt:,}</div></div>', unsafe_allow_html=True)
 
-        st.header("All Errors")
-        st.dataframe(_coerce_df_for_display(errors_df), width='stretch')
-        st.header("Summary")
-        st.dataframe(_coerce_df_for_display(summary_df), width='stretch')
+        _top_mrp = _fe_only['Field'].value_counts().index[0] if (not _fe_only.empty and 'Field' in _fe_only.columns) else "—"
+        _ic = "var(--app-bg-secondary)" if _fe_cnt > 500 else ("var(--app-bg-secondary)" if _fe_cnt > 100 else "var(--app-bg-secondary)")
+        _ib = "var(--color-error)" if _fe_cnt > 500 else ("var(--color-warn)" if _fe_cnt > 100 else "var(--color-ok)")
+        st.markdown(f"""
+        <div style="background:{_ic};border-left:4px solid {_ib};border-radius:8px;
+                    padding:12px 16px;margin-bottom:16px;font-size:0.9rem;line-height:1.6;color:var(--app-fg)">
+            <strong>📋 MRP Validation Summary</strong><br>
+            Found <strong>{_fe_cnt:,} MRP errors</strong> across <strong>{_m_cnt:,} materials</strong>
+            in <strong>{_f_cnt} distinct fields</strong>.
+            The most affected field is <strong>{_top_mrp}</strong>.
+        </div>
+        """, unsafe_allow_html=True)
 
         st.markdown("## 📈 Dashboard — MRP Validation")
         render_mrp_run_kpis(errors_df)
         render_mrp_run_charts(errors_df)
 
-        with st.expander("🕑 MRP History (last 10 runs)"):
-            logs = list_run_logs("mrp", limit=10)
-            if logs:
-                st.dataframe(pd.DataFrame([
-                    {"When": l["timestamp"], "Who": l["user"],
-                     "Filter": l["plant_filter"], "Errors": l["metrics"]["total_errors"]}
-                    for l in logs
-                ]), width='stretch')
-            else:
-                st.write("No history.")
+        with st.expander("📋 All Errors", expanded=False):
+            _srch_mrp = st.text_input("🔍 Filter by Material, Field or Error", key="mrp_err_search")
+            _df_mrp   = _coerce_df_for_display(errors_df)
+            if _srch_mrp.strip():
+                _mask_mrp = _df_mrp.apply(
+                    lambda col: col.astype(str).str.contains(_srch_mrp.strip(), case=False, na=False)
+                ).any(axis=1)
+                _df_mrp = _df_mrp[_mask_mrp]
+            st.caption(f"Showing {len(_df_mrp):,} of {len(errors_df):,} rows")
+            st.dataframe(_df_mrp, use_container_width=True)
+
+        with st.expander("📋 Summary", expanded=False):
+            st.dataframe(_coerce_df_for_display(summary_df), use_container_width=True)
+
+        render_history_with_download(
+            "mrp", limit=10, label="MRP History",
+            col_map={"When": "timestamp", "Who": "user",
+                     "Plant": "plant_filter", "Errors": "metrics.total_errors"}
+        )
 
         suffix = st.session_state.mrp_plant_export or "ALL"
         st.download_button(
@@ -981,21 +1614,21 @@ elif main_choice == "🧮 MRP Validation":
 
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("🔄 New Validation", key="mrp_new", width='stretch'):
+            if st.button("🔄 New Validation", key="mrp_new", use_container_width=True):
                 st.session_state.mrp_step = 1; st.rerun()
         with c2:
-            if st.button("🧹 Clear uploads & start over", key="mrp_clear4", width='stretch'):
+            if st.button("🧹 Clear uploads & start over", key="mrp_clear4", use_container_width=True):
                 st.session_state["mrp_files_persisted"] = {}
                 st.session_state.mrp_step = 1; st.rerun()
 
-    render_footer(start_time, version="v1.2")
+    render_footer(start_time, version="v1.4")
 
 # ==========================================================
 # PAGE 4 — SAP MATERIAL VALIDATION PROGRESS
 # ==========================================================
-elif main_choice == "📈 SAP Material Validation Progress":
+elif main_choice == "📊 SAP Validation Progress":
 
-    st.subheader("📈 SAP Material Validation Progress")
+    st.subheader("📊 SAP Validation Progress")
     effective_executor = identity_input("Who performs?", "progress_exec")
     save_history = st.checkbox("Save this execution in history", value=True)
 
@@ -1014,7 +1647,7 @@ elif main_choice == "📈 SAP Material Validation Progress":
             prog_scope = st.radio("Scope:", ["ALL", "PT01", "PT02"], horizontal=True)
             st.session_state.prog_scope = prog_scope
 
-        if st.button("➡️ Continue to Files", key="prog_next1", width='stretch'):
+        if st.button("➡️ Continue to Files", key="prog_next1", use_container_width=True):
             st.session_state.progress_step = 2; st.rerun()
 
     elif st.session_state.progress_step == 2:
@@ -1059,10 +1692,10 @@ elif main_choice == "📈 SAP Material Validation Progress":
 
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("⬅️ Back", key="prog_back2", width='stretch'):
+            if st.button("⬅️ Back", key="prog_back2", use_container_width=True):
                 st.session_state.progress_step = 1; st.rerun()
         with c2:
-            if st.button("➡️ Continue to Validation", disabled=disabled, key="prog_next2", width='stretch'):
+            if st.button("➡️ Continue to Validation", disabled=disabled, key="prog_next2", use_container_width=True):
                 st.session_state.progress_step = 3; st.rerun()
 
     elif st.session_state.progress_step == 3:
@@ -1110,12 +1743,42 @@ elif main_choice == "📈 SAP Material Validation Progress":
         st.markdown("### 📊 Step 4 — Results")
 
         diff_dfs = st.session_state.progress_diff_dfs
-        labels   = ["New Errors", "Resolved Errors", "Changed Errors", "New Materials", "Views Lost"]
 
+        # Auto-insight
+        _p_new  = len(diff_dfs.get("New Errors",      pd.DataFrame()))
+        _p_res  = len(diff_dfs.get("Resolved Errors",  pd.DataFrame()))
+        _p_chg  = len(diff_dfs.get("Changed Errors",   pd.DataFrame()))
+        _p_mats = len(diff_dfs.get("New Materials",    pd.DataFrame()))
+        _p_vl   = len(diff_dfs.get("Views Lost",       pd.DataFrame()))
+        _p_net  = _p_new - _p_res
+        _p_trend_icon  = "📈" if _p_net > 0 else ("📉" if _p_net < 0 else "➡️")
+        _p_trend_label = "getting worse" if _p_net > 0 else ("improving" if _p_net < 0 else "stable")
+        _p_border = "var(--color-error)" if _p_net > 0 else ("var(--color-ok)" if _p_net < 0 else "var(--color-warn)")
+        st.markdown(f"""
+        <div style="background:var(--app-bg-secondary);border-left:4px solid {_p_border};border-radius:8px;
+                    padding:12px 16px;margin-bottom:16px;font-size:0.9rem;line-height:1.6;color:var(--app-fg)">
+            <strong>{_p_trend_icon} Progress Summary</strong><br>
+            <strong>{_p_new:,} new errors</strong> appeared, <strong>{_p_res:,} were resolved</strong>,
+            and <strong>{_p_chg:,} changed</strong> their error message.
+            Net change: <strong style="color:{_p_border}">{_p_net:+,} errors</strong> — trend is <strong>{_p_trend_label}</strong>.
+            {"<br>" + str(_p_mats) + " new materials entered the report." if _p_mats else ""}
+            {"<br><strong>" + str(_p_vl) + " views were lost</strong> since the previous run — these may need activation in SAP." if _p_vl else ""}
+        </div>
+        """, unsafe_allow_html=True)
+
+        labels = ["New Errors", "Resolved Errors", "Changed Errors", "New Materials", "Views Lost"]
         tabs = st.tabs(labels)
         for tab, key in zip(tabs, labels):
             with tab:
-                st.dataframe(_coerce_df_for_display(diff_dfs.get(key, pd.DataFrame())), width='stretch')
+                _df_prog = _coerce_df_for_display(diff_dfs.get(key, pd.DataFrame()))
+                st.caption(f"{len(_df_prog):,} rows")
+                _srch_prog = st.text_input("🔍 Filter", key=f"prog_search_{key.replace(' ','_')}")
+                if _srch_prog.strip() and not _df_prog.empty:
+                    _mask_prog = _df_prog.apply(
+                        lambda col: col.astype(str).str.contains(_srch_prog.strip(), case=False, na=False)
+                    ).any(axis=1)
+                    _df_prog = _df_prog[_mask_prog]
+                st.dataframe(_df_prog, use_container_width=True)
 
         st.markdown("## 📈 Dashboard — Progress")
         render_progress_kpis(diff_dfs)
@@ -1129,32 +1792,26 @@ elif main_choice == "📈 SAP Material Validation Progress":
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-        with st.expander("🕑 Progress History (last 10 runs)"):
-            logs = list_run_logs("progress", limit=10)
-            if logs:
-                st.dataframe(pd.DataFrame([
-                    {"When": l["timestamp"], "Who": l["user"],
-                     "New": l["metrics"]["new_errors"], "Resolved": l["metrics"]["resolved_errors"],
-                     "Changed": l["metrics"]["changed_errors"], "New Mats": l["metrics"]["new_materials"],
-                     "Views Lost": l["metrics"]["views_lost"]}
-                    for l in logs
-                ]), width='stretch')
-            else:
-                st.write("No history.")
+        render_history_with_download(
+            "progress", limit=10, label="Progress History",
+            col_map={"When": "timestamp", "Who": "user",
+                     "New": "metrics.new_errors", "Resolved": "metrics.resolved_errors",
+                     "Changed": "metrics.changed_errors"}
+        )
 
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("🔄 New Comparison", key="prog_new", width='stretch'):
+            if st.button("🔄 New Comparison", key="prog_new", use_container_width=True):
                 st.session_state.progress_step = 1; st.rerun()
         with c2:
-            if st.button("🧹 Clear all & restart", key="prog_clear4", width='stretch'):
+            if st.button("🧹 Clear all & restart", key="prog_clear4", use_container_width=True):
                 for k in ["progress_curr_path", "progress_prev_path",
                           "progress_manual_curr", "progress_manual_prev",
                           "progress_diff_dfs", "progress_diff_excel"]:
                     st.session_state.pop(k, None)
                 st.session_state.progress_step = 1; st.rerun()
 
-    render_footer(start_time, version="v1.2")
+    render_footer(start_time, version="v1.4")
 
 # ==========================================================
 # PAGE 5 — DATA CLEANUPS
@@ -1174,7 +1831,20 @@ elif main_choice == "🧹 Data Cleanups":
 
     if st.session_state.dataclean_step == 1:
         st.markdown("### 📂 Step 1 — Load Files")
-        st.caption("Upload **MARA + MARC + ZPLM MARA + ZPLM MARC + MBEW + EKPO + MARD** (all required).")
+        st.markdown("""
+        <div style="background:var(--app-bg-secondary);border-left:4px solid var(--accent);border-radius:6px;padding:12px 16px;margin-bottom:12px;font-size:0.85rem;color:var(--app-fg)">
+        <strong>📋 What files do you need? (all 7 required)</strong><br><br>
+        <table style="border-collapse:collapse;width:100%">
+        <tr><td style="padding:3px 8px">📄 <strong>MARA</strong></td><td style="color:var(--app-fg-muted)">General material data — Material Type, Old Material Number</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>MARC</strong></td><td style="color:var(--app-fg-muted)">Plant-level data — PSMS status, Production Storage Location</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>ZPLM MARC</strong></td><td style="color:var(--app-fg-muted)">PLM plant data — Material Plant Type, EOP Date, Service Liability Date, LTB fields</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>ZPLM MARA</strong></td><td style="color:var(--app-fg-muted)">PLM general data — Enterproj Number, Product Hierarchy</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>MBEW</strong></td><td style="color:var(--app-fg-muted)">Valuation data — Standard Price per plant</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>EKPO</strong></td><td style="color:var(--app-fg-muted)">Purchase order items — open POs to close validation</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>MARD</strong></td><td style="color:var(--app-fg-muted)">Storage location stock — obsolete materials with no stock</td></tr>
+        </table>
+        </div>
+        """, unsafe_allow_html=True)
 
         uploads = st.file_uploader("Drop all 7 Excel files here",
                                    type=["xlsx"], accept_multiple_files=True, key="dc_multi_uploader")
@@ -1185,7 +1855,12 @@ elif main_choice == "🧹 Data Cleanups":
         persisted = st.session_state.get("dc_files_persisted") or {}
         show_file_status(required_keys, files, persisted)
 
-        disabled = any(k not in persisted for k in required_keys)
+        _col_errs_dc = validate_uploaded_files(persisted, required_keys)
+        if _col_errs_dc:
+            for _k, _msg in _col_errs_dc.items():
+                st.warning(f"⚠️ **{LABELS_PT.get(_k, _k)}** — {_msg}")
+
+        disabled = any(k not in persisted for k in required_keys) or bool(_col_errs_dc)
         c1, c2 = st.columns(2)
         with c1:
             with st.expander("🧹 Clear"):
@@ -1193,7 +1868,7 @@ elif main_choice == "🧹 Data Cleanups":
                     st.session_state["dc_files_persisted"] = {}
                     st.success("Cleared."); st.rerun()
         with c2:
-            if st.button("➡️ Continue to Scope", disabled=disabled, key="dc_next1", width='stretch'):
+            if st.button("➡️ Continue to Scope", disabled=disabled, key="dc_next1", use_container_width=True):
                 st.session_state.dataclean_step = 2; st.rerun()
 
     elif st.session_state.dataclean_step == 2:
@@ -1211,14 +1886,34 @@ elif main_choice == "🧹 Data Cleanups":
 
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("⬅️ Back", key="dc_back2", width='stretch'):
+            if st.button("⬅️ Back", key="dc_back2", use_container_width=True):
                 st.session_state.dataclean_step = 1; st.rerun()
         with c2:
-            if st.button("➡️ Continue to Validation", key="dc_next2", width='stretch'):
+            if st.button("➡️ Continue to Validation", key="dc_next2", use_container_width=True):
                 st.session_state.dataclean_step = 3; st.rerun()
 
     elif st.session_state.dataclean_step == 3:
         st.markdown("### ⚙️ Step 3 — Run Data Cleanups")
+
+        _exec_dc    = st.session_state.get("executor_name", "—")
+        _scope_dc   = st.session_state.get("dc_export_scope", "All Plants")
+        _pers_dc    = st.session_state.get("dc_files_persisted") or {}
+        st.markdown(f"""
+        <div style="background:var(--app-bg-secondary);border:1px solid var(--app-border);border-radius:10px;padding:16px 20px;margin-bottom:16px">
+        <div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--app-fg-muted);margin-bottom:10px">
+            ✅ Ready to validate — confirm before running
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:0.87rem;color:var(--app-fg)">
+            <div><span style="color:var(--app-fg-muted)">Executor</span><br><strong>{_exec_dc}</strong></div>
+            <div><span style="color:var(--app-fg-muted)">Scope</span><br><strong>{_scope_dc}</strong></div>
+            <div><span style="color:var(--app-fg-muted)">Files loaded</span><br><strong>{len(_pers_dc)} of 7</strong></div>
+        </div>
+        <div style="margin-top:10px;font-size:0.8rem;color:var(--app-fg-muted)">
+            Will run: FP Level Status · EOP vs Service Liability · Standard Cost · LTB fields ·
+            EKPO open POs · MARD stock · Cross-existence MARA/MARC ↔ ZPLM
+        </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         files          = rehydrate_persisted_mapping("dc_files_persisted")
         mara_file      = files.get("mara")
@@ -1275,9 +1970,19 @@ elif main_choice == "🧹 Data Cleanups":
         with c[3]:
             st.markdown(f'<div class="card"><h4>Correct</h4><div class="big">{kpis.get("correct", 0)}</div></div>', unsafe_allow_html=True)
 
-        for sheet_name, df_val in results_dict.items():
-            st.header(f"📄 {sheet_name}")
-            st.dataframe(_coerce_df_for_display(df_val), width='stretch')
+        if results_dict:
+            _dc_tabs = st.tabs([f"📄 {name}" for name in results_dict.keys()])
+            for _dc_tab, (_dc_name, _dc_df) in zip(_dc_tabs, results_dict.items()):
+                with _dc_tab:
+                    st.caption(f"{len(_dc_df):,} rows")
+                    _srch_dc = st.text_input("🔍 Filter", key=f"dc_search_{_dc_name}")
+                    _df_dc = _coerce_df_for_display(_dc_df)
+                    if _srch_dc.strip() and not _df_dc.empty:
+                        _mask_dc = _df_dc.apply(
+                            lambda col: col.astype(str).str.contains(_srch_dc.strip(), case=False, na=False)
+                        ).any(axis=1)
+                        _df_dc = _df_dc[_mask_dc]
+                    st.dataframe(_df_dc, use_container_width=True)
 
         excel_bytes = st.session_state.get("dc_excel")
         st.download_button(
@@ -1289,11 +1994,11 @@ elif main_choice == "🧹 Data Cleanups":
 
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("🔄 New Run", key="dc_new", width='stretch'):
+            if st.button("🔄 New Run", key="dc_new", use_container_width=True):
                 st.session_state.dataclean_step = 1; st.rerun()
         with c2:
-            if st.button("🧹 Clear & Restart", key="dc_clear4", width='stretch'):
+            if st.button("🧹 Clear & Restart", key="dc_clear4", use_container_width=True):
                 st.session_state["dc_files_persisted"] = {}
                 st.session_state.dataclean_step = 1; st.rerun()
 
-    render_footer(start_time, version="v1.2")
+    render_footer(start_time, version="v1.4")

@@ -2776,9 +2776,9 @@ def postprocess_with_views_roles_and_classification(
         view_to_desc, expected_letters = {}, set()
 
     if 'Field' in errors_df.columns:
-        errors_df['View'] = errors_df['Field'].map(field_to_view).fillna('Not aplicable')
+        errors_df['View'] = errors_df['Field'].map(field_to_view).fillna('Not applicable')
     else:
-        errors_df['View'] = 'Not aplicable'
+        errors_df['View'] = 'Not applicable'
 
     # -----------------------------------------------
     # 3) Extract Letters_Present per (Material, Plant)
@@ -2853,7 +2853,7 @@ def postprocess_with_views_roles_and_classification(
 
     def classify_error(row):
         view = str(row.get('View', '')).strip()
-        if view not in ('', 'Not aplicable'):
+        if view not in ('', 'Not applicable'):
             _key = (str(row.get('Material', '')).strip(), str(row.get('Plant', '')).strip())
             if view in _missing_lookup.get(_key, set()):
                 return 'Missing View'
@@ -2886,13 +2886,13 @@ def postprocess_with_views_roles_and_classification(
         contagem_final_df = pd.DataFrame(columns=['Field', 'Adjusted Nº of Errors'])
 
     if not contagem_final_df.empty:
-        contagem_final_df['View']             = contagem_final_df['Field'].map(field_to_view).fillna('Not aplicable')
-        contagem_final_df['View_Description'] = contagem_final_df['View'].map(view_to_desc).fillna('Not aplicable')
+        contagem_final_df['View']             = contagem_final_df['Field'].map(field_to_view).fillna('Not applicable')
+        contagem_final_df['View_Description'] = contagem_final_df['View'].map(view_to_desc).fillna('Not applicable')
 
         if 'Role' in roles_df.columns:
             roles_df['Role']  = roles_df['Role'].astype(str).str.strip()
             field_to_role     = roles_df.set_index('Field')['Role'].to_dict()
-            contagem_final_df['Role'] = contagem_final_df['Field'].map(field_to_role).fillna('Not aplicable')
+            contagem_final_df['Role'] = contagem_final_df['Field'].map(field_to_role).fillna('Not applicable')
 
         # Specific overrides
         mask_override = contagem_final_df['Field'].isin(['Enterproj Number', 'Plant Type'])
@@ -2917,7 +2917,7 @@ def postprocess_with_views_roles_and_classification(
     for col in ['View', 'View_Description', 'Role']:
         if col in contagem_final_df.columns:
             contagem_final_df[col] = contagem_final_df[col].astype(str).replace(
-                {'nan': 'Not aplicable', 'None': 'Not aplicable', '': 'Not aplicable'}
+                {'nan': 'Not applicable', 'None': 'Not applicable', '': 'Not applicable'}
             )
 
     # -----------------------------------------------
@@ -3241,6 +3241,15 @@ def run_full_validation(
 
         sap_df.to_excel(writer, sheet_name="Original Data", index=False)
 
+        # Assignments sheet — enriched with owner/status from master.json
+        try:
+            _enriched = merge_assignments(errors_df)
+            _asgn_df  = build_assignments_sheet(_enriched)
+            _asgn_df.to_excel(writer, sheet_name="Assignments", index=False)
+            save_open_assignments(_enriched)
+        except Exception:
+            pass
+
     # Apply full professional styling
     file_bytes.seek(0)
     file_bytes = _style_sap_report(
@@ -3404,7 +3413,7 @@ def _style_sap_report(
         # KPIs: removed Total Errors (redundant with Field Errors) and
         # Justified by Missing View. Field Errors is the actionable number.
         kpi_rows = [
-            ("Field Errors", fe_cnt,                        "FCE4D6"),
+            ("Field Errors (Actionable)", fe_cnt,          "FCE4D6"),
             ("Materials with Errors",     total_materials,  "FCE4D6"),
             ("Distinct Fields with Error",total_fields,     "DEEAF1"),
         ]
@@ -3680,6 +3689,16 @@ def _style_sap_report(
         if sn.startswith("Missing_"):
             _style_sheet(wb[sn], tab_color=None, freeze="A2")
 
+    # ── Assignments ──────────────────────────────────────────────────────────
+    if "Assignments" in wb.sheetnames:
+        ws_asgn = wb["Assignments"]
+        ws_asgn.sheet_properties.tabColor = "FF7200"
+        # Build a minimal df from the sheet to pass to style_assignments_sheet
+        try:
+            style_assignments_sheet(ws_asgn, pd.DataFrame())
+        except Exception:
+            _style_sheet(ws_asgn, tab_color="FF7200", freeze="A2")
+
     # ── Original Data ────────────────────────────────────────────────────────
     if "Original Data" in wb.sheetnames:
         _style_sheet(wb["Original Data"], tab_color=None, freeze="B2")
@@ -3772,7 +3791,7 @@ def run_fp_status_validation(mara_file, marc_file, zplm_marc_file,
     merged["Material"] = merged["Material"].astype(str).str.strip()
     merged = merged[~merged["Material"].str.match(r"^\d+$")]
 
-    PSMS_NAME = {"40": "PreProd", "45": "Prod", "50": "Balout", "55": "Service"}
+    PSMS_NAME = {"40": "NewProd", "45": "Prod", "50": "Balout", "55": "Service"}
     merged["PSMS Name"] = merged["PSMS"].map(PSMS_NAME)
 
     # Keep only families with 2+ members
@@ -4461,7 +4480,7 @@ def _extract_missing_views_from_workbook(book_dict: dict) -> dict:
         for _, r in df_err.iterrows():
             if bool(r.get('Justified_By_Missing_View', False)):
                 mat, plant, view = _norm_str(r.get('Material')), _norm_str(r.get('Plant')), _norm_str(r.get('View'))
-                if mat and view and view not in ('', 'Not aplicable'):
+                if mat and view and view not in ('', 'Not applicable'):
                     missing_map.setdefault((mat, plant), set()).add(view)
     return missing_map
 
@@ -4667,8 +4686,15 @@ def build_mrp_log_payload(*, user, plant_filter, mara_file, marc_file,
     }
 
 
-def save_run_log(payload: dict, *, base_dir: str = ".history") -> str | None:
-    """Saves a log payload as a JSON file under .history/<run_type>/."""
+def save_run_log(payload: dict, *, base_dir: str = ".history",
+                  max_logs: int = 200) -> str | None:
+    """
+    Saves a log payload as a JSON file under .history/<run_type>/.
+
+    FIX 12: Retention policy — keeps only the most recent `max_logs` files
+    per run type. Older files are deleted automatically to prevent unbounded
+    growth of the .history/ directory over time.
+    """
     run_type = payload.get("run_type", "UNKNOWN")
     subdir   = {"SAP_VALIDATION": "sap", "PLM_WORKFLOW_ATL": "atl",
                  "SAP_VALIDATION_PROGRESS": "progress", "MRP_VALIDATION": "mrp",
@@ -4682,9 +4708,25 @@ def save_run_log(payload: dict, *, base_dir: str = ".history") -> str | None:
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
-        return path
     except Exception:
         return None
+
+    # Retention: delete oldest files beyond max_logs
+    try:
+        all_logs = sorted(
+            [os.path.join(out_dir, fn) for fn in os.listdir(out_dir)
+             if fn.endswith(".json")],
+            key=os.path.getmtime
+        )
+        for old_file in all_logs[:-max_logs]:
+            try:
+                os.remove(old_file)
+            except Exception:
+                pass
+    except Exception:
+        pass  # retention failure is non-critical
+
+    return path
 
 
 def list_run_logs(run_type: str, *, base_dir: str = ".history", limit: int = 25) -> list:
@@ -5085,4 +5127,386 @@ __all__ = [
     "_norm_str",
     "_ts",
     "_ensure_dir",
+    # --- Assignment system ---
+    "get_owner",
+    "set_owner",
+    "remove_owner",
+    "list_all_assignments",
+    "merge_assignments",
+    "save_open_assignments",
+    "build_assignments_sheet",
+    "style_assignments_sheet",
+    "_load_master",
+    "_save_master",
 ]
+
+# =============================================================================
+# ASSIGNMENT SYSTEM — "Assign once, persist forever"
+# =============================================================================
+#
+# Architecture:
+#   .history/assignments/master.json  — permanent field→owner map
+#   Sheet "Assignments" in every SAP Excel report
+#
+# master.json structure:
+# {
+#   "field_assignments": {
+#     "MRP Type": {"owner": "João Silva", "team": "MRP", "since": "2026-01-15"}
+#   },
+#   "plant_overrides": {
+#     "PT02": { "MRP Type": {"owner": "Carlos Mota"} }
+#   }
+# }
+# =============================================================================
+
+_ASSIGNMENTS_PATH = os.path.join(".history", "assignments", "master.json")
+
+
+def _load_master() -> dict:
+    """Load the assignment master file. Returns empty structure if missing."""
+    if not os.path.exists(_ASSIGNMENTS_PATH):
+        return {"field_assignments": {}, "plant_overrides": {}}
+    try:
+        with open(_ASSIGNMENTS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data.setdefault("field_assignments", {})
+        data.setdefault("plant_overrides", {})
+        return data
+    except Exception:
+        return {"field_assignments": {}, "plant_overrides": {}}
+
+
+def _save_master(master: dict) -> None:
+    """
+    Persist the assignment master file atomically.
+    Adds a _saved_at timestamp so concurrent writes can be detected.
+    Uses os.replace() which is atomic on all platforms — last write wins,
+    but the timestamp lets callers detect if their version is stale.
+    """
+    os.makedirs(os.path.dirname(_ASSIGNMENTS_PATH), exist_ok=True)
+    master["_saved_at"] = datetime.now().isoformat(timespec="seconds")
+    tmp = _ASSIGNMENTS_PATH + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(master, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, _ASSIGNMENTS_PATH)
+    except Exception:
+        pass
+
+
+def get_owner(field: str, plant: str = "", master: dict | None = None) -> str:
+    """
+    Returns the owner for a (field, plant) combination.
+    Plant-level override takes priority over field-level default.
+    Returns "" if not assigned.
+    """
+    if master is None:
+        master = _load_master()
+    plant = (plant or "").strip().upper()
+    # Plant override
+    override = master.get("plant_overrides", {}).get(plant, {}).get(field, {})
+    if isinstance(override, dict) and override.get("owner"):
+        return override["owner"]
+    # Field default
+    default = master.get("field_assignments", {}).get(field, {})
+    if isinstance(default, dict):
+        return default.get("owner", "")
+    return ""
+
+
+def set_owner(field: str, owner: str, *,
+              plant: str = "",
+              team: str = "",
+              master: dict | None = None) -> dict:
+    """
+    Set (or update) the owner for a field.
+    If plant is given, sets a plant-level override; otherwise sets the field default.
+    Always reloads master from disk before writing to avoid overwriting
+    concurrent changes from another session.
+    Returns the updated master dict.
+    """
+    # Always reload from disk — avoids overwriting concurrent changes
+    master = _load_master()
+    plant = (plant or "").strip().upper()
+    owner = (owner or "").strip()
+    now   = datetime.now().strftime("%Y-%m-%d")
+
+    if plant:
+        master.setdefault("plant_overrides", {}).setdefault(plant, {})[field] = {
+            "owner": owner, "team": team, "since": now
+        }
+    else:
+        master.setdefault("field_assignments", {})[field] = {
+            "owner": owner, "team": team, "since": now
+        }
+    _save_master(master)
+    return master
+
+
+def remove_owner(field: str, *, plant: str = "") -> None:
+    """Remove an assignment (field default or plant override)."""
+    master = _load_master()
+    plant  = (plant or "").strip().upper()
+    if plant:
+        master.get("plant_overrides", {}).get(plant, {}).pop(field, None)
+    else:
+        master.get("field_assignments", {}).pop(field, None)
+    _save_master(master)
+
+
+def list_all_assignments() -> pd.DataFrame:
+    """
+    Returns a flat DataFrame of all current assignments:
+    Field | Plant | Owner | Team | Since | Level
+    """
+    master = _load_master()
+    rows = []
+    for field, info in master.get("field_assignments", {}).items():
+        rows.append({
+            "Field":  field,
+            "Plant":  "(all plants)",
+            "Owner":  info.get("owner", ""),
+            "Team":   info.get("team", ""),
+            "Since":  info.get("since", ""),
+            "Level":  "Default",
+        })
+    for plant, fields in master.get("plant_overrides", {}).items():
+        for field, info in fields.items():
+            rows.append({
+                "Field":  field,
+                "Plant":  plant,
+                "Owner":  info.get("owner", ""),
+                "Team":   info.get("team", ""),
+                "Since":  info.get("since", ""),
+                "Level":  "Plant Override",
+            })
+    return pd.DataFrame(rows, columns=["Field", "Plant", "Owner", "Team", "Since", "Level"])
+
+
+def merge_assignments(errors_df: pd.DataFrame,
+                      run_date: str | None = None) -> pd.DataFrame:
+    """
+    Enriches errors_df with assignment data from master.json.
+
+    Adds columns:
+      Owner         — person responsible for this field
+      Team          — team of the owner
+      Status        — "New" | "Open" | "Overdue" (no due date = "New")
+      Days_Open     — days since first seen (from previous_assignments if available)
+      Due_Date      — ISO date string or ""
+      Notes         — free-text notes (blank by default)
+
+    The function also reads previous assignment rows from the
+    .history/assignments/open_items.json file (written by
+    save_open_assignments) to carry forward Days_Open and Due_Date.
+    """
+    if errors_df is None or errors_df.empty:
+        return errors_df
+
+    master    = _load_master()
+    today_str = run_date or datetime.now().strftime("%Y-%m-%d")
+    today     = datetime.strptime(today_str, "%Y-%m-%d")
+
+    # Load previously open items for carry-forward
+    open_path = os.path.join(".history", "assignments", "open_items.json")
+    open_map: dict[tuple, dict] = {}
+    if os.path.exists(open_path):
+        try:
+            with open(open_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            # key: "Material||Plant||Field" → dict with due_date, notes, first_seen
+            for k, v in raw.items():
+                parts = k.split("||")
+                if len(parts) == 3:
+                    open_map[tuple(parts)] = v
+        except Exception:
+            pass
+
+    df = errors_df.copy()
+
+    owners, teams, statuses, days_open_list, due_dates, notes_list = [], [], [], [], [], []
+
+    for _, row in df.iterrows():
+        field    = str(row.get("Field",    "")).strip()
+        plant    = str(row.get("Plant",    "")).strip().upper()
+        material = str(row.get("Material", "")).strip()
+
+        owner = get_owner(field, plant, master=master)
+        team  = ""
+        if owner:
+            # Get team from master
+            override = master.get("plant_overrides", {}).get(plant, {}).get(field, {})
+            default  = master.get("field_assignments", {}).get(field, {})
+            team = (override if isinstance(override, dict) and override.get("owner") == owner
+                    else default).get("team", "")
+
+        # Carry-forward from previous open items
+        item_key = (material, plant, field)
+        prev     = open_map.get(item_key, {})
+        due_str  = prev.get("due_date", "")
+        notes    = prev.get("notes", "")
+        first_seen_str = prev.get("first_seen", today_str)
+
+        try:
+            first_seen = datetime.strptime(first_seen_str, "%Y-%m-%d")
+            d_open = (today - first_seen).days
+        except Exception:
+            d_open = 0
+
+        # Status
+        if not owner:
+            status = "Unassigned"
+        elif due_str:
+            try:
+                due_dt = datetime.strptime(due_str, "%Y-%m-%d")
+                status = "Overdue" if today > due_dt else "Open"
+            except Exception:
+                status = "Open"
+        else:
+            status = "New" if d_open == 0 else "Open"
+
+        owners.append(owner)
+        teams.append(team)
+        statuses.append(status)
+        days_open_list.append(d_open)
+        due_dates.append(due_str)
+        notes_list.append(notes)
+
+    df["Owner"]     = owners
+    df["Team"]      = teams
+    df["Status"]    = statuses
+    df["Days_Open"] = days_open_list
+    df["Due_Date"]  = due_dates
+    df["Notes"]     = notes_list
+
+    return df
+
+
+def save_open_assignments(enriched_df: pd.DataFrame) -> None:
+    """
+    Persists the current open assignment items to
+    .history/assignments/open_items.json for carry-forward in the next run.
+
+    Only saves rows that have an Owner (assigned items).
+    Preserves first_seen date from existing entries.
+    """
+    open_path = os.path.join(".history", "assignments", "open_items.json")
+    os.makedirs(os.path.dirname(open_path), exist_ok=True)
+
+    # Load existing
+    existing: dict = {}
+    if os.path.exists(open_path):
+        try:
+            with open(open_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except Exception:
+            existing = {}
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    updated: dict = {}
+
+    for _, row in enriched_df.iterrows():
+        owner = str(row.get("Owner", "")).strip()
+        if not owner:
+            continue
+        material = str(row.get("Material", "")).strip()
+        plant    = str(row.get("Plant",    "")).strip().upper()
+        field    = str(row.get("Field",    "")).strip()
+        key      = f"{material}||{plant}||{field}"
+
+        prev_first_seen = existing.get(key, {}).get("first_seen", today_str)
+        updated[key] = {
+            "owner":      owner,
+            "team":       str(row.get("Team",     "")).strip(),
+            "due_date":   str(row.get("Due_Date",  "")).strip(),
+            "notes":      str(row.get("Notes",     "")).strip(),
+            "status":     str(row.get("Status",    "")).strip(),
+            "days_open":  int(row.get("Days_Open", 0)),
+            "first_seen": prev_first_seen,
+            "last_seen":  today_str,
+        }
+
+    try:
+        tmp = open_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(updated, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, open_path)
+    except Exception:
+        pass
+
+
+def build_assignments_sheet(enriched_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Builds the Assignments sheet DataFrame for Excel export.
+    Columns: Material | Plant | Field | Error | Owner | Team |
+             Status | Days_Open | Due_Date | Notes
+    Sorted: Overdue first, then Open, then New, then Unassigned.
+    """
+    cols = ["Material", "Plant", "Field", "Error",
+            "Owner", "Team", "Status", "Days_Open", "Due_Date", "Notes"]
+
+    present = [c for c in cols if c in enriched_df.columns]
+    df = enriched_df[present].copy()
+
+    # Add missing cols as empty
+    for c in cols:
+        if c not in df.columns:
+            df[c] = ""
+
+    status_order = {"Overdue": 0, "Open": 1, "New": 2, "Unassigned": 3}
+    df["_sort"] = df["Status"].map(status_order).fillna(9)
+    df = df.sort_values(["_sort", "Days_Open"], ascending=[True, False]).drop(columns=["_sort"])
+
+    return df[cols].reset_index(drop=True)
+
+
+def style_assignments_sheet(ws, df: pd.DataFrame) -> None:
+    """
+    Applies colour-coding to the Assignments sheet in an openpyxl workbook.
+    Overdue = red, Open = orange, New = blue, Unassigned = grey.
+    """
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    STATUS_FILLS = {
+        "Overdue":    PatternFill(start_color="FFD7D7", fill_type="solid"),
+        "Open":       PatternFill(start_color="FFE5B4", fill_type="solid"),
+        "New":        PatternFill(start_color="DBEAFE", fill_type="solid"),
+        "Unassigned": PatternFill(start_color="F3F4F6", fill_type="solid"),
+    }
+    header_fill  = PatternFill(start_color="1F4E79", fill_type="solid")
+    header_font  = Font(bold=True, color="FFFFFF")
+    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin  = Side(style="thin", color="B8CCE4")
+    bdr   = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    ws.freeze_panes = "A2"
+    ws.row_dimensions[1].height = 26
+
+    # Header
+    for cell in ws[1]:
+        cell.fill      = header_fill
+        cell.font      = header_font
+        cell.alignment = header_align
+        cell.border    = bdr
+
+    # Find Status column index
+    status_col = next(
+        (i for i, cell in enumerate(ws[1], start=1) if str(cell.value) == "Status"),
+        None
+    )
+
+    for r_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
+        status_val = ""
+        if status_col:
+            status_val = str(ws.cell(row=r_idx, column=status_col).value or "")
+        fill = STATUS_FILLS.get(status_val, PatternFill())
+        for cell in row:
+            cell.border = bdr
+            if fill:
+                cell.fill = fill
+
+    # Auto-width
+    for col_idx, col in enumerate(ws.columns, start=1):
+        max_len = max((len(str(cell.value or "")) for cell in col), default=8)
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 3, 50)

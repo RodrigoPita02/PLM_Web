@@ -12,6 +12,7 @@ Design:
 """
 
 from __future__ import annotations
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -128,7 +129,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
             fig.update_traces(textposition='outside', marker_color=colors)
             fig = style_plotly(fig, height=480)
             fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(top_fields['Field'], top_fields['Errors'], color="#1f77b4")
@@ -150,7 +151,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
                          title="Errors by Plant", text='Errors', color='Plant')
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_plant['Plant'], by_plant['Errors'], color="#ff7f0e")
@@ -173,7 +174,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
             fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_mat['Material'], by_mat['Errors'], color="#2ca02c")
@@ -203,7 +204,7 @@ def render_sap_run_charts(errors_df: pd.DataFrame) -> None:
                          text='Materials Missing', color='View')
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_view['View'], by_view['Materials Missing'], color="#d62728")
@@ -239,7 +240,7 @@ def render_sap_history_charts(logs: list[dict]) -> None:
         fig = px.line(dsorted, x='ts', y='total_errors', color='plant_filter',
                       markers=True, title="Total Errors over time (by plant filter)")
         fig = style_plotly(fig, height=480)
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     else:
         fig, ax = plt.subplots(figsize=(8, 4))
         for plant, grp in dsorted.groupby('plant_filter'):
@@ -333,7 +334,7 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
         if PLOTLY_AVAILABLE:
             fig = px.histogram(df_all, x='Aging', color='Plant', nbins=30, title="Aging Distribution (days)")
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             for plant, grp in df_all.groupby('Plant'):
@@ -350,7 +351,7 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
             fig = px.bar(by_status, x='Approval Status', y='count', color='Plant', barmode='group',
                          title="Approval Status Count")
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             for plant, grp in by_status.groupby('Plant'):
@@ -374,7 +375,7 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
             fig = px.bar(by_cat, x='Category', y='count', color='Plant', barmode='group',
                          title="Activities Checked by Category (X)")
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             for plant, grp in by_cat.groupby('Plant'):
@@ -407,7 +408,7 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
                          color_discrete_map={'With TLN': '#00A6A6', 'Without TLN': '#D9D9D9'})
             fig.update_traces(texttemplate='%{y}', textposition='inside')
             fig = style_plotly(fig, height=380)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(6, 4))
             for row in tln_df.itertuples():
@@ -438,7 +439,7 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
                 fig.update_traces(textposition='outside')
                 fig = style_plotly(fig, height=420)
                 fig.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
             else:
                 fig, ax = plt.subplots(figsize=(10, 4))
                 ax.bar(top_aging['Trigger ID'], top_aging['Aging (days)'], color='#FF7200')
@@ -478,7 +479,7 @@ def render_atl_history_charts(logs: list[dict]) -> None:
         fig = px.line(dsorted, x='ts', y=['PT01_rows', 'PT02_rows'],
                       markers=True, title="Lines by Plant over Time")
         fig = style_plotly(fig, height=400)
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     else:
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.plot(dsorted['ts'], dsorted['PT01_rows'], marker='o', label='PT01')
@@ -496,7 +497,7 @@ def render_atl_history_charts(logs: list[dict]) -> None:
             fig = px.line(dsorted, x='ts', y=['PT01_with_TLN', 'PT02_with_TLN'],
                           markers=True, title="CNs with Timing Letter Number — over Time")
             fig = style_plotly(fig, height=380)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.plot(dsorted['ts'], dsorted['PT01_with_TLN'], marker='o', label='PT01 TLN')
@@ -549,7 +550,7 @@ def render_progress_charts(diff_dfs: dict[str, pd.DataFrame]) -> None:
                      title="Errors — New Errors vs Resolved vs Changed")
         fig.update_traces(textposition='outside')
         fig = style_plotly(fig, height=480)
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     else:
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.bar(df_bars["Type"], df_bars["Amount"], color="#9467bd")
@@ -571,7 +572,7 @@ def render_progress_charts(diff_dfs: dict[str, pd.DataFrame]) -> None:
                          title="Lost Views by Code")
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_view['View'], by_view['Amount'], color="#8c564b")
@@ -595,7 +596,7 @@ def render_progress_charts(diff_dfs: dict[str, pd.DataFrame]) -> None:
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=440)
             fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_field['Field'], by_field['New Errors'], color="#5e3a8c")
@@ -621,7 +622,7 @@ def render_progress_charts(diff_dfs: dict[str, pd.DataFrame]) -> None:
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=440)
             fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_field_r['Field'], by_field_r['Resolved Errors'], color="#00A6A6")
@@ -681,7 +682,7 @@ def render_mrp_run_charts(errors_df: pd.DataFrame) -> None:
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
             fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(top_fields['Field'], top_fields['Errors'], color="#1f77b4")
@@ -703,7 +704,7 @@ def render_mrp_run_charts(errors_df: pd.DataFrame) -> None:
                          title="Errors by Plant (MRP)", text='Errors', color='Plant')
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_plant['Plant'], by_plant['Errors'], color="#ff7f0e")
@@ -726,7 +727,7 @@ def render_mrp_run_charts(errors_df: pd.DataFrame) -> None:
             fig.update_traces(textposition='outside')
             fig = style_plotly(fig, height=480)
             fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.bar(by_mat['Material'], by_mat['Errors'], color="#2ca02c")
@@ -762,7 +763,7 @@ def render_mrp_history_charts(logs: list[dict]) -> None:
         fig = px.line(dsorted, x='ts', y='total_errors', color='plant_filter',
                       markers=True, title="Total Errors over time (MRP)")
         fig = style_plotly(fig, height=480)
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     else:
         fig, ax = plt.subplots(figsize=(8, 4))
         for plant, grp in dsorted.groupby('plant_filter'):
@@ -1073,11 +1074,33 @@ def render_evolution_dashboard():
 
     run_date = datetime.now().strftime("%d %b %Y, %H:%M")
 
+    # ── Assignment overdue badge for banner ───────────────────────────────────
+    _overdue_badge = ""
+    try:
+        import json as _json
+        _open_path = os.path.join(".history", "assignments", "open_items.json")
+        if os.path.exists(_open_path):
+            with open(_open_path, encoding="utf-8") as _f:
+                _items = _json.load(_f)
+            _today = pd.Timestamp.today().normalize()
+            _overdue_n = sum(
+                1 for item in _items.values()
+                if item.get("due_date") and _today > pd.to_datetime(item["due_date"])
+            )
+            if _overdue_n > 0:
+                _overdue_badge = (
+                    f'&nbsp;<span class="badge badge-red">'
+                    f'🔴 {_overdue_n} assignment{"s" if _overdue_n > 1 else ""} overdue'
+                    f'</span>'
+                )
+    except Exception:
+        pass
+
     # ── A) Banner ─────────────────────────────────────────────────────────────
     st.markdown(f"""
     <div class="exec-banner">
         <h1>📈 Validation Hub — Evolution Dashboard
-            <span class="badge {overall[1]}">{overall[0]}</span>
+            <span class="badge {overall[1]}">{overall[0]}</span>{_overdue_badge}
         </h1>
         <p class="subtitle">
             Generated {run_date} &nbsp;·&nbsp;
@@ -1371,7 +1394,7 @@ def render_evolution_dashboard():
                     font=dict(color=CLR["text_main"], size=10)
                 )
                 spark.update_xaxes(visible=False); spark.update_yaxes(visible=False)
-                st.plotly_chart(spark, width='stretch', config={"displayModeBar":False})
+                st.plotly_chart(spark, use_container_width=True, config={"displayModeBar":False})
                 delta_color = CLR["green"] if good else CLR["red"]
                 st.markdown(
                     f'<div style="text-align:center">' +
@@ -1475,7 +1498,7 @@ def render_evolution_dashboard():
             plot_bgcolor=CLR["bg_panel"],
             font=dict(family="Inter, Segoe UI, sans-serif", size=12, color=CLR["text_main"])
         )
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     else:
         fig, ax_l = plt.subplots(figsize=(10,5))
         ax_r = ax_l.twinx() if use_dual else None
@@ -1649,7 +1672,7 @@ def render_evolution_dashboard():
             )
             spark_t.update_xaxes(tickangle=-45, showgrid=False, color=CLR["text_muted"])
             spark_t.update_yaxes(showgrid=True, gridcolor=CLR["grid"], color=CLR["text_muted"])
-            st.plotly_chart(spark_t, width='stretch', config={"displayModeBar": False})
+            st.plotly_chart(spark_t, use_container_width=True, config={"displayModeBar": False})
         else:
             md_html(
                 f'<div class="insight-box insight-neutral">'
@@ -1753,7 +1776,7 @@ def render_evolution_dashboard():
             )
             fig_a.update_xaxes(tickangle=-45, showgrid=True, gridcolor=CLR["grid"], color=CLR["text_muted"])
             fig_a.update_yaxes(showgrid=True, gridcolor=CLR["grid"], color=CLR["text_muted"])
-            st.plotly_chart(fig_a, width='stretch')
+            st.plotly_chart(fig_a, use_container_width=True)
         else:
             st.line_chart(src_series.set_index("pretty_period")["value"])
 
@@ -1818,3 +1841,272 @@ def render_evolution_dashboard():
         st.markdown(f'<div class="insight-box {cls}">{text}</div>', unsafe_allow_html=True)
     if not insights:
         st.caption("Not enough data to generate insights.")
+
+    # ── I) Assignment Health ──────────────────────────────────────────────────
+    _render_assignment_health(CLR, PLOTLY_OK)
+
+# =============================================================================
+# ASSIGNMENT HEALTH PANEL — called from render_evolution_dashboard
+# =============================================================================
+
+def _render_assignment_health(CLR: dict, PLOTLY_OK: bool) -> None:
+    """
+    Renders the 📋 Assignment Health section inside the Evolution Dashboard.
+    Reads from .history/assignments/ — no additional inputs required.
+    """
+    import os, json
+    import pandas as pd
+    import streamlit as st
+
+    if PLOTLY_OK:
+        try:
+            import plotly.graph_objects as go
+        except Exception:
+            PLOTLY_OK = False
+
+    open_path   = os.path.join(".history", "assignments", "open_items.json")
+    master_path = os.path.join(".history", "assignments", "master.json")
+
+    if not os.path.exists(open_path) and not os.path.exists(master_path):
+        return  # No assignment data yet — silently skip
+
+    st.markdown('<div class="section-header">📋 Assignment Health</div>',
+                unsafe_allow_html=True)
+
+    # ── Load data ─────────────────────────────────────────────────────────────
+    open_items: dict = {}
+    if os.path.exists(open_path):
+        try:
+            with open(open_path, encoding="utf-8") as f:
+                open_items = json.load(f)
+        except Exception:
+            open_items = {}
+
+    master: dict = {"field_assignments": {}, "plant_overrides": {}}
+    if os.path.exists(master_path):
+        try:
+            with open(master_path, encoding="utf-8") as f:
+                master = json.load(f)
+        except Exception:
+            pass
+
+    if not open_items and not master.get("field_assignments"):
+        st.markdown(
+            '<div class="insight-box insight-neutral">'
+            '📋 No assignments yet. Run a SAP validation and assign fields in '
+            '<strong>Step 4 → Assign &amp; Track</strong> to start tracking here.'
+            '</div>',
+            unsafe_allow_html=True
+        )
+        return
+
+    # ── Build DataFrame ───────────────────────────────────────────────────────
+    today = pd.Timestamp.today().normalize()
+    rows  = []
+
+    for key, item in open_items.items():
+        parts    = key.split("||")
+        material = parts[0] if len(parts) > 0 else ""
+        plant    = parts[1] if len(parts) > 1 else ""
+        field    = parts[2] if len(parts) > 2 else ""
+        owner    = item.get("owner", "")
+        status   = item.get("status", "Open")
+        days_open = int(item.get("days_open", 0))
+        due_str  = item.get("due_date", "")
+
+        if due_str:
+            try:
+                due_dt = pd.to_datetime(due_str)
+                status = "Overdue" if today > due_dt else "Open"
+            except Exception:
+                pass
+
+        rows.append({
+            "Field":     field,
+            "Owner":     owner if owner else "Unassigned",
+            "Team":      item.get("team", ""),
+            "Status":    status,
+            "Days_Open": days_open,
+            "Due_Date":  due_str,
+        })
+
+    # Add assigned fields from master that have no open items (clean)
+    known_fields = {r["Field"] for r in rows}
+    for field, info in master.get("field_assignments", {}).items():
+        if field not in known_fields:
+            rows.append({
+                "Field": field,
+                "Owner": info.get("owner", "") or "Unassigned",
+                "Team":  info.get("team", ""),
+                "Status": "Clean", "Days_Open": 0, "Due_Date": "",
+            })
+
+    if not rows:
+        st.caption("No assignment data to display.")
+        return
+
+    df = pd.DataFrame(rows)
+
+    # ── KPI Cards ─────────────────────────────────────────────────────────────
+    total      = len(df)
+    assigned   = int((df["Owner"] != "Unassigned").sum())
+    unassigned = total - assigned
+    overdue    = int((df["Status"] == "Overdue").sum())
+    avg_days   = round(df[df["Days_Open"] > 0]["Days_Open"].mean(), 1) \
+                 if (df["Days_Open"] > 0).any() else 0
+
+    def _kpi(label, value, sub="", accent="#FF7200"):
+        return (f'<div class="kpi-card" style="border-left:3px solid {accent}">'
+                f'<div class="kpi-label">{label}</div>'
+                f'<div class="kpi-value">{value}</div>'
+                f'<div class="kpi-sub">{sub}</div></div>')
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    with k1:
+        st.markdown(_kpi("Total Items", f"{total:,}", "in tracking",
+                         CLR["sap"]), unsafe_allow_html=True)
+    with k2:
+        pct_str = f"{assigned/total*100:.0f}% of total" if total else "—"
+        st.markdown(_kpi("Assigned", f"{assigned:,}", pct_str,
+                         CLR["plm02"]), unsafe_allow_html=True)
+    with k3:
+        st.markdown(_kpi("Unassigned", f"{unassigned:,}", "need owner",
+                         CLR["cleanups"]), unsafe_allow_html=True)
+    with k4:
+        acc = CLR["red"] if overdue > 0 else CLR["green"]
+        st.markdown(_kpi("Overdue", f"{overdue:,}", "past due date",
+                         acc), unsafe_allow_html=True)
+    with k5:
+        st.markdown(_kpi("Avg Days Open", f"{avg_days}", "assigned items",
+                         CLR["plm01"]), unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Charts ────────────────────────────────────────────────────────────────
+    ch1, ch2 = st.columns(2)
+
+    STATUS_COLORS = {
+        "Overdue": CLR["red"],
+        "Open":    CLR["amber"],
+        "New":     CLR["plm01"],
+        "Clean":   CLR["green"],
+    }
+
+    # Chart A: Errors by Owner stacked by Status
+    with ch1:
+        _owner_df = (
+            df[df["Owner"] != "Unassigned"]
+            .groupby(["Owner", "Status"])
+            .size()
+            .reset_index(name="Count")
+        )
+        if not _owner_df.empty and PLOTLY_OK:
+            fig = go.Figure()
+            for status in ["Overdue", "Open", "New", "Clean"]:
+                sub = _owner_df[_owner_df["Status"] == status]
+                if sub.empty:
+                    continue
+                fig.add_trace(go.Bar(
+                    name=status, x=sub["Owner"], y=sub["Count"],
+                    marker_color=STATUS_COLORS.get(status, "#888"),
+                ))
+            fig.update_layout(
+                barmode="stack",
+                title=dict(text="Errors by Owner",
+                           font=dict(size=13, color=CLR["text_main"]),
+                           x=0.02, xanchor="left"),
+                height=320,
+                margin=dict(l=20, r=20, t=45, b=60),
+                paper_bgcolor=CLR["bg_panel"],
+                plot_bgcolor=CLR["bg_panel"],
+                font=dict(size=11, color=CLR["text_main"]),
+                legend=dict(orientation="h", y=-0.28, x=0.5, xanchor="center",
+                            bgcolor=CLR["bg_panel"],
+                            font=dict(color=CLR["text_main"])),
+            )
+            fig.update_xaxes(tickangle=-30, color=CLR["text_muted"], showgrid=False)
+            fig.update_yaxes(color=CLR["text_muted"], gridcolor=CLR["grid"])
+            st.plotly_chart(fig, use_container_width=True,
+                            config={"displayModeBar": False})
+        elif not _owner_df.empty:
+            st.dataframe(_owner_df, use_container_width=True)
+
+    # Chart B: Overdue by Field
+    with ch2:
+        _overdue_df = (
+            df[df["Status"] == "Overdue"]
+            .groupby("Field").size()
+            .reset_index(name="Overdue")
+            .sort_values("Overdue", ascending=False)
+            .head(12)
+        )
+        if not _overdue_df.empty and PLOTLY_OK:
+            fig2 = go.Figure(go.Bar(
+                x=_overdue_df["Field"], y=_overdue_df["Overdue"],
+                marker_color=CLR["red"],
+                text=_overdue_df["Overdue"], textposition="outside",
+            ))
+            fig2.update_layout(
+                title=dict(text="Overdue Items by Field",
+                           font=dict(size=13, color=CLR["text_main"]),
+                           x=0.02, xanchor="left"),
+                height=320,
+                margin=dict(l=20, r=20, t=45, b=80),
+                paper_bgcolor=CLR["bg_panel"],
+                plot_bgcolor=CLR["bg_panel"],
+                font=dict(size=11, color=CLR["text_main"]),
+                showlegend=False,
+            )
+            fig2.update_xaxes(tickangle=-35, color=CLR["text_muted"], showgrid=False)
+            fig2.update_yaxes(color=CLR["text_muted"], gridcolor=CLR["grid"])
+            st.plotly_chart(fig2, use_container_width=True,
+                            config={"displayModeBar": False})
+        else:
+            st.markdown(
+                '<div class="insight-box insight-good" '
+                'style="padding:30px 20px;text-align:center">'
+                '✅ No overdue items — all assignments within their deadlines.</div>',
+                unsafe_allow_html=True
+            )
+
+    # ── Owner detail table ────────────────────────────────────────────────────
+    _owner_detail = (
+        df[df["Owner"] != "Unassigned"]
+        .groupby(["Owner", "Team"])
+        .agg(
+            Fields       =("Field",     lambda x: len(x.unique())),
+            Total_Items  =("Field",     "count"),
+            Overdue      =("Status",    lambda x: (x == "Overdue").sum()),
+            Avg_Days_Open=("Days_Open", lambda x: round(x[x > 0].mean(), 1)
+                                        if (x > 0).any() else 0),
+        )
+        .reset_index()
+        .sort_values(["Overdue", "Total_Items"], ascending=[False, False])
+    )
+
+    if not _owner_detail.empty:
+        st.markdown('<div class="section-header" style="font-size:0.7rem">Owner Detail</div>',
+                    unsafe_allow_html=True)
+        try:
+            def _style_row(row):
+                if row["Overdue"] > 0:
+                    return ["background-color: rgba(192,0,0,0.12)"] * len(row)
+                return [""] * len(row)
+            st.dataframe(
+                _owner_detail.style.apply(_style_row, axis=1),
+                use_container_width=True, hide_index=True,
+            )
+        except Exception:
+            st.dataframe(_owner_detail, use_container_width=True, hide_index=True)
+
+    # ── Unassigned warning ────────────────────────────────────────────────────
+    _unassigned = sorted(df[df["Owner"] == "Unassigned"]["Field"].unique().tolist())
+    if _unassigned:
+        _ulist = ", ".join(f"<strong>{f}</strong>" for f in _unassigned[:8])
+        _more  = f" and {len(_unassigned)-8} more" if len(_unassigned) > 8 else ""
+        st.markdown(
+            f'<div class="insight-box insight-warn">⚠️ <strong>{len(_unassigned)} fields</strong> '
+            f'have no owner: {_ulist}{_more}. '
+            f'Go to <strong>SAP Validation → Step 4 → Assign &amp; Track</strong>.</div>',
+            unsafe_allow_html=True
+        )

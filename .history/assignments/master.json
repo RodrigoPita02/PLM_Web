@@ -1,0 +1,31 @@
+{
+  "field_assignments": {
+    "Per.Lot Sz.Plng Cal.": {
+      "owner": "David",
+      "team": "MRP Team",
+      "since": "2026-03-20"
+    },
+    "Old material number": {
+      "owner": "Silvia Albino",
+      "team": "MDS",
+      "since": "2026-03-20"
+    },
+    "Net Weight": {
+      "owner": "Filipa Loja",
+      "team": "ECN",
+      "since": "2026-03-20"
+    },
+    "Gross Weight": {
+      "owner": "Filipa Loja",
+      "team": "ECN",
+      "since": "2026-03-20"
+    },
+    "Lot Sizing Procedure": {
+      "owner": "Rodrigo",
+      "team": "MDS",
+      "since": "2026-03-20"
+    }
+  },
+  "plant_overrides": {},
+  "_saved_at": "2026-03-20T13:18:31"
+}
