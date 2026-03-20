@@ -12,6 +12,9 @@ import numpy as np
 from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.chart import BarChart, PieChart, Reference
+from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.series import DataPoint
 
 from utils.fast_loader import load_xlsx_fast
 from rolesviews_data import get_rolesviews_bytesio
@@ -3213,17 +3216,11 @@ def run_full_validation(
     _cb(100, "Generating final Excel report...")
     file_bytes = io.BytesIO()
 
-    # Sort Adjusted Summary + add % of Total before writing
+    # Sort Adjusted Summary before writing (% of Total removed per user request)
     if not contagem_final_df.empty and 'Adjusted Nº of Errors' in contagem_final_df.columns:
         contagem_final_df = contagem_final_df.sort_values(
             'Adjusted Nº of Errors', ascending=False
         ).reset_index(drop=True)
-        total_errs = contagem_final_df['Adjusted Nº of Errors'].sum()
-        if total_errs > 0:
-            contagem_final_df['% of Total'] = (
-                (contagem_final_df['Adjusted Nº of Errors'] / total_errs * 100)
-                .round(1).astype(str) + '%'
-            )
 
     with pd.ExcelWriter(file_bytes, engine="openpyxl") as writer:
         pd.DataFrame().to_excel(writer, sheet_name="Executive Summary", index=False)
@@ -3366,12 +3363,15 @@ def _style_sap_report(
 
         total_errors    = len(errors_df) if errors_df is not None and not errors_df.empty else 0
         total_materials = int(errors_df['Material'].nunique()) if (errors_df is not None and not errors_df.empty and 'Material' in errors_df.columns) else 0
-        total_fields    = int(errors_df['Field'].nunique())    if (errors_df is not None and not errors_df.empty and 'Field' in errors_df.columns) else 0
         mv_cnt = int((errors_df['Error_Type'] == 'Missing View').sum()) if (errors_df is not None and not errors_df.empty and 'Error_Type' in errors_df.columns) else 0
         fe_cnt = int((errors_df['Error_Type'] == 'Field Error').sum())  if (errors_df is not None and not errors_df.empty and 'Error_Type' in errors_df.columns) else 0
+        # FIX: count distinct fields only from Field Error rows (views_missing_output_df)
+        # errors_df includes Missing View errors which inflate the count vs Adjusted Summary
+        _fe_df = errors_df[errors_df['Error_Type'] == 'Field Error'] if (errors_df is not None and not errors_df.empty and 'Error_Type' in errors_df.columns) else errors_df
+        total_fields = int(_fe_df['Field'].nunique()) if (_fe_df is not None and not _fe_df.empty and 'Field' in _fe_df.columns) else 0
 
         scope_label = f"Plant: {plant_filter}" if plant_filter else "Scope: All Plants"
-        run_date    = datetime.now().strftime("%Y-%m-%d %H:%M")
+        run_date    = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
 
         title_font  = Font(bold=True, size=16, color="FFFFFF")
         title_fill  = _fill(CLR["header_blue"])
@@ -3401,12 +3401,12 @@ def _style_sap_report(
         s4.alignment = Alignment(horizontal="left", vertical="center")
         ws_exec.row_dimensions[4].height = 22
 
+        # KPIs: removed Total Errors (redundant with Field Errors) and
+        # Justified by Missing View. Field Errors is the actionable number.
         kpi_rows = [
-            ("Total Errors",              total_errors,    "FCE4D6"),
-            ("Materials with Errors",     total_materials, "FCE4D6"),
-            ("Distinct Fields with Error",total_fields,    "DEEAF1"),
-            ("Field Errors",              fe_cnt,          "DEEAF1"),
-            ("Justified by Missing View", mv_cnt,          "FFF2CC"),
+            ("Field Errors", fe_cnt,                        "FCE4D6"),
+            ("Materials with Errors",     total_materials,  "FCE4D6"),
+            ("Distinct Fields with Error",total_fields,     "DEEAF1"),
         ]
         for i, (label, value, hex_fill) in enumerate(kpi_rows, start=5):
             ws_exec.row_dimensions[i].height = 22
@@ -3418,18 +3418,22 @@ def _style_sap_report(
             vc.alignment = Alignment(horizontal="center", vertical="center")
 
         row_cursor = len(kpi_rows) + 6
-        ws_exec.merge_cells(f"A{row_cursor}:F{row_cursor}")
+
+        # ── TOP 10 FIELDS table (no % column) ────────────────────────────────
+        ws_exec.merge_cells(f"A{row_cursor}:C{row_cursor}")
         sh = ws_exec.cell(row=row_cursor, column=1, value="TOP 10 FIELDS WITH MOST ERRORS")
         sh.font = sec_font; sh.fill = sec_fill
         sh.alignment = Alignment(horizontal="left", vertical="center")
         ws_exec.row_dimensions[row_cursor].height = 22
         row_cursor += 1
 
+        top_fields_data = None
+        fields_table_header_row = row_cursor
         if errors_df is not None and not errors_df.empty and 'Field' in errors_df.columns:
             top_fields = errors_df['Field'].value_counts().head(10).reset_index()
             top_fields.columns = ['Field', 'Count']
-            tot_f = top_fields['Count'].sum()
-            for ci, hdr in enumerate(['Rank', 'Field', 'Error Count', '% of shown'], start=1):
+            top_fields_data = top_fields
+            for ci, hdr in enumerate(['Rank', 'Field', 'Error Count'], start=1):
                 hc = ws_exec.cell(row=row_cursor, column=ci, value=hdr)
                 hc.font = Font(bold=True, color=CLR["header_blue"])
                 hc.fill = _fill(CLR["header_fill"]); hc.border = nb
@@ -3437,26 +3441,113 @@ def _style_sap_report(
             ws_exec.row_dimensions[row_cursor].height = 20
             row_cursor += 1
             for rank, (_, tf) in enumerate(top_fields.iterrows(), start=1):
-                pct = f"{tf['Count']/tot_f*100:.1f}%" if tot_f else "—"
                 rf = _fill("F5F9FF") if rank % 2 == 0 else _fill("FFFFFF")
-                for ci, val in enumerate([rank, tf['Field'], tf['Count'], pct], start=1):
+                for ci, val in enumerate([rank, tf['Field'], tf['Count']], start=1):
                     rc = ws_exec.cell(row=row_cursor, column=ci, value=val)
                     rc.fill = rf; rc.border = nb
-                    rc.alignment = Alignment(horizontal="center" if ci != 2 else "left", vertical="center")
+                    rc.alignment = Alignment(
+                        horizontal="center" if ci != 2 else "left",
+                        vertical="center"
+                    )
                 row_cursor += 1
 
-        row_cursor += 1
-        ws_exec.merge_cells(f"A{row_cursor}:F{row_cursor}")
+        # ── LINE CHART: Weekly Error Evolution (from 9 Feb) ──────────────────
+        # Build weekly data from the SAP log history and write it to a hidden
+        # area of the sheet (column H onwards), then chart it.
+        from sap_validation_engine import list_run_logs as _lrl
+        _sap_logs = _lrl("sap", limit=500) or []
+
+        # Filter logs from 9 Feb onwards and group by ISO week
+        _weekly: dict[str, int] = {}
+        for _log in _sap_logs:
+            try:
+                _ts = pd.to_datetime(_log.get("timestamp", ""))
+                if _ts < pd.Timestamp("2025-02-09"):
+                    continue
+                _week_key = _ts.strftime("%Y-W%V")  # e.g. "2025-W07"
+                _val = _log.get("metrics", {}).get("total_errors", 0)
+                # Keep the latest run per week
+                if _week_key not in _weekly or _val > _weekly[_week_key]:
+                    _weekly[_week_key] = _val
+            except Exception:
+                continue
+
+        # Sort weeks chronologically
+        _weeks_sorted = sorted(_weekly.keys())
+
+        if _weeks_sorted:
+            # Write data to a hidden sheet — Excel renders charts from hidden
+            # sheets without issues, unlike hidden columns which block rendering
+            _data_sheet_name = "_ChartData"
+            if _data_sheet_name in wb.sheetnames:
+                del wb[_data_sheet_name]
+            _ws_data = wb.create_sheet(_data_sheet_name)
+            _ws_data.sheet_state = "hidden"
+
+            _data_start_row = 1
+            _ws_data.cell(row=_data_start_row, column=1, value="Week")
+            _ws_data.cell(row=_data_start_row, column=2, value="Total Errors")
+            for _ri, _wk in enumerate(_weeks_sorted, start=_data_start_row + 1):
+                _ws_data.cell(row=_ri, column=1, value=_wk)
+                _ws_data.cell(row=_ri, column=2, value=_weekly[_wk])
+            _data_end_row = _data_start_row + len(_weeks_sorted)
+
+            from openpyxl.chart import LineChart
+            _lc = LineChart()
+            _lc.title  = "Weekly Error Evolution (from 9 Feb)"
+            _lc.style  = 10
+            _lc.y_axis.title = "Total Errors"
+            _lc.x_axis.title = "Week"
+            _lc.width  = 18
+            _lc.height = 12
+            _lc.y_axis.numFmt = '0'
+            _lc.x_axis.tickLblPos = "low"
+
+            # Reference the hidden sheet for data
+            _vals_ref = Reference(_ws_data,
+                                   min_col=2, min_row=_data_start_row,
+                                   max_row=_data_end_row)
+            _cats_ref = Reference(_ws_data,
+                                   min_col=1, min_row=_data_start_row + 1,
+                                   max_row=_data_end_row)
+            _lc.add_data(_vals_ref, titles_from_data=True)
+            _lc.set_categories(_cats_ref)
+
+            if _lc.series:
+                _s = _lc.series[0]
+                _s.graphicalProperties.line.solidFill = "2E75B6"
+                _s.graphicalProperties.line.width     = 20000  # 2pt in EMU
+                _s.marker.symbol   = "circle"
+                _s.marker.size     = 6
+                _s.marker.graphicalProperties.solidFill = "2E75B6"
+                _s.marker.graphicalProperties.line.solidFill = "1F4E79"
+
+            # Place chart on Executive Summary sheet
+            _line_anchor = f"E{fields_table_header_row - 1}"
+            ws_exec.add_chart(_lc, _line_anchor)
+
+        row_cursor += 2  # spacing after table + chart area
+
+        # ── ERRORS BY PLANT table (no % column) ──────────────────────────────
+        ws_exec.merge_cells(f"A{row_cursor}:B{row_cursor}")
         bp_h = ws_exec.cell(row=row_cursor, column=1, value="ERRORS BY PLANT")
         bp_h.font = sec_font; bp_h.fill = sec_fill
         bp_h.alignment = Alignment(horizontal="left", vertical="center")
         ws_exec.row_dimensions[row_cursor].height = 22
         row_cursor += 1
 
+        by_plant_data = None
+        plant_table_header_row = row_cursor
         if errors_df is not None and not errors_df.empty and 'Plant' in errors_df.columns:
-            by_plant = (errors_df['Plant'].astype(str).str.strip()
-                        .replace('', 'No Plant').value_counts().reset_index())
+            by_plant = (
+                errors_df['Plant'].astype(str).str.strip()
+                .replace({'': 'General', 'nan': 'General'})
+                .value_counts().reset_index()
+            )
             by_plant.columns = ['Plant', 'Errors']
+            by_plant['Plant'] = by_plant['Plant'].replace('No Plant', 'General')
+            by_plant_data = by_plant
+
             for ci, hdr in enumerate(['Plant', 'Error Count'], start=1):
                 hc = ws_exec.cell(row=row_cursor, column=ci, value=hdr)
                 hc.font = Font(bold=True, color=CLR["header_blue"])
@@ -3472,7 +3563,35 @@ def _style_sap_report(
                     rc.alignment = Alignment(horizontal="center", vertical="center")
                 row_cursor += 1
 
-        for col_letter, width in [("A",35),("B",18),("C",18),("D",14),("E",14),("F",14)]:
+        # ── PIE CHART: Errors by Plant — placed to the right of plant table ──
+        if by_plant_data is not None and len(by_plant_data) > 0:
+            plant_data_min_row = plant_table_header_row + 1
+            plant_data_max_row = plant_data_min_row + len(by_plant_data) - 1
+
+            pie_chart = PieChart()
+            pie_chart.title = "Errors by Plant"
+            pie_chart.style = 10
+            pie_chart.width  = 12
+            pie_chart.height = 10
+
+            pie_data = Reference(ws_exec,
+                                  min_col=2, min_row=plant_table_header_row,
+                                  max_row=plant_data_max_row)
+            pie_cats = Reference(ws_exec,
+                                  min_col=1, min_row=plant_data_min_row,
+                                  max_row=plant_data_max_row)
+            pie_chart.add_data(pie_data, titles_from_data=True)
+            pie_chart.set_categories(pie_cats)
+            pie_chart.dataLabels             = DataLabelList()
+            pie_chart.dataLabels.showPercent  = True
+            pie_chart.dataLabels.showVal      = False
+            pie_chart.dataLabels.showCatName  = False  # category shown in legend
+            pie_chart.dataLabels.showSerName  = False  # removes "Error Count," prefix
+
+            pie_anchor = f"D{plant_table_header_row - 1}"
+            ws_exec.add_chart(pie_chart, pie_anchor)
+
+        for col_letter, width in [("A",38),("B",16),("C",14),("D",12),("E",14),("F",14)]:
             ws_exec.column_dimensions[col_letter].width = width
 
     # ── Adjusted Summary ─────────────────────────────────────────────────────
@@ -3544,62 +3663,26 @@ def _style_sap_report(
             max_len = max((len(str(cell.value)) if cell.value else 0 for cell in col), default=8)
             ws_sum.column_dimensions[_gcl(col_idx)].width = min(max_len + 3, 50)
 
-    # ── Field With Error ─────────────────────────────────────────────────────
+    # ── Field With Error — no row colour coding, clean zebra only ───────────
     if "Field With Error" in wb.sheetnames:
-        ws_fe = wb["Field With Error"]
-        _style_sheet(ws_fe, tab_color=CLR["tab_field_err"], freeze="A2", zebra=False)
-        err_col = next((cell.column for cell in ws_fe[1]
-                        if str(cell.value).strip().lower() == "error"), None)
-        etype_col = next((cell.column for cell in ws_fe[1]
-                          if str(cell.value).strip().lower() == "error_type"), None)
-        for r in range(2, ws_fe.max_row + 1):
-            ev = str(ws_fe.cell(row=r, column=err_col).value).lower()   if err_col   else ""
-            et = str(ws_fe.cell(row=r, column=etype_col).value).lower() if etype_col else ""
-            if "mandatory" in ev or "obrigatório" in ev:
-                rf = _fill(CLR["row_red"])
-            elif "invalid" in ev or "inválido" in ev:
-                rf = _fill(CLR["row_orange"])
-            elif "empty" in ev or "should be" in ev or "missing view" in et:
-                rf = _fill(CLR["row_yellow"])
-            else:
-                rf = _fill(CLR["zebra"]) if r % 2 == 0 else _fill("FFFFFF")
-            for ci in range(1, ws_fe.max_column + 1):
-                ws_fe.cell(row=r, column=ci).fill = rf
+        _style_sheet(wb["Field With Error"], tab_color=None, freeze="A2", zebra=True)
 
-    # ── All Errors ───────────────────────────────────────────────────────────
+    # ── All Errors — no row colour coding, clean zebra only ──────────────────
     if "All Errors" in wb.sheetnames:
-        ws_ae = wb["All Errors"]
-        _style_sheet(ws_ae, tab_color=CLR["tab_all_err"], freeze="A2", zebra=False)
-        etype_col = next((cell.column for cell in ws_ae[1]
-                          if str(cell.value).strip().lower() == "error_type"), None)
-        err_col_ae = next((cell.column for cell in ws_ae[1]
-                           if str(cell.value).strip().lower() == "error"), None)
-        for r in range(2, ws_ae.max_row + 1):
-            et = str(ws_ae.cell(row=r, column=etype_col).value).strip()  if etype_col  else ""
-            ev = str(ws_ae.cell(row=r, column=err_col_ae).value).lower() if err_col_ae else ""
-            if et == "Missing View":
-                rf = _fill(CLR["row_yellow"])
-            elif "mandatory" in ev:
-                rf = _fill(CLR["row_red"])
-            elif "invalid" in ev:
-                rf = _fill(CLR["row_orange"])
-            else:
-                rf = _fill(CLR["zebra"]) if r % 2 == 0 else _fill("FFFFFF")
-            for ci in range(1, ws_ae.max_column + 1):
-                ws_ae.cell(row=r, column=ci).fill = rf
+        _style_sheet(wb["All Errors"], tab_color=None, freeze="A2", zebra=True)
 
     # ── View is Missing ──────────────────────────────────────────────────────
     if "View is Missing" in wb.sheetnames:
-        _style_sheet(wb["View is Missing"], tab_color=CLR["tab_view_miss"], freeze="A2")
+        _style_sheet(wb["View is Missing"], tab_color=None, freeze="A2")
 
     # ── Missing_* sheets ─────────────────────────────────────────────────────
     for sn in wb.sheetnames:
         if sn.startswith("Missing_"):
-            _style_sheet(wb[sn], tab_color=CLR["tab_missing"], freeze="A2")
+            _style_sheet(wb[sn], tab_color=None, freeze="A2")
 
     # ── Original Data ────────────────────────────────────────────────────────
     if "Original Data" in wb.sheetnames:
-        _style_sheet(wb["Original Data"], tab_color=CLR["tab_original"], freeze="B2")
+        _style_sheet(wb["Original Data"], tab_color=None, freeze="B2")
 
     out = io.BytesIO()
     wb.save(out)
@@ -3689,7 +3772,7 @@ def run_fp_status_validation(mara_file, marc_file, zplm_marc_file,
     merged["Material"] = merged["Material"].astype(str).str.strip()
     merged = merged[~merged["Material"].str.match(r"^\d+$")]
 
-    PSMS_NAME = {"40": "NewProd", "45": "Prod", "50": "Balout", "55": "Service"}
+    PSMS_NAME = {"40": "PreProd", "45": "Prod", "50": "Balout", "55": "Service"}
     merged["PSMS Name"] = merged["PSMS"].map(PSMS_NAME)
 
     # Keep only families with 2+ members

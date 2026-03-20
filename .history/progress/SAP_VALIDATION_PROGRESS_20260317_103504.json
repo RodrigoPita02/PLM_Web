@@ -1,0 +1,16 @@
+{
+  "run_type": "SAP_VALIDATION_PROGRESS",
+  "timestamp": "2026-03-17T10:35:04",
+  "user": "RPITA",
+  "files": {
+    "current": "20260317_103344_SAP_Validation_ALL.xlsx",
+    "previous": "20260316_132952_SAP_Validation_ALL.xlsx"
+  },
+  "metrics": {
+    "new_errors": 262,
+    "resolved_errors": 357,
+    "changed_errors": 0,
+    "new_materials": 15,
+    "views_lost": 0
+  }
+}

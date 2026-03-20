@@ -1,0 +1,22 @@
+{
+  "run_type": "DATA_CLEANUPS",
+  "timestamp": "2026-03-17T14:50:32",
+  "user": "RPITA",
+  "plant_filter": "ALL",
+  "metrics": {
+    "materials": 323,
+    "plants": 2,
+    "outdated": 19,
+    "correct": 142,
+    "need_verify": 0
+  },
+  "files": {
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "zplm_marc": "ZPLM MARC.xlsx",
+    "zplm_mara": "ZPLM MARA.xlsx",
+    "mbew": "MBEW.xlsx",
+    "ekpo": "EKPO.xlsx",
+    "mard": "MARD.xlsx"
+  }
+}

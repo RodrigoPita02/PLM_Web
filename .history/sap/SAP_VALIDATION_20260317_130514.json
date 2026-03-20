@@ -1,0 +1,40 @@
+{
+  "run_type": "SAP_VALIDATION",
+  "timestamp": "2026-03-17T13:05:14",
+  "user": "RPITA",
+  "plant_filter": "ALL",
+  "metrics": {
+    "total_errors": 7573,
+    "fields_with_error": 19,
+    "materials_with_error": 6571
+  },
+  "files": {
+    "sap": "Item Browse Report.xlsx",
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "mvke": "MVKE.xlsx"
+  },
+  "top_fields": [
+    {
+      "Field": "Per.Lot Sz.Plng Cal.",
+      "Adjusted Nº of Errors": 4738
+    },
+    {
+      "Field": "Batch Management Required Ind.",
+      "Adjusted Nº of Errors": 1132
+    },
+    {
+      "Field": "Repetitive Manufacturing Profile",
+      "Adjusted Nº of Errors": 464
+    },
+    {
+      "Field": "Product Hierarchy",
+      "Adjusted Nº of Errors": 299
+    },
+    {
+      "Field": "Issue Storage Location",
+      "Adjusted Nº of Errors": 226
+    }
+  ],
+  "report_path": "C:\\Users\\RPITA\\OneDrive - Visteon\\Desktop\\Rodrigo\\PLM_WebV2\\reports\\sap\\2026-03\\20260317_130514_SAP_Validation_ALL.xlsx"
+}
