@@ -1369,29 +1369,71 @@ def validar_source_list_required(df, resultados):
 def validar_storage_location(df, resultados):
     """
     Issue Storage Location validation:
-    - 'P105' -> only PT01
-    - 'P205' / 'P220' -> only PT02
+
+    PT01:
+      - HALB / ROH -> must be 'P105'
+      - FERT       -> must be 'P120'
+
+    PT02:
+      - Any Material Type -> must be 'P205' or 'P220'
     """
-    if 'Plant' not in df.columns or 'Issue Storage Location' not in df.columns:
-        print("⚠️ Columns 'Plant' or 'Issue Storage Location' not found.")
+    required = {'Plant', 'Issue Storage Location', 'Material Type'}
+    if not required.issubset(df.columns):
+        missing = sorted(required - set(df.columns))
+        print(f"⚠️ Missing columns for Issue Storage Location validation: {missing}")
         return
 
     for idx, row in df.iterrows():
         erros = []
-        plant = str(row['Plant']).strip()
-        val   = str(row['Issue Storage Location']).strip()
-        if pd.isna(row['Issue Storage Location']) or val == '':
+        plant = str(row['Plant']).strip().upper()
+        mt    = str(row['Material Type']).strip().upper()
+        raw   = row['Issue Storage Location']
+        val   = '' if pd.isna(raw) else str(raw).strip()
+        material = str(row.get('Material', '')).strip()
+
+        if val == '':
             erros.append('Mandatory field blank')
-        else:
-            if val == 'P105' and plant != 'PT01':
-                erros.append(f"Value 'P105' only allowed for Plant = PT01 (Current: '{plant}')")
-            elif val in ['P205', 'P220'] and plant != 'PT02':
-                erros.append(f"Value '{val}' only allowed for Plant = PT02 (Current: '{plant}')")
+        elif plant == 'PT01':
+            if mt in ('HALB', 'ROH'):
+                if val != 'P105':
+                    erros.append(
+                        f"For PT01 + {mt}, Issue Storage Location must be 'P105' "
+                        f"(Current: '{val}')"
+                    )
+            elif mt == 'FERT':
+                if val != 'P120':
+                    erros.append(
+                        f"For PT01 + FERT, Issue Storage Location must be 'P120' "
+                        f"(Current: '{val}')"
+                    )
+        elif plant == 'PT02':
+            if val not in ('P205', 'P220'):
+                erros.append(
+                    f"For PT02, Issue Storage Location must be 'P205' or 'P220' "
+                    f"(Current: '{val}')"
+                )
+            elif val == 'P220':
+                # P220 only allowed for PSMS = 25 or 75
+                psms_raw = row.get('Plant Specific Material Status', '')
+                psms = '' if pd.isna(psms_raw) else str(psms_raw).strip()
+                try:
+                    psms = str(int(float(psms)))
+                except Exception:
+                    pass
+                if psms not in ('25', '75'):
+                    erros.append(
+                        f"Value 'P220' only allowed for PT02 when Plant Specific Material Status "
+                        f"is 25 or 75 (Current PSMS: '{psms}')"
+                    )
+
         if erros:
-            resultados.append({'Line': idx + 2, 'Field': 'Issue Storage Location',
-                               'Error': ' | '.join(erros),
-                               'Material': str(row.get('Material', '')).strip(),
-                               'Plant': plant})
+            resultados.append({
+                'Line':     idx + 2,
+                'Field':    'Issue Storage Location',
+                'Error':    ' | '.join(erros),
+                'Material': material,
+                'Plant':    plant,
+            })
 
 
 def validar_valuation_class(df, resultados):
