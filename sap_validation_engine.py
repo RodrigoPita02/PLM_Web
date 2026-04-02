@@ -794,6 +794,58 @@ def validar_material_group(df, resultados):
             })
 
 
+def validar_material_group_appoint(df, resultados):
+    """
+    Informational count: materials (FERT, HALB, ROH) with Material Group = 'APPOINT'.
+    Not an error per se — surfaced in Field With Error and Adjusted Summary
+    so the team is aware of how many materials still carry this value.
+    """
+    if 'Material Group' not in df.columns or 'Material Type' not in df.columns:
+        return
+
+    valid_types = {'FERT', 'HALB', 'ROH'}
+
+    for idx, row in df.iterrows():
+        mt  = str(row.get('Material Type', '')).strip().upper()
+        mg  = str(row.get('Material Group', '')).strip().upper()
+        if mt not in valid_types:
+            continue
+        if mg == 'APPOINT':
+            resultados.append({
+                'Line':     idx + 2,
+                'Field':    'Material Group (APPOINT)',
+                'Error':    f"Material Group = 'APPOINT' (Material Type: {mt})",
+                'Material': str(row.get('Material', '')).strip(),
+                'Plant':    str(row.get('Plant', '')).strip(),
+            })
+
+
+def validar_purchasing_group_dxx(df, resultados):
+    """
+    Informational count: materials (FERT, HALB, ROH) with Purchasing Group = 'DXX'.
+    Not an error per se — surfaced in Field With Error and Adjusted Summary
+    so the team is aware of how many materials still carry this value.
+    """
+    if 'Purchasing Group' not in df.columns or 'Material Type' not in df.columns:
+        return
+
+    valid_types = {'FERT', 'HALB', 'ROH'}
+
+    for idx, row in df.iterrows():
+        mt  = str(row.get('Material Type', '')).strip().upper()
+        pg  = str(row.get('Purchasing Group', '')).strip().upper()
+        if mt not in valid_types:
+            continue
+        if pg == 'DXX':
+            resultados.append({
+                'Line':     idx + 2,
+                'Field':    'Purchasing Group (DXX)',
+                'Error':    f"Purchasing Group = 'DXX' (Material Type: {mt})",
+                'Material': str(row.get('Material', '')).strip(),
+                'Plant':    str(row.get('Plant', '')).strip(),
+            })
+
+
 def validar_period_type(df, resultados):
     """Period Type must be one of: T, P, M, W."""
     if 'Period Type' not in df.columns:
@@ -2504,72 +2556,116 @@ def validar_zplm_mara_vs_mara_existence(zplm_mara_df, mara_df):
 
 
 def validar_marc_vs_zplm_marc_existence(marc_df, zplm_marc_df, mara_df):
-    """FERT/HALB/ROH (Material, Plant) in MARC that are missing in ZPLM MARC."""
-    if marc_df is None or marc_df.empty or zplm_marc_df is None or zplm_marc_df.empty:
+    """
+    FERT/HALB/ROH (Material, Plant) in MARC that are missing in ZPLM MARC.
+    Includes materials that have NO PLANT in MARC → reports as Plant = 'No Plant'.
+    """
+    if marc_df is None or zplm_marc_df is None or marc_df.empty or zplm_marc_df.empty:
         return pd.DataFrame(columns=["Material", "Plant", "Error"])
 
-    marc = marc_df.copy(); marc.columns = [c.strip().upper() for c in marc.columns]
+    marc = marc_df.copy();  marc.columns  = [c.strip().upper() for c in marc.columns]
     zplm = zplm_marc_df.copy(); zplm.columns = [c.strip().upper() for c in zplm.columns]
-    mara = mara_df.copy(); mara.columns = [c.strip().upper() for c in mara.columns]
+    mara = mara_df.copy();  mara.columns  = [c.strip().upper() for c in mara.columns]
 
-    m_mat   = next((c for c in ["MATERIAL", "MATNR"] if c in marc.columns), None)
-    m_plant = next((c for c in ["PLANT", "WERKS"] if c in marc.columns), None)
-    z_mat   = next((c for c in ["MATERIAL", "MATNR"] if c in zplm.columns), None)
-    z_plant = next((c for c in ["PLANT", "WERKS"] if c in zplm.columns), None)
-    mt_col  = next((c for c in ["MATERIAL TYPE", "MTART"] if c in mara.columns), None)
-    mara_mat = next((c for c in ["MATERIAL", "MATNR"] if c in mara.columns), None)
+    # Column detection
+    m_mat   = next((c for c in ["MATERIAL","MATNR"] if c in marc.columns), None)
+    m_plant = next((c for c in ["PLANT","WERKS"] if c in marc.columns), None)
+    z_mat   = next((c for c in ["MATERIAL","MATNR"] if c in zplm.columns), None)
+    z_plant = next((c for c in ["PLANT","WERKS"] if c in zplm.columns), None)
+    mt_col  = next((c for c in ["MATERIAL TYPE","MTART"] if c in mara.columns), None)
+    mara_mat= next((c for c in ["MATERIAL","MATNR"] if c in mara.columns), None)
 
-    if not all([m_mat, m_plant, z_mat, z_plant, mt_col, mara_mat]):
+    if not all([m_mat, z_mat, z_plant, mt_col, mara_mat]):
         return pd.DataFrame(columns=["Material", "Plant", "Error"])
 
+    # Normalize
     marc[m_mat]   = marc[m_mat].astype(str).str.strip()
-    marc[m_plant] = marc[m_plant].astype(str).str.strip().str.upper()
     zplm[z_mat]   = zplm[z_mat].astype(str).str.strip()
     zplm[z_plant] = zplm[z_plant].astype(str).str.strip().str.upper()
     mara[mara_mat] = mara[mara_mat].astype(str).str.strip()
     mara[mt_col]   = mara[mt_col].astype(str).str.strip().str.upper()
 
-    valid_mats = set(mara[mara[mt_col].isin({"FERT", "HALB", "ROH"})][mara_mat])
-    marc_keys = set(zip(marc[marc[m_mat].isin(valid_mats)][m_mat], marc[marc[m_mat].isin(valid_mats)][m_plant]))
+    # Materials in scope
+    valid_mats = set(mara[mara[mt_col].isin({"FERT","HALB","ROH"})][mara_mat])
+
+    # >>> MATERIALS WITHOUT PLANT IN MARC <<<
+    marc_with_plants = marc[marc[m_mat].isin(valid_mats)]
+    mats_with_plant = set(marc_with_plants[m_mat])
+    mats_without_plant = sorted(valid_mats - mats_with_plant)
+
+    # Build keys
+    marc_keys = set(zip(marc_with_plants[m_mat], marc_with_plants[m_plant].str.upper()))
     zplm_keys = set(zip(zplm[z_mat], zplm[z_plant]))
+
     missing = sorted(marc_keys - zplm_keys)
 
-    return pd.DataFrame([{"Material": m, "Plant": p, "Error": "Missing in ZPLM MARC"} for m, p in missing],
-                        columns=["Material", "Plant", "Error"])
+    # Add missing materials with NO PLANT
+    for m in mats_without_plant:
+        missing.append((m, "No Plant"))
+
+    return pd.DataFrame(
+        [{"Material": m, "Plant": p, "Error": "Missing in ZPLM MARC"} for m, p in missing],
+        columns=["Material", "Plant", "Error"]
+    )
 
 
 def validar_zplm_marc_vs_marc_existence(zplm_marc_df, marc_df, mara_df):
-    """Entries in ZPLM MARC that are not in MARC (for FERT/HALB/ROH materials)."""
-    if zplm_marc_df is None or zplm_marc_df.empty or marc_df is None or marc_df.empty:
+    """
+    Entries in ZPLM MARC that are not in MARC (FERT/HALB/ROH).
+    Includes entries where material exists but has NO PLANT in MARC → Plant = 'No Plant'.
+    """
+    if zplm_marc_df is None or marc_df is None or zplm_marc_df.empty or marc_df.empty:
         return pd.DataFrame(columns=["Material", "Plant", "Error"])
 
     zplm = zplm_marc_df.copy(); zplm.columns = [c.strip().upper() for c in zplm.columns]
     marc = marc_df.copy();      marc.columns = [c.strip().upper() for c in marc.columns]
     mara = mara_df.copy();      mara.columns = [c.strip().upper() for c in mara.columns]
 
-    z_mat   = next((c for c in ["MATERIAL", "MATNR"] if c in zplm.columns), None)
-    z_plant = next((c for c in ["PLANT", "WERKS"] if c in zplm.columns), None)
-    m_mat   = next((c for c in ["MATERIAL", "MATNR"] if c in marc.columns), None)
-    m_plant = next((c for c in ["PLANT", "WERKS"] if c in marc.columns), None)
-    mara_mat = next((c for c in ["MATERIAL", "MATNR"] if c in mara.columns), None)
-    mt_col   = next((c for c in ["MATERIAL TYPE", "MTART"] if c in mara.columns), None)
+    z_mat   = next((c for c in ["MATERIAL","MATNR"] if c in zplm.columns), None)
+    z_plant = next((c for c in ["PLANT","WERKS"] if c in zplm.columns), None)
+    m_mat   = next((c for c in ["MATERIAL","MATNR"] if c in marc.columns), None)
+    m_plant = next((c for c in ["PLANT","WERKS"] if c in marc.columns), None)
+    mara_mat= next((c for c in ["MATERIAL","MATNR"] if c in mara.columns), None)
+    mt_col  = next((c for c in ["MATERIAL TYPE","MTART"] if c in mara.columns), None)
 
-    if not all([z_mat, z_plant, m_mat, m_plant, mara_mat, mt_col]):
+    if not all([z_mat, z_plant, m_mat, mara_mat, mt_col]):
         return pd.DataFrame(columns=["Material", "Plant", "Error"])
 
-    zplm[z_mat]  = zplm[z_mat].astype(str).str.strip()
-    zplm[z_plant]= zplm[z_plant].astype(str).str.strip().str.upper()
-    marc[m_mat]  = marc[m_mat].astype(str).str.strip()
-    marc[m_plant]= marc[m_plant].astype(str).str.strip().str.upper()
+    # Normalize
+    zplm[z_mat]   = zplm[z_mat].astype(str).str.strip()
+    zplm[z_plant] = zplm[z_plant].astype(str).str.strip().str.upper()
+    marc[m_mat]   = marc[m_mat].astype(str).str.strip()
+    if m_plant:
+        marc[m_plant] = marc[m_plant].astype(str).str.strip().str.upper()
+
     mara[mara_mat] = mara[mara_mat].astype(str).str.strip()
     mara[mt_col]   = mara[mt_col].astype(str).str.strip().str.upper()
 
-    valid_mats = set(mara[mara[mt_col].isin({"FERT", "HALB", "ROH"})][mara_mat])
+    # Material type restriction
+    valid_mats = set(mara[mara[mt_col].isin({"FERT","HALB","ROH"})][mara_mat])
+
+    # MATRIZES EM MARC
     marc_filtered = marc[marc[m_mat].isin(valid_mats)]
-    extra = sorted(set(zip(zplm[z_mat], zplm[z_plant])) - set(zip(marc_filtered[m_mat], marc_filtered[m_plant])))
+    marc_keys = set(zip(marc_filtered[m_mat], marc_filtered[m_plant])) if m_plant else set()
+
+    # >>> Materials with NO PLANT in MARC <<<
+    mats_in_marc = set(marc_filtered[m_mat])
+    mats_without_plant = sorted(valid_mats - mats_in_marc)
+
+    # ZPLM keys
+    zplm_keys = set(zip(zplm[z_mat], zplm[z_plant]))
+
+    extra = sorted(zplm_keys - marc_keys)
+
+    # Add "No Plant" cases
+    for m in mats_without_plant:
+        if (m, "No Plant") in extra:
+            continue
+        extra.append((m, "No Plant"))
 
     return pd.DataFrame(
-        [{"Material": m, "Plant": p, "Error": "Exists in ZPLM MARC but missing in MARC (FERT/HALB/ROH)"} for m, p in extra],
+        [{"Material": m, "Plant": p, "Error": "Exists in ZPLM MARC but missing in MARC (FERT/HALB/ROH)"} 
+         for m, p in extra],
         columns=["Material", "Plant", "Error"]
     )
 
@@ -3258,6 +3354,8 @@ def run_full_validation(
         (96, lambda: validar_strategy_group(sap_df, resultados)),
         (98, lambda: validar_product_related_origin(sap_df, resultados)),
         (99, lambda: validar_availability_check(sap_df, resultados)),
+        (99, lambda: validar_material_group_appoint(sap_df, resultados)),
+        (99, lambda: validar_purchasing_group_dxx(sap_df, resultados)),
     ]
 
     for pct, fn in validations:
@@ -3971,19 +4069,31 @@ def run_data_cleanups_validation(
     if mara is None or marc is None or zplm_marc is None:
         raise ValueError("Missing required files for Data Cleanups (MARA, MARC, ZPLM MARC).")
 
-    # Apply plant filter consistently to all DataFrames before passing to validators
-    if plant_filter and 'Plant' in marc.columns:
-        _pf = str(plant_filter).strip().upper()
-        marc      = marc[marc['Plant'].astype(str).str.strip().str.upper() == _pf].copy()
-        if zplm_marc is not None and 'Plant' in zplm_marc.columns:
-            zplm_marc = zplm_marc[zplm_marc['Plant'].astype(str).str.strip().str.upper() == _pf].copy()
-        if mbew is not None and 'Plant' in mbew.columns:
-            mbew      = mbew[mbew['Plant'].astype(str).str.strip().str.upper() == _pf].copy()
-        if ekpo is not None and 'Plant' in ekpo.columns:
-            ekpo      = ekpo[ekpo['Plant'].astype(str).str.strip().str.upper() == _pf].copy()
-        if mard is not None and 'Plant' in mard.columns:
-            mard      = mard[mard['Plant'].astype(str).str.strip().str.upper() == _pf].copy()
+    # ===============================================================
+    # ✅ Fix #1 — When filtering by plant, DO NOT REMOVE materials
+    #             without Plant (Plant = "" or NaN)
+    # ===============================================================
+    def filter_preserving_noPlant(df, pf):
+        if df is None or "Plant" not in df.columns:
+            return df
+        df["_PL"] = df["Plant"].astype(str).str.strip().str.upper()
+        withPlant     = df[df["_PL"] == pf].copy()
+        withoutPlant  = df[df["_PL"] == ""].copy()   # preserve No Plant
+        df = pd.concat([withPlant, withoutPlant], ignore_index=True)
+        df.drop(columns=["_PL"], inplace=True)
+        return df
 
+    if plant_filter:
+        _pf = str(plant_filter).strip().upper()
+        marc      = filter_preserving_noPlant(marc,      _pf)
+        zplm_marc = filter_preserving_noPlant(zplm_marc, _pf)
+        mbew      = filter_preserving_noPlant(mbew,      _pf)
+        ekpo      = filter_preserving_noPlant(ekpo,      _pf)
+        mard      = filter_preserving_noPlant(mard,      _pf)
+
+    # ===============================================================
+    # VALIDATIONS
+    # ===============================================================
     results = {}
 
     # FP Status
@@ -3994,7 +4104,6 @@ def run_data_cleanups_validation(
     )
     results["FP Level Status"] = df_fp
 
-    # Other validations
     results["FP in PT02"]                   = validar_fp_pt01_pt02_status55(zplm_marc, marc)
     results["EOPvsSL (Blank or Swapped)"]   = validar_fp55_eop_vs_service_liability(zplm_marc, marc)
     results["Past Service Liability"]        = validar_fp55_service_liability_expired(zplm_marc, marc)
@@ -4004,11 +4113,13 @@ def run_data_cleanups_validation(
     results["Missing in ZPLM_MARA"]         = validar_mara_vs_zplm_mara_existence(mara, zplm_mara)
     results["Not in MARC"]                  = validar_zplm_marc_vs_marc_existence(zplm_marc, marc, mara)
     results["Not in MARA"]                  = validar_zplm_mara_vs_mara_existence(zplm_mara, mara)
-    results["FP LTB Fields"]               = validar_ltb_fields(zplm_marc, marc, mara)
-    results["PO's to Close"]               = validar_ekpo_delivery_completion(marc, mara, zplm_marc, ekpo)
+    results["FP LTB Fields"]                = validar_ltb_fields(zplm_marc, marc, mara)
+    results["PO's to Close"]                = validar_ekpo_delivery_completion(marc, mara, zplm_marc, ekpo)
     results["OBSOLETE with No Stock"]       = validar_mard_total_stock(mard, marc, mara)
 
-    # Strip datetime (remove time component from date columns)
+    # ===============================================================
+    # Strip datetime (remove time component)
+    # ===============================================================
     def strip_datetime(df):
         if df is None or df.empty:
             return df
@@ -4020,54 +4131,63 @@ def run_data_cleanups_validation(
     for k in list(results.keys()):
         results[k] = strip_datetime(results[k])
 
-    # Remove empty results
+    # ===============================================================
+    # ✅ Fix #2 — DO NOT remove "No Plant" results
+    # ===============================================================
     cleaned = {}
     for name, df in results.items():
         if df is None or df.empty:
             continue
-        if "Plant" in df.columns and plant_filter in ("PT01", "PT02"):
-            dfp = df[df["Plant"] == plant_filter]
-            if not dfp.empty:
-                cleaned[name] = dfp
-        else:
-            cleaned[name] = df
+        cleaned[name] = df
     results = cleaned
 
-    # ------------------------------------------------------------------
-    # Write Excel
-    # ------------------------------------------------------------------
+    # ===============================================================
+    # ✅ Fix #3 — Write Excel including "No Plant" sheets
+    # ===============================================================
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
 
-        # SUMMARY sheet
+        # SUMMARY
         summary_rows = []
         for sheet_name, df in results.items():
+
             if "Plant" not in df.columns:
                 summary_rows.append({"Validation": sheet_name, "Plant": "ALL", "Issues": len(df)})
                 continue
-            for plant in ["PT01", "PT02"]:
+
+            unique_plants = sorted(df["Plant"].fillna("").astype(str).unique().tolist())
+
+            for plant in unique_plants:
+                label = plant if plant != "" else "No Plant"
                 dfp = df[df["Plant"] == plant]
                 if not dfp.empty:
-                    summary_rows.append({"Validation": sheet_name, "Plant": plant, "Issues": len(dfp)})
+                    summary_rows.append({"Validation": sheet_name, "Plant": label, "Issues": len(dfp)})
 
         pd.DataFrame(summary_rows).to_excel(writer, sheet_name="SUMMARY", index=False)
 
-        # Detail sheets (split by plant if applicable)
+        # DETAIL SHEETS
         for sheet_name, df in results.items():
             if "Plant" not in df.columns:
                 df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
                 continue
-            for plant in ["PT01", "PT02"]:
+
+            unique_plants = sorted(df["Plant"].fillna("").astype(str).unique().tolist())
+
+            for plant in unique_plants:
                 dfp = df[df["Plant"] == plant]
                 if not dfp.empty:
-                    dfp.to_excel(writer, sheet_name=f"{sheet_name}_{plant}"[:31], index=False)
+                    label = plant if plant != "" else "No Plant"
+                    dfp.to_excel(writer, sheet_name=f"{sheet_name}_{label}"[:31], index=False)
 
-    # Apply styling to SUMMARY
+    # ===============================================================
+    # Styling SUMMARY
+    # ===============================================================
     out.seek(0)
     wb = load_workbook(out)
     if "SUMMARY" in wb.sheetnames:
         ws = wb["SUMMARY"]
-        link_col   = ws.max_column + 1
+
+        link_col = ws.max_column + 1
         ws.cell(row=1, column=link_col, value="Link")
 
         header_fill = PatternFill(start_color="D9D9D9", fill_type="solid")
@@ -4077,43 +4197,45 @@ def run_data_cleanups_validation(
             top=Side(style="thin"),  bottom=Side(style="thin")
         )
 
+        # Header styling
         for cell in ws[1]:
-            cell.font      = Font(bold=True)
-            cell.fill      = header_fill
+            cell.font = Font(bold=True)
+            cell.fill = header_fill
             cell.alignment = Alignment(horizontal="center")
-            cell.border    = border
+            cell.border = border
 
+        # Rows
         for r in range(2, ws.max_row + 1):
             validation = str(ws.cell(row=r, column=1).value)
             plant      = str(ws.cell(row=r, column=2).value)
-            sn         = f"{validation}_{plant}" if plant in ("PT01", "PT02") else validation
-            safe       = sn.replace("'", "''")
-            c          = ws.cell(row=r, column=link_col)
+            sn         = f"{validation}_{plant}" if plant not in ("ALL") else validation
+            sn = sn.replace(" ", "_")
+
+            c = ws.cell(row=r, column=link_col)
             if sn in wb.sheetnames:
-                c.value = f'=HYPERLINK("#\'{safe}\'!A1","Open")'
-                c.font  = Font(color="0563C1", underline="single")
+                c.value = f'=HYPERLINK("#\'{sn}\'!A1","Open")'
+                c.font = Font(color="0563C1", underline="single")
             else:
                 c.value = "Not found"
             c.alignment = Alignment(horizontal="center")
-            c.border    = border
+            c.border = border
 
-        for r in range(2, ws.max_row + 1):
-            for c in ws[r]:
+            for c2 in ws[r]:
                 if r % 2 == 0:
-                    c.fill = zebra
-                c.border = border
+                    c2.fill = zebra
+                c2.border = border
 
+        # Auto column width
+        from openpyxl.utils import get_column_letter
         for col_idx, col in enumerate(ws.columns, start=1):
-            from openpyxl.utils import get_column_letter as _gcl
             max_len = max((len(str(cell.value or "")) for cell in col), default=8)
-            ws.column_dimensions[_gcl(col_idx)].width = max_len + 2
+            ws.column_dimensions[get_column_letter(col_idx)].width = max_len + 2
 
     out2 = io.BytesIO()
     wb.save(out2)
     out2.seek(0)
 
     return out2, results, kpi_fp
-
 
 # =============================================================================
 # 5) MRP VALIDATION
@@ -5137,6 +5259,8 @@ __all__ = [
     "validar_lot_sizing_procedure",
     "validar_per_lot_sz_plng_cal",
     "validar_material_group",
+    "validar_material_group_appoint",
+    "validar_purchasing_group_dxx",
     "validar_mrp_type",
     "validar_period_type",
     "validar_planning_calendar",
