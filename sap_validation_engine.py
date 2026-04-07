@@ -693,19 +693,15 @@ def validar_lot_sizing_procedure(df, resultados):
             })
 
 
-def validar_per_lot_sz_plng_cal(marc_df, resultados, mara_df):
+def validar_per_lot_sz_plng_cal(marc_df, resultados, mara_df, matplsta_df=None):
     """
-    Per.Lot Sz.Plng Cal. validation — sourced from MARC (not SAPUI5 Export).
+    Per.Lot Sz.Plng Cal. validation — sourced from MARC.
 
-    Rules (scoped to FERT, HALB, ROH only — other Material Types are ignored):
+    Rules (scoped to FERT, HALB, ROH only):
       - FERT or HALB -> field is mandatory (must not be empty).
-      - ROH           -> field must be empty.
-
-    Parameters
-    ----------
-    marc_df    : MARC DataFrame — contains the Per.Lot Sz.Plng Cal. column
-    resultados : list to append errors to
-    mara_df    : MARA DataFrame — used to look up Material Type per material
+      - ROH         -> field must be empty
+                       EXCEPTION: allowed when MATPLSTA has Planning Status = 9
+                                  for the same Material + Plant.
     """
     field = 'Per.Lot Sz.Plng Cal.'
 
@@ -725,10 +721,26 @@ def validar_per_lot_sz_plng_cal(marc_df, resultados, mara_df):
         print("⚠️ MARA is missing 'Material' or 'Material Type' columns required for Per.Lot Sz.Plng Cal. validation.")
         return
 
+    # --- Material → Material Type map (igual ao original)
     mt_map = dict(zip(
         mara_df['Material'].astype(str).str.strip(),
         mara_df['Material Type'].astype(str).str.strip().str.upper()
     ))
+
+    # --- NOVO: construir set de exceções ROH com Planning Status = 9
+    roh_status_9 = set()
+    if matplsta_df is not None and not matplsta_df.empty:
+        matplsta_df = matplsta_df.copy()
+        matplsta_df.columns = matplsta_df.columns.astype(str).str.strip()
+
+        required_cols = {'Product Number', 'Location', 'Planning Status'}
+        if required_cols.issubset(matplsta_df.columns):
+            for _, r in matplsta_df.iterrows():
+                if str(r['Planning Status']).strip() == '9':
+                    roh_status_9.add((
+                        str(r['Product Number']).strip(),
+                        str(r['Location']).strip()
+                    ))
 
     in_scope_types  = {'FERT', 'HALB', 'ROH'}
     mandatory_types = {'FERT', 'HALB'}
@@ -744,6 +756,7 @@ def validar_per_lot_sz_plng_cal(marc_df, resultados, mara_df):
         if mt not in in_scope_types:
             continue
 
+        # --- FERT / HALB (IGUAL ao original)
         if mt in mandatory_types:
             if val == '':
                 resultados.append({
@@ -753,15 +766,19 @@ def validar_per_lot_sz_plng_cal(marc_df, resultados, mara_df):
                     'Material': material,
                     'Plant':    plant,
                 })
-        else:
+
+        # --- ROH (alteração mínima e correta)
+        else:  # ROH
             if val != '':
-                resultados.append({
-                    'Line':     idx + 2,
-                    'Field':    field,
-                    'Error':    f"Field must be empty for Material Type 'ROH' (current: '{val}')",
-                    'Material': material,
-                    'Plant':    plant,
-                })
+                # 👉 SÓ AQUI se consulta a MATPLSTA
+                if (material, plant) not in roh_status_9:
+                    resultados.append({
+                        'Line':     idx + 2,
+                        'Field':    field,
+                        'Error':    f"Field must be empty for Material Type 'ROH' (current: '{val}')",
+                        'Material': material,
+                        'Plant':    plant,
+                    })
 
 
 def validar_material_group(df, resultados):
@@ -3226,6 +3243,7 @@ def run_full_validation(
     progress_callback=None,
     csr_item_file=None,
     csr_head_file=None,
+    matplsta_file=None,
 ):
     """
     Runs the complete SAPUI5 validation pipeline:
@@ -3271,6 +3289,9 @@ def run_full_validation(
     _cb(19, "Loading CSR data...")
     csr_item_df = load_xlsx_fast(csr_item_file, sheet_name=0) if csr_item_file else None
     csr_head_df = load_xlsx_fast(csr_head_file, sheet_name=0) if csr_head_file else None
+
+    _cb(20, "Loading MATPLSTA data...")
+    matplsta_df = load_xlsx_fast(matplsta_file, sheet_name=0) if matplsta_file else None
 
     # ------------------------------------------------------------------
     # 2) Basic sanity checks
@@ -3326,7 +3347,7 @@ def run_full_validation(
         (42, lambda: validar_jit_delivery_sched(sap_df, resultados)),
         (44, lambda: validar_loading_group(sap_df, resultados)),
         (46, lambda: validar_lot_sizing_procedure(sap_df, resultados)),
-        (47, lambda: validar_per_lot_sz_plng_cal(marc_df, resultados, mara_df)),
+        (47, lambda: validar_per_lot_sz_plng_cal(marc_df, resultados, mara_df, matplsta_df)),
         (48, lambda: validar_material_group(sap_df, resultados)),
         (50, lambda: validar_mrp_type(sap_df, resultados, zplm_marc_df, csr_item_df, csr_head_df)),
         (52, lambda: validar_net_weight(sap_df, resultados)),

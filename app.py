@@ -121,6 +121,7 @@ _CLASSIFY_RULES: list[tuple[str, object]] = [
     ("mbew",        lambda n: "mbew" in n),
     ("ekpo",        lambda n: "ekpo" in n),
     ("mard",        lambda n: "mard" in n),
+    ("matplsta",    lambda n: "matplsta" in n),
     # ATL
     ("auto",        lambda n: "automotive" in n),
     ("plm",         lambda n: "timingletter" in n or "timing_letter" in n),
@@ -159,10 +160,13 @@ LABELS_PT = {
     "mvke":      "MVKE.xlsx",
     "zplm_marc": "ZPLM MARC.xlsx",
     "zplm_mara": "ZPLM MARA.xlsx",
+    "csr_item":  "CSR Item.xlsx",
+    "csr_head":  "CSR Head.xlsx",
     "qmat":      "QMAT.xlsx",
     "mbew":      "MBEW.xlsx",
     "ekpo":      "EKPO.xlsx",
     "mard":      "MARD.xlsx",
+    "matplsta":  "MATPLSTA.xlsx",
     "auto":      "PLM Automotive Validation.xlsx",
     "plm":       "PLM TimingLetter Validation.xlsx",
     "timing":    "Timing Letters.xlsx",
@@ -187,6 +191,7 @@ FILE_EXPECTED_COLS: dict[str, list[list[str]]] = {
     "mbew":      [["Material"]],
     "ekpo":      [["Material"]],
     "mard":      [["Material", "Plant"]],
+    "matplsta":  [["Product Number", "Location", "Planning Status"]],
     "auto":      [["Plant", "Approval Status", "Trigger ID"]],
     "plm":       [["Plant", "Approval Status", "Trigger ID"]],
     "timing":    [["Timing Letter Number", "Change Number"]],
@@ -243,7 +248,7 @@ def validate_uploaded_files(persisted: dict, keys_to_check: list[str]) -> dict[s
 
 # Keys obrigatórias por página
 REQUIRED_KEYS: dict[str, list[str]] = {
-    "📦 SAP Material Validation":         ["sap", "mara", "marc", "mvke", "zplm_marc", "zplm_mara", "qmat"],
+    "📦 SAP Material Validation":         ["sap", "mara", "marc", "mvke", "zplm_marc", "zplm_mara", "qmat", "matplsta"],
     "🧮 MRP Validation":                  ["mara", "marc"],
     "Automotive + Timing Letter (A & TL)":["auto", "plm", "timing"],
     "📊 SAP Validation Progress": [],   # gerido pelo modo Auto/Manual
@@ -363,6 +368,9 @@ def show_file_status(required_keys: list[str], files: dict, persisted: dict,
                 "mbew":       "MBEW.xlsx",
                 "ekpo":       "EKPO.xlsx",
                 "mard":       "MARD.xlsx",
+                "matplsta":   "MATPLSTA.xlsx",
+                "csr_item":   "CSR Item.xlsx",
+                "csr_head":   "CSR Head.xlsx",
                 "zplm":       "ZPLM MARC.xlsx or ZPLM MARA.xlsx",
                 "sapui5":     "SAPUI5 Export.xlsx",
                 "automotive": "PLM Automotive Validation.xlsx",
@@ -844,6 +852,7 @@ elif main_choice == "📦 SAP Material Validation":
         <tr><td style="padding:3px 8px">📄 <strong>MVKE</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MVKE (sales organisation data)</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>ZPLM MARC / MARA</strong></td><td style="color:var(--app-fg-muted)">PLM custom tables (ZPLM_MARC / ZPLM_MARA export)</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>QMAT</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → QMAT (inspection types)</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>MATPLSTA</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MATPLSTA (planning status data)</td></tr>
         <tr><td style="padding:3px 8px; color:var(--color-ok)">🔓 <strong>CSR Item / Head</strong></td><td style="color:var(--app-fg-muted)">Optional — enables CSR exemption rules for MRP Type</td></tr>
         </table>
         </div>
@@ -941,15 +950,16 @@ elif main_choice == "📦 SAP Material Validation":
 
         if st.button("▶️ Validate now", type="primary", key="sap_run"):
             files = rehydrate_persisted_mapping("sap_files_persisted")
-            sap_file  = files.get("sap")
-            mara_file = files.get("mara")
-            marc_file = files.get("marc")
-            mvke_file = files.get("mvke")
-            zplm_marc = files.get("zplm_marc")
-            zplm_mara = files.get("zplm_mara")
-            qmat_file = files.get("qmat")
-            csr_item  = files.get("csr_item")
-            csr_head  = files.get("csr_head")
+            sap_file  =     files.get("sap")
+            mara_file =     files.get("mara")
+            marc_file =     files.get("marc")
+            mvke_file =     files.get("mvke")
+            zplm_marc =     files.get("zplm_marc")
+            zplm_mara =     files.get("zplm_mara")
+            qmat_file =     files.get("qmat")
+            matplsta_file = files.get("matplsta")
+            csr_item  =     files.get("csr_item")
+            csr_head  =     files.get("csr_head")
 
             plant_filter_export  = st.session_state.sap_plant_export
             plant_filter_display = st.session_state.sap_plant_display
@@ -974,6 +984,7 @@ elif main_choice == "📦 SAP Material Validation":
                     plant_filter=plant_filter_display,
                     progress_callback=update_progress,
                     csr_item_file=csr_item, csr_head_file=csr_head,
+                    matplsta_file=matplsta_file,
                 )
 
                 try:
@@ -2003,8 +2014,6 @@ elif main_choice == "🧹 Data Cleanups":
                 st.session_state["dc_files_persisted"] = {}
                 st.session_state.dataclean_step = 1; st.rerun()
 
-
-
 # ==========================================================
 # PAGE 6 — SSA VALIDATION
 # ==========================================================
@@ -2206,5 +2215,4 @@ elif main_choice == "📋 SSA Validation":
                 st.session_state["ssa_files_persisted"] = {}
                 st.session_state.ssa_step = 1; st.rerun()
 
-    render_footer(start_time, version="v1.3")
     render_footer(start_time, version="v1.4")
