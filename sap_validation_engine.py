@@ -4005,7 +4005,7 @@ def run_fp_status_validation(mara_file, marc_file, zplm_marc_file,
     merged["Material"] = merged["Material"].astype(str).str.strip()
     merged = merged[~merged["Material"].str.match(r"^\d+$")]
 
-    PSMS_NAME = {"40": "NewProd", "45": "Prod", "50": "Balout", "55": "Service"}
+    PSMS_NAME = {"40": "PREPROD", "45": "PROD", "50": "BALOUT", "55": "SERVICE"}
     merged["PSMS Name"] = merged["PSMS"].map(PSMS_NAME)
 
     # Keep only families with 2+ members
@@ -4038,9 +4038,13 @@ def run_fp_status_validation(mara_file, marc_file, zplm_marc_file,
         if correct_psms == "40" and has45:
             g.loc[g["PSMS"] == "45", "Status"] = "Need verify"
 
+        # Balout (PSMS=50): only the LAST one (highest suffix) is Correct.
+        # All others in the same family with status 50 are Outdated.
         dup50 = g[g["PSMS"] == "50"]
         if len(dup50) >= 2:
-            g.loc[dup50.index[0], "Status"] = "Outdated"
+            # Mark all as Outdated first, then restore Correct for the last one
+            g.loc[dup50.index, "Status"] = "Outdated"
+            g.loc[dup50.index[-1], "Status"] = "Correct"
 
         return g.drop(columns=["suffix"])
 
@@ -4173,7 +4177,12 @@ def run_data_cleanups_validation(
         for sheet_name, df in results.items():
 
             if "Plant" not in df.columns:
-                summary_rows.append({"Validation": sheet_name, "Plant": "ALL", "Issues": len(df)})
+                # For FP Level Status, only count non-Correct rows as issues
+                if sheet_name == "FP Level Status" and "Status" in df.columns:
+                    count = int((df["Status"] != "Correct").sum())
+                else:
+                    count = len(df)
+                summary_rows.append({"Validation": sheet_name, "Plant": "ALL", "Issues": count})
                 continue
 
             unique_plants = sorted(df["Plant"].fillna("").astype(str).unique().tolist())
@@ -4182,7 +4191,12 @@ def run_data_cleanups_validation(
                 label = plant if plant != "" else "No Plant"
                 dfp = df[df["Plant"] == plant]
                 if not dfp.empty:
-                    summary_rows.append({"Validation": sheet_name, "Plant": label, "Issues": len(dfp)})
+                    # For FP Level Status, only count non-Correct rows as issues
+                    if sheet_name == "FP Level Status" and "Status" in dfp.columns:
+                        count = int((dfp["Status"] != "Correct").sum())
+                    else:
+                        count = len(dfp)
+                    summary_rows.append({"Validation": sheet_name, "Plant": label, "Issues": count})
 
         pd.DataFrame(summary_rows).to_excel(writer, sheet_name="SUMMARY", index=False)
 
