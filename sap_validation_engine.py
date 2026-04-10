@@ -2133,17 +2133,27 @@ def validar_fp55_service_liability_expired(zplm_marc_df, marc_df):
 
 def validar_fp50_eop_expired(zplm_marc_df, marc_df):
     """
-    For FP materials with PSMS = 50 (Balance-out):
-    EOP Date must not be empty AND must be strictly in the future
-    (i.e. EOP Date > today).  If EOP <= today the material's
-    production phase is already over and the status is inconsistent.
+    For FP materials with PSMS in {10,20,30,40,45,50}:
+    EOP Date must not be empty AND must be strictly in the future (EOP > today).
+
+    Status Groups:
+    - Group A: 10, 20, 30
+    - Group B: 40, 45, 50
     """
-    empty_cols = ["Material", "Plant", "Material Plant Type", "PSMS", "EOP Date", "Error"]
+    empty_cols = [
+        "Material", "Plant", "Material Plant Type",
+        "PSMS", "Status Group", "EOP Date", "Error"
+    ]
+
     if zplm_marc_df is None or zplm_marc_df.empty or marc_df is None or marc_df.empty:
         return pd.DataFrame(columns=empty_cols)
 
+    # -------------------------
+    # Setup & column detection
+    # -------------------------
     zplm = zplm_marc_df.copy()
     zplm.columns = [str(c).strip().upper() for c in zplm.columns]
+
     marc = marc_df.copy()
     marc.columns = [str(c).strip().upper() for c in marc.columns]
 
@@ -2154,22 +2164,31 @@ def validar_fp50_eop_expired(zplm_marc_df, marc_df):
     z_plant  = pick(zplm, ["PLANT", "WERKS"])
     z_mptype = pick(zplm, ["MATERIAL PLANT TYPE", "PLANT TYPE", "MATERIAL-PLANT TYPE"])
     z_eop    = pick(zplm, ["EOP DATE", "EOP", "END OF PROD DATE", "END OF PRODUCTION DATE"])
-    m_mat    = pick(marc,  ["MATERIAL", "MATNR"])
-    m_plant  = pick(marc,  ["PLANT", "WERKS"])
-    m_psms   = pick(marc,  ["PLANT-SPECIFIC MATERIAL STATUS",
-                             "PLANT SPECIFIC MATERIAL STATUS", "MTSTB"])
+
+    m_mat    = pick(marc, ["MATERIAL", "MATNR"])
+    m_plant  = pick(marc, ["PLANT", "WERKS"])
+    m_psms   = pick(
+        marc,
+        ["PLANT-SPECIFIC MATERIAL STATUS",
+         "PLANT SPECIFIC MATERIAL STATUS",
+         "MTSTB"]
+    )
 
     if any(c is None for c in [z_mat, z_plant, z_mptype, z_eop, m_mat, m_plant, m_psms]):
         return pd.DataFrame(columns=empty_cols)
 
+    # -------------------------
     # Normalise ZPLM
+    # -------------------------
     z = zplm.copy()
     z[z_mat]    = z[z_mat].astype(str).str.strip()
     z[z_plant]  = z[z_plant].astype(str).str.strip().str.upper()
     z[z_mptype] = z[z_mptype].astype(str).str.strip().str.upper()
     z_fp = z[z[z_mptype] == "FP"].copy()
 
-    # Normalise MARC — keep only PSMS = 50
+    # -------------------------
+    # Normalise MARC
+    # -------------------------
     m = marc.copy()
     m[m_mat]   = m[m_mat].astype(str).str.strip()
     m[m_plant] = m[m_plant].astype(str).str.strip().str.upper()
@@ -2179,10 +2198,17 @@ def validar_fp50_eop_expired(zplm_marc_df, marc_df):
               if str(x).strip().replace('.', '').isdigit()
               else str(x).strip())
     )
-    m50 = m[m[m_psms] == "50"].copy()
 
+    GROUP_A = {"10", "20", "30"}
+    GROUP_B = {"40", "45", "50"}
+    ALL_PS  = GROUP_A | GROUP_B
+
+    m_sel = m[m[m_psms].isin(ALL_PS)].copy()
+
+    # -------------------------
     # Intersect keys
-    key_int = set(zip(z_fp[z_mat], z_fp[z_plant])) & set(zip(m50[m_mat], m50[m_plant]))
+    # -------------------------
+    key_int = set(zip(z_fp[z_mat], z_fp[z_plant])) & set(zip(m_sel[m_mat], m_sel[m_plant]))
     if not key_int:
         return pd.DataFrame(columns=empty_cols)
 
@@ -2204,30 +2230,47 @@ def validar_fp50_eop_expired(zplm_marc_df, marc_df):
             pass
         return pd.to_datetime(s, errors="coerce", dayfirst=True)
 
+    # -------------------------
+    # Validation
+    # -------------------------
     errors = []
+
     for _, row in df_target.iterrows():
+        psms = m_sel.loc[
+            (m_sel[m_mat] == row[z_mat]) &
+            (m_sel[m_plant] == row[z_plant]),
+            m_psms
+        ].iloc[0]
+
+        status_group = (
+            "Group A (10/20/30)" if psms in GROUP_A
+            else "Group B (40/45/50)"
+        )
+
         eop_raw = row.get(z_eop, None)
-        eop     = _dt(eop_raw)
+        eop = _dt(eop_raw)
 
         if pd.isna(eop):
             errors.append({
-                "Material":             row[z_mat],
-                "Plant":                row[z_plant],
-                "Material Plant Type":  row[z_mptype],
-                "PSMS":                 "50",
-                "EOP Date":             eop_raw,
-                "Error":                "EOP Date is empty for FP with status 50 (Balance-out)",
+                "Material": row[z_mat],
+                "Plant": row[z_plant],
+                "Material Plant Type": row[z_mptype],
+                "PSMS": psms,
+                "Status Group": status_group,
+                "EOP Date": eop_raw,
+                "Error": "EOP Date is empty for FP material with active/phase-out status",
             })
         elif eop <= today:
             errors.append({
-                "Material":             row[z_mat],
-                "Plant":                row[z_plant],
-                "Material Plant Type":  row[z_mptype],
-                "PSMS":                 "50",
-                "EOP Date":             eop_raw,
+                "Material": row[z_mat],
+                "Plant": row[z_plant],
+                "Material Plant Type": row[z_mptype],
+                "PSMS": psms,
+                "Status Group": status_group,
+                "EOP Date": eop_raw,
                 "Error": (
                     f"EOP Date is expired (EOP {eop.date()} ≤ today {today.date()}) "
-                    f"— FP with status 50 must have EOP Date in the future"
+                    f"— FP material must have EOP Date in the future"
                 ),
             })
 
@@ -4132,7 +4175,7 @@ def run_data_cleanups_validation(
     results["FP in PT02"]                   = validar_fp_pt01_pt02_status55(zplm_marc, marc)
     results["EOPvsSL (Blank or Swapped)"]   = validar_fp55_eop_vs_service_liability(zplm_marc, marc)
     results["Past Service Liability"]        = validar_fp55_service_liability_expired(zplm_marc, marc)
-    results["EOP Expired (Status 50)"]       = validar_fp50_eop_expired(zplm_marc, marc)
+    results["EOP Expired"]       = validar_fp50_eop_expired(zplm_marc, marc)
     results["No Standard Cost"]             = validar_fppp70_standard_price_mbew(zplm_marc, marc, mbew)
     results["Missing in ZPLM_MARC"]         = validar_marc_vs_zplm_marc_existence(marc, zplm_marc, mara)
     results["Missing in ZPLM_MARA"]         = validar_mara_vs_zplm_mara_existence(mara, zplm_mara)
