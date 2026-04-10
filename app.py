@@ -111,6 +111,7 @@ _CLASSIFY_RULES: list[tuple[str, object]] = [
     ("zplm_mara",   lambda n: "zplm" in n and "mara" in n),
     ("csr_item",    lambda n: "csr" in n and "item" in n),
     ("csr_head",    lambda n: "csr" in n and "head" in n),
+    ("matplsta",    lambda n: "matplsta" in n),
     # SAP export
     ("sap",         lambda n: "sapui5" in n or ("item" in n and "browse" in n)),
     # Tabelas base
@@ -121,11 +122,11 @@ _CLASSIFY_RULES: list[tuple[str, object]] = [
     ("mbew",        lambda n: "mbew" in n),
     ("ekpo",        lambda n: "ekpo" in n),
     ("mard",        lambda n: "mard" in n),
-    ("matplsta",    lambda n: "matplsta" in n),
     # ATL
     ("auto",        lambda n: "automotive" in n),
     ("plm",         lambda n: "timingletter" in n or "timing_letter" in n),
-    ("timing",      lambda n: "timing" in n),
+    ("timing",      lambda n: "timing" in n and "workflow" not in n),
+    ("workflow_task", lambda n: "workflowtask" in n or "workflow_task" in n or "c_workflowtask" in n),
     # Progress
     ("current",     lambda n: any(k in n for k in ["current", "novo", "atual"])),
     ("previous",    lambda n: any(k in n for k in ["previous", "anterior", "old"])),
@@ -160,18 +161,17 @@ LABELS_PT = {
     "mvke":      "MVKE.xlsx",
     "zplm_marc": "ZPLM MARC.xlsx",
     "zplm_mara": "ZPLM MARA.xlsx",
-    "csr_item":  "CSR Item.xlsx",
-    "csr_head":  "CSR Head.xlsx",
     "qmat":      "QMAT.xlsx",
     "mbew":      "MBEW.xlsx",
     "ekpo":      "EKPO.xlsx",
     "mard":      "MARD.xlsx",
-    "matplsta":  "MATPLSTA.xlsx",
     "auto":      "PLM Automotive Validation.xlsx",
     "plm":       "PLM TimingLetter Validation.xlsx",
     "timing":    "Timing Letters.xlsx",
+    "workflow_task": "C_WORKFLOWTASK.xlsx",
     "current":   "Current Report (Progress)",
     "previous":  "Previous Report (Progress)",
+    "matplsta":  "MATPLSTA.xlsx",
 }
 
 DISPLAY_TO_INTERNAL = {v.lower(): k for k, v in LABELS_PT.items()}
@@ -191,12 +191,13 @@ FILE_EXPECTED_COLS: dict[str, list[list[str]]] = {
     "mbew":      [["Material"]],
     "ekpo":      [["Material"]],
     "mard":      [["Material", "Plant"]],
-    "matplsta":  [["Product Number", "Location", "Planning Status"]],
     "auto":      [["Plant", "Approval Status", "Trigger ID"]],
     "plm":       [["Plant", "Approval Status", "Trigger ID"]],
     "timing":    [["Timing Letter Number", "Change Number"]],
+    "workflow_task": [["Instance ID", "Work item text"]],
     "csr_item":  [["Material"]],
     "csr_head":  [["Plant"]],
+    "matplsta":  [["Product Number", "Location", "Planning Status"]],
 }
 
 def _check_file_cols(file_obj, expected_col_sets: list[list[str]]) -> tuple[bool, str]:
@@ -248,7 +249,7 @@ def validate_uploaded_files(persisted: dict, keys_to_check: list[str]) -> dict[s
 
 # Keys obrigatórias por página
 REQUIRED_KEYS: dict[str, list[str]] = {
-    "📦 SAP Material Validation":         ["sap", "mara", "marc", "mvke", "zplm_marc", "zplm_mara", "qmat", "matplsta"],
+    "📦 SAP Material Validation":         ["sap", "mara", "marc", "mvke", "zplm_marc", "zplm_mara", "qmat"],
     "🧮 MRP Validation":                  ["mara", "marc"],
     "Automotive + Timing Letter (A & TL)":["auto", "plm", "timing"],
     "📊 SAP Validation Progress": [],   # gerido pelo modo Auto/Manual
@@ -368,9 +369,6 @@ def show_file_status(required_keys: list[str], files: dict, persisted: dict,
                 "mbew":       "MBEW.xlsx",
                 "ekpo":       "EKPO.xlsx",
                 "mard":       "MARD.xlsx",
-                "matplsta":   "MATPLSTA.xlsx",
-                "csr_item":   "CSR Item.xlsx",
-                "csr_head":   "CSR Head.xlsx",
                 "zplm":       "ZPLM MARC.xlsx or ZPLM MARA.xlsx",
                 "sapui5":     "SAPUI5 Export.xlsx",
                 "automotive": "PLM Automotive Validation.xlsx",
@@ -852,8 +850,8 @@ elif main_choice == "📦 SAP Material Validation":
         <tr><td style="padding:3px 8px">📄 <strong>MVKE</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MVKE (sales organisation data)</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>ZPLM MARC / MARA</strong></td><td style="color:var(--app-fg-muted)">PLM custom tables (ZPLM_MARC / ZPLM_MARA export)</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>QMAT</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → QMAT (inspection types)</td></tr>
-        <tr><td style="padding:3px 8px">📄 <strong>MATPLSTA</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MATPLSTA (planning status data)</td></tr>
         <tr><td style="padding:3px 8px; color:var(--color-ok)">🔓 <strong>CSR Item / Head</strong></td><td style="color:var(--app-fg-muted)">Optional — enables CSR exemption rules for MRP Type</td></tr>
+        <tr><td style="padding:3px 8px; color:var(--color-ok)">🔓 <strong>MATPLSTA</strong></td><td style="color:var(--app-fg-muted)">Optional — enables Planning Status = 9 exemption for ROH Per.Lot Sz.Plng Cal. rule</td></tr>
         </table>
         </div>
         """, unsafe_allow_html=True)
@@ -871,7 +869,7 @@ elif main_choice == "📦 SAP Material Validation":
 
         persisted = st.session_state.get("sap_files_persisted") or {}
         show_file_status(required_keys, files, persisted,
-                         optional_keys=["csr_item", "csr_head"])
+                         optional_keys=["csr_item", "csr_head", "matplsta"])
 
         # Quick column validation
         _col_errs_sap = validate_uploaded_files(persisted, required_keys)
@@ -932,7 +930,7 @@ elif main_choice == "📦 SAP Material Validation":
         _scope3     = st.session_state.get("sap_export_scope", "All")
         _exec3      = st.session_state.get("executor_name", "—")
         _n_files    = len(_persisted3)
-        _optional3  = [k for k in ["csr_item","csr_head"] if k in _persisted3]
+        _optional3  = [k for k in ["csr_item","csr_head","matplsta"] if k in _persisted3]
 
         st.markdown(f"""
         <div style="background:var(--app-bg-secondary);border:1px solid var(--app-border);border-radius:10px;padding:16px 20px;margin-bottom:16px">
@@ -945,21 +943,22 @@ elif main_choice == "📦 SAP Material Validation":
             <div><span style="color:var(--app-fg-muted)">Files loaded</span><br><strong>{_n_files} required{"  +  " + str(len(_optional3)) + " optional" if _optional3 else ""}</strong></div>
         </div>
         {"<div style='margin-top:10px;font-size:0.8rem;color:var(--color-ok)'>🔓 CSR exemption rules <strong>enabled</strong> — active CSRs will exempt FP materials from MRP = ND errors.</div>" if _optional3 else "<div style='margin-top:10px;font-size:0.8rem;color:var(--app-fg-muted)'>🔓 CSR files not uploaded — CSR exemption rules disabled.</div>"}
+        {"<div style='margin-top:4px;font-size:0.8rem;color:var(--color-ok)'>🔓 MATPLSTA loaded — ROH Planning Status = 9 exemption <strong>enabled</strong>.</div>" if "matplsta" in _persisted3 else "<div style='margin-top:4px;font-size:0.8rem;color:var(--app-fg-muted)'>🔓 MATPLSTA not uploaded — all ROH with Per.Lot Sz.Plng Cal. filled will be flagged.</div>"}
         </div>
         """, unsafe_allow_html=True)
 
         if st.button("▶️ Validate now", type="primary", key="sap_run"):
             files = rehydrate_persisted_mapping("sap_files_persisted")
-            sap_file  =     files.get("sap")
-            mara_file =     files.get("mara")
-            marc_file =     files.get("marc")
-            mvke_file =     files.get("mvke")
-            zplm_marc =     files.get("zplm_marc")
-            zplm_mara =     files.get("zplm_mara")
-            qmat_file =     files.get("qmat")
-            matplsta_file = files.get("matplsta")
-            csr_item  =     files.get("csr_item")
-            csr_head  =     files.get("csr_head")
+            sap_file  = files.get("sap")
+            mara_file = files.get("mara")
+            marc_file = files.get("marc")
+            mvke_file = files.get("mvke")
+            zplm_marc = files.get("zplm_marc")
+            zplm_mara = files.get("zplm_mara")
+            qmat_file = files.get("qmat")
+            csr_item  = files.get("csr_item")
+            csr_head  = files.get("csr_head")
+            matplsta  = files.get("matplsta")
 
             plant_filter_export  = st.session_state.sap_plant_export
             plant_filter_display = st.session_state.sap_plant_display
@@ -984,7 +983,7 @@ elif main_choice == "📦 SAP Material Validation":
                     plant_filter=plant_filter_display,
                     progress_callback=update_progress,
                     csr_item_file=csr_item, csr_head_file=csr_head,
-                    matplsta_file=matplsta_file,
+                    matplsta_file=matplsta,
                 )
 
                 try:
@@ -1175,6 +1174,7 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing L
         <tr><td style="padding:3px 8px">📄 <strong>Automotive Validation</strong></td><td style="color:var(--app-fg-muted)">PLM → Automotive validation export (filename must contain <em>automotive</em>)</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>TimingLetter Validation</strong></td><td style="color:var(--app-fg-muted)">PLM → Timing Letter validation export (filename must contain <em>timingletter</em>)</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>Timing Letters</strong></td><td style="color:var(--app-fg-muted)">PLM → Active Timing Letters list (filename must contain <em>timing</em>)</td></tr>
+        <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>C_WORKFLOWTASK</strong></td><td style="color:var(--app-fg-muted)">Optional — enables accurate group X marks from Work item text (READY/SELECTED status only)</td></tr>
         </table>
         </div>
         """, unsafe_allow_html=True)
@@ -1188,7 +1188,8 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing L
             persist_uploaded_mapping(files, "atl_files_persisted")
 
         persisted = st.session_state.get("atl_files_persisted") or {}
-        show_file_status(required_keys, files, persisted)
+        show_file_status(required_keys, files, persisted,
+                         optional_keys=["workflow_task"])
 
         _col_errs_atl = validate_uploaded_files(persisted, required_keys)
         if _col_errs_atl:
@@ -1247,7 +1248,7 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing L
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:0.87rem;color:var(--app-fg)">
             <div><span style="color:var(--app-fg-muted)">Executor</span><br><strong>{_exec_atl}</strong></div>
             <div><span style="color:var(--app-fg-muted)">Scope</span><br><strong>{_scope_atl}</strong></div>
-            <div><span style="color:var(--app-fg-muted)">Files loaded</span><br><strong>{len(_pers_atl)} of 3</strong></div>
+            <div><span style="color:var(--app-fg-muted)">Files loaded</span><br><strong>{len(_pers_atl)} of 3{"  +  C_WORKFLOWTASK ✅" if "workflow_task" in _pers_atl else ""}</strong></div>
         </div>
         <div style="margin-top:10px;font-size:0.8rem;color:var(--app-fg-muted)">
             The workflow will match Change Numbers from Automotive and TimingLetter sources,
@@ -1258,9 +1259,10 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing L
 
         if st.button("▶️ Run Workflow ATL", type="primary", key="atl_run"):
             files = rehydrate_persisted_mapping("atl_files_persisted")
-            auto_file   = files.get("auto")
-            plm_file    = files.get("plm")
-            timing_file = files.get("timing")
+            auto_file      = files.get("auto")
+            plm_file       = files.get("plm")
+            timing_file    = files.get("timing")
+            wft_file       = files.get("workflow_task")
 
             if any(f is None for f in [auto_file, plm_file, timing_file]):
                 st.error("⚠️ Required files are missing.")
@@ -1268,7 +1270,8 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing L
 
             with st.spinner("Processing ATL Workflow..."):
                 excel_all, df_pt01, df_pt02 = run_plm_workflow_combined(
-                    auto_file=auto_file, plm_file=plm_file, timing_file=timing_file
+                    auto_file=auto_file, plm_file=plm_file, timing_file=timing_file,
+                    workflowtask_file=wft_file,
                 )
 
             st.session_state.atl_pt01      = df_pt01
@@ -2215,4 +2218,5 @@ elif main_choice == "📋 SSA Validation":
                 st.session_state["ssa_files_persisted"] = {}
                 st.session_state.ssa_step = 1; st.rerun()
 
+    render_footer(start_time, version="v1.3")
     render_footer(start_time, version="v1.4")

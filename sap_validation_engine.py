@@ -4506,21 +4506,28 @@ def _apply_conditional_formatting_in_memory(xlsx_bytes: io.BytesIO,
     return out
 
 
-def run_plm_workflow_combined(auto_file, plm_file, timing_file):
+def run_plm_workflow_combined(auto_file, plm_file, timing_file,
+                              workflowtask_file=None):
     """
-    ATL/PLM workflow: combines Automotive + TimingLetter validation reports.
-    Maps Trigger ID -> Change Number via Timing Letters file.
+    PLM / ATL Workflow Report.
+    Source of truth for groups + Technical Status: C_WORKFLOWTASK (optional).
     Returns: (excel_bytes, df_pt01, df_pt02)
+
+    If workflowtask_file is provided, groups (X marks) and Approval Status
+    are derived from C_WORKFLOWTASK (Technical Status = READY / SELECTED).
+    If not provided, falls back to the original approver-column logic.
     """
+    # ------------------------------------------------------------------
+    # 1) LOAD FILES
+    # ------------------------------------------------------------------
     df_auto   = load_xlsx_fast(auto_file,   sheet_name=0)
     df_plm    = load_xlsx_fast(plm_file,    sheet_name=0)
     df_timing = load_xlsx_fast(timing_file, sheet_name=0)
 
-    if df_auto is None or df_plm is None or df_timing is None:
+    if any(df is None or df.empty for df in [df_auto, df_plm, df_timing]):
         raise ValueError("ATL files missing: Automotive / TimingLetter / Timing Letters")
 
-    required_base = ['Plant', 'Approval Status', 'Trigger ID', 'Creation Date']
-    for col in required_base:
+    for col in ['Plant', 'Trigger ID', 'Creation Date']:
         if col not in df_auto.columns:
             raise ValueError(f"Column '{col}' missing in Automotive file.")
         if col not in df_plm.columns:
@@ -4528,108 +4535,236 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file):
     if 'Timing Letter Number' not in df_timing.columns or 'Change Number' not in df_timing.columns:
         raise ValueError("Timing Letters file must contain 'Timing Letter Number' and 'Change Number'.")
 
-    # Statuses that disqualify a Timing Letter from appearing in the report
-    _EXCLUDED_STATUSES = {'Complete', 'Rejected'}
-    _status_col = next(
-        (col for col in df_timing.columns
-         if col.strip().lower() in ('timing letter status', 'status')),
-        None
+    # ------------------------------------------------------------------
+    # 2) MAP TL ↔ CN (active Timing Letters only)
+    # ------------------------------------------------------------------
+    EXCLUDED_TL_STATUS = {'Complete', 'Rejected'}
+    status_col = next(
+        (c for c in df_timing.columns
+         if c.strip().lower() in ('timing letter status', 'status')), None
     )
-    if _status_col:
-        _active_timing = df_timing[
-            ~df_timing[_status_col].astype(str).str.strip().isin(_EXCLUDED_STATUSES)
-        ].copy()
+    active_timing = (
+        df_timing[~df_timing[status_col].astype(str).str.strip().isin(EXCLUDED_TL_STATUS)].copy()
+        if status_col else df_timing.copy()
+    )
+
+    def _norm_id(x):
+        """Normalize numeric IDs — avoids scientific notation (9.9e+11 → 990000000120)."""
+        s = str(x).strip()
+        try:
+            return str(int(float(s)))
+        except Exception:
+            return s
+
+    map_tl_to_cn = dict(zip(
+        active_timing['Timing Letter Number'].apply(_norm_id),
+        active_timing['Change Number'].apply(_norm_id)
+    ))
+    map_cn_to_tl = dict(zip(
+        active_timing['Change Number'].apply(_norm_id),
+        active_timing['Timing Letter Number'].apply(_norm_id)
+    ))
+
+    # Normalise PLM Trigger ID → CN number, and populate Timing Letter Number
+    df_plm['_orig_trigger'] = df_plm['Trigger ID'].astype(str).str.strip()
+    df_plm['Trigger ID'] = df_plm['_orig_trigger'].apply(
+        lambda x: map_tl_to_cn.get(x, x)
+    )
+    df_plm['Timing Letter Number'] = df_plm['_orig_trigger'].apply(
+        lambda x: _norm_id(x) if x in map_tl_to_cn else _norm_id(map_cn_to_tl.get(x, ""))
+    )
+    df_plm.drop(columns=['_orig_trigger'], inplace=True)
+
+    # ------------------------------------------------------------------
+    # 3) FILTER — keep only INAPPROVAL / REJECTED from source files
+    # ------------------------------------------------------------------
+    if 'Approval Status' in df_auto.columns:
+        df_auto = df_auto[df_auto['Approval Status'].isin(['INAPPROVAL', 'REJECTED'])].copy()
+    if 'Approval Status' in df_plm.columns:
+        df_plm  = df_plm[df_plm['Approval Status'].isin(['INAPPROVAL', 'REJECTED'])].copy()
+    # Note: REJECTED rows are filtered OUT of the final report after merging
+
+    # ------------------------------------------------------------------
+    # 4) DEDUPE — keep most recent per Trigger ID
+    # ------------------------------------------------------------------
+    for df in (df_auto, df_plm):
+        df['Creation Date'] = pd.to_datetime(df['Creation Date'], errors='coerce')
+        df.sort_values('Creation Date', ascending=False, inplace=True)
+        df.drop_duplicates(subset=['Trigger ID'], keep='first', inplace=True)
+
+    # ------------------------------------------------------------------
+    # 5) INITIALISE GROUP COLUMNS
+    # ------------------------------------------------------------------
+    auto_groups = ["Pricing", "Purchasing", "MPL", "Customs",
+                   "Sales", "Manufacturing", "Costing", "MDS"]
+    tl_groups   = ["MPL-TL", "MDS-TL"]
+
+    for g in auto_groups:
+        df_auto[g] = ""
+    for g in tl_groups:
+        df_plm[g] = ""
+
+    # ------------------------------------------------------------------
+    # 6) APPLY GROUP X MARKS
+    # ------------------------------------------------------------------
+    if workflowtask_file is not None:
+        # ── NEW LOGIC: derive groups from C_WORKFLOWTASK ──────────────
+        df_wf = load_xlsx_fast(workflowtask_file, sheet_name=0)
+        if df_wf is None or df_wf.empty:
+            raise ValueError("C_WORKFLOWTASK file is empty or could not be loaded.")
+
+        df_wf.columns = [str(c).strip() for c in df_wf.columns]
+
+        # The CN/TL key is in 'Instance ID.1' (last Instance ID column)
+        # 'Instance ID' (col 4) is NaN for workflow rows — use Instance ID.1
+        instance_col_key = 'Instance ID.1'
+        if instance_col_key not in df_wf.columns:
+            # Fallback: pick last column named 'Instance ID' (case-insensitive)
+            candidates = [c for c in df_wf.columns if 'instance id' in c.lower()]
+            instance_col_key = candidates[-1] if candidates else None
+        if instance_col_key is None:
+            raise ValueError("C_WORKFLOWTASK: no Instance ID column found.")
+
+        # Normalise columns
+        df_wf[instance_col_key]   = df_wf[instance_col_key].astype(str).str.strip()
+        df_wf['Technical Status'] = df_wf['Technical Status'].astype(str).str.upper().str.strip()
+
+        # Work item text column — SAP exports it as 'Work item text' (lowercase 'item')
+        wit_col = next((c for c in df_wf.columns
+                        if c.lower().replace(' ', '') == 'workitemtext'), None)
+        if wit_col is None:
+            raise ValueError("C_WORKFLOWTASK: no 'Work item text' column found.")
+        df_wf[wit_col] = df_wf[wit_col].astype(str).str.strip()
+
+        # Keep only READY / SELECTED rows
+        df_wf = df_wf[df_wf['Technical Status'].isin({'READY', 'SELECTED'})].copy()
+
+        # Build workflow_map: {CN_or_TL_id: {group: "X", _status: ...}}
+        # Key = Instance ID.1 value (e.g. 'CN00141782' or '990000000051')
+        # For each CN/TL, collect all groups marked X across multiple rows
+        workflow_map = {}
+        for _, row in df_wf.iterrows():
+            iid    = row[instance_col_key]
+            text   = row[wit_col]
+
+            if iid in ('nan', '', 'NaN'):
+                continue
+
+            entry = workflow_map.setdefault(iid, {})
+
+            # Skip non-approval rows — only READY/SELECTED with group info matter
+            if 'ready to approve' not in text.lower():
+                continue
+
+            # First word of the text = group identifier
+            # TL:   "MPL-TL 990000000051/CN00142474 Ready to Approve" → first word = "MPL-TL"
+            # Auto: "Pricing-Ready to Approve CN00141782"              → first word = "Pricing-Ready"
+            first_word = text.split()[0].strip()
+
+            if first_word.endswith('-TL'):
+                # Timing Letter group (e.g. "MPL-TL", "MDS-TL")
+                entry[first_word] = "X"
+            elif '-' in first_word:
+                # Automotive group: "Pricing-Ready" → group = "Pricing"
+                group = first_word.split('-', 1)[0]
+                entry[group] = "X"
+            else:
+                # Single-word group with no dash (rare): use as-is
+                entry[first_word] = "X"
+
+        # Apply workflow_map to each dataframe
+        def _tln_key(raw):
+            """Normalize a raw TLN cell value (float or string) to a clean string key."""
+            import math
+            if raw is None or (isinstance(raw, float) and math.isnan(raw)):
+                return ''
+            if isinstance(raw, float):
+                return str(int(raw))
+            s = str(raw).strip()
+            if s in ('', 'nan', 'NaN'):
+                return ''
+            try:
+                return str(int(float(s)))
+            except Exception:
+                return s
+
+        def apply_wf_map_auto(df):
+            """Automotive: look up by Trigger ID (CN number)."""
+            for idx, row in df.iterrows():
+                key = str(row['Trigger ID']).strip()
+                wf  = workflow_map.get(key)
+                if not wf:
+                    continue
+                for col, val in wf.items():
+                    if col.startswith('_'):
+                        continue
+                    if col in df.columns:
+                        df.at[idx, col] = val
+            return df
+
+        def apply_wf_map_tl(df):
+            """TimingLetter: ALWAYS look up by Timing Letter Number (990* key).
+            The Trigger ID of a TL row is a CN that may also exist in workflow_map
+            as an Automotive entry — using it would apply the wrong groups."""
+            if 'Timing Letter Number' not in df.columns:
+                return df
+            for idx, row in df.iterrows():
+                tln = _tln_key(row['Timing Letter Number'])
+                wf  = workflow_map.get(tln) if tln else None
+                if not wf:
+                    continue
+                for col, val in wf.items():
+                    if col.startswith('_'):
+                        continue
+                    if col in df.columns:
+                        df.at[idx, col] = val
+            return df
+
+        df_auto = apply_wf_map_auto(df_auto)
+        df_plm  = apply_wf_map_tl(df_plm)
+
     else:
-        _active_timing = df_timing.copy()
+        # ── FALLBACK: original approver-column logic ───────────────────
+        categories_auto    = ["Pricing", "Purchasing", "MPL", "Customs",
+                               "Sales", "Manufacturing", "Costing", "MDS"]
+        approver_cols_auto = ['Approver1'] + [f'approver{i}' for i in range(2, 8)] + ['Approver8']
 
-    # Map Trigger ID -> Change Number  (active Timing Letters only)
-    map_trigger_to_change = dict(zip(
-        _active_timing['Timing Letter Number'].astype(str).str.strip(),
-        _active_timing['Change Number'].astype(str).str.strip()
-    ))
-    # Reverse map: Change Number -> Timing Letter Number (active only)
-    map_change_to_tln = dict(zip(
-        _active_timing['Change Number'].astype(str).str.strip(),
-        _active_timing['Timing Letter Number'].astype(str).str.strip()
-    ))
+        for idx, row in df_auto.iterrows():
+            for col in approver_cols_auto:
+                if col in df_auto.columns:
+                    clean = str(row[col]).split("(")[0].strip() if pd.notna(row[col]) else ""
+                    if clean in categories_auto:
+                        df_auto.at[idx, clean] = "X"
 
-    # Keep original Trigger ID before replacing with Change Number
-    df_plm['_original_trigger'] = df_plm['Trigger ID'].astype(str).str.strip()
-    df_plm['Trigger ID'] = df_plm['_original_trigger'].apply(
-        lambda x: map_trigger_to_change.get(x, x)
-    )
-    # Populate Timing Letter Number — active Timing Letters only
-    df_plm['Timing Letter Number'] = df_plm['_original_trigger'].apply(
-        lambda x: x if x in map_trigger_to_change else map_change_to_tln.get(x, "")
-    )
-    df_plm.drop(columns=['_original_trigger'], inplace=True)
+        for idx, row in df_plm.iterrows():
+            for col in [c for c in df_plm.columns if "approver" in c.lower()]:
+                val = str(row[col]) if pd.notna(row.get(col)) else ""
+                if val.startswith('MPL'): df_plm.at[idx, 'MPL-TL'] = "X"
+                if val.startswith('MDS'): df_plm.at[idx, 'MDS-TL'] = "X"
 
-    def add_pending_claimed(df):
-        actual_end_cols = [c for c in df.columns if c.startswith("Actual End Date of Work Item")]
-        df['Pending(Claimed)'] = ""
-        for idx, row in df.iterrows():
-            pending = []
-            for col in actual_end_cols:
-                date_val = row.get(col)
-                if pd.notna(date_val):
-                    s = str(date_val)
-                    if s.startswith("9999-12-31") or s.startswith("12/31/9999"):
-                        col_idx = df.columns.get_loc(col)
-                        if col_idx > 0:
-                            approver = row[df.columns[col_idx - 1]]
-                            if pd.notna(approver):
-                                pending.append(str(approver))
-            if pending:
-                df.at[idx, 'Pending(Claimed)'] = ", ".join(pending)
-        return df
+    # ------------------------------------------------------------------
+    # 7) MERGE + FINAL COLUMNS
+    # ------------------------------------------------------------------
+    df_auto['Source'] = "Automotive"
+    df_plm['Source']  = "TimingLetter"
 
-    df_auto = add_pending_claimed(df_auto)
-    df_plm  = add_pending_claimed(df_plm)
+    final_cols = [
+        "Source", "Trigger ID", "Timing Letter Number", "Plant",
+        "Creation Date", "Approval Status",
+        "MPL-TL", "MDS-TL",
+        "Pricing", "Purchasing", "MPL", "Customs",
+        "Sales", "Manufacturing", "Costing", "MDS",
+        "Aging"
+    ]
 
-    # Automotive
-    categories_auto = ["Pricing", "Purchasing", "MPL", "Customs", "Sales", "Manufacturing", "Costing", "MDS"]
-    approver_cols_auto = ['Approver1'] + [f'approver{i}' for i in range(2, 8)] + ['Approver8']
-    df_auto_f = df_auto[df_auto['Approval Status'].isin(['INAPPROVAL', 'REJECTED'])].copy()
-    df_auto_f['Creation Date'] = pd.to_datetime(df_auto_f['Creation Date'], errors='coerce')
-    df_auto_f.sort_values('Creation Date', ascending=False, inplace=True)
-    df_auto_f.drop_duplicates(subset=['Trigger ID'], keep='first', inplace=True)
-    for cat in categories_auto:
-        df_auto_f[cat] = ""
-    for idx, row in df_auto_f.iterrows():
-        for col in approver_cols_auto:
-            if col in df_auto_f.columns:
-                clean = str(row[col]).split("(")[0].strip() if pd.notna(row[col]) else ""
-                if clean in categories_auto:
-                    df_auto_f.at[idx, clean] = "X"
-    df_auto_f['Creation Date'] = df_auto_f['Creation Date'].dt.strftime('%Y-%m-%d')
-    df_auto_f['Source'] = "Automotive"
+    # Ensure all columns exist in both dataframes
+    for col in final_cols:
+        if col not in df_auto.columns: df_auto[col] = ""
+        if col not in df_plm.columns:  df_plm[col]  = ""
 
-    # TimingLetter
-    df_tl_f = df_plm[df_plm['Approval Status'].isin(['INAPPROVAL', 'REJECTED'])].copy()
-    df_tl_f['Creation Date'] = pd.to_datetime(df_tl_f['Creation Date'], errors='coerce')
-    df_tl_f.sort_values('Creation Date', ascending=False, inplace=True)
-    df_tl_f.drop_duplicates(subset=['Trigger ID'], keep='first', inplace=True)
-    df_tl_f['MPL - TL'] = ""; df_tl_f['MDS - TL'] = ""
-    for idx, row in df_tl_f.iterrows():
-        for col in [c for c in df_plm.columns if "approver" in c.lower()]:
-            val = str(row[col]) if pd.notna(row.get(col)) else ""
-            if val.startswith('MPL'): df_tl_f.at[idx, 'MPL - TL'] = "X"
-            if val.startswith('MDS'): df_tl_f.at[idx, 'MDS - TL'] = "X"
-    df_tl_f['Creation Date'] = df_tl_f['Creation Date'].dt.strftime('%Y-%m-%d')
-    df_tl_f['Source'] = "TimingLetter"
+    df_final = pd.concat([df_auto, df_plm], ignore_index=True)
 
-    all_cols = ['Source', 'Trigger ID', 'Timing Letter Number', 'Plant', 'Creation Date',
-                'Approval Status', 'Pending(Claimed)',
-                'MPL - TL', 'MDS - TL', 'Pricing', 'Purchasing', 'MPL', 'Customs',
-                'Sales', 'Manufacturing', 'Costing', 'MDS']
-    for col in all_cols:
-        if col not in df_auto_f.columns: df_auto_f[col] = ""
-        if col not in df_tl_f.columns:   df_tl_f[col]   = ""
-
-    df_final = pd.concat([df_auto_f[all_cols], df_tl_f[all_cols]], ignore_index=True)
-
-    # Propagate Timing Letter Number from TimingLetter rows to Automotive rows
-    # with the same Change Number (Trigger ID)
+    # Propagate TLN from TimingLetter rows to Automotive rows with same CN
     tln_map = (
         df_final[df_final['Source'] == 'TimingLetter']
         [['Trigger ID', 'Timing Letter Number']]
@@ -4646,22 +4781,26 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file):
         axis=1
     )
 
+    # Remove REJECTED rows from the final report
+    df_final = df_final[df_final['Approval Status'] != 'REJECTED'].copy()
+
     df_final['Creation Date'] = pd.to_datetime(df_final['Creation Date'], errors='coerce')
-    df_final['Source'] = pd.Categorical(df_final['Source'], categories=["Automotive", "TimingLetter"], ordered=True)
-    df_final.sort_values(["Source", "Creation Date"], ascending=[True, False], inplace=True)
+    df_final['Source'] = pd.Categorical(
+        df_final['Source'], categories=["Automotive", "TimingLetter"], ordered=True
+    )
 
     today = datetime.now()
     df_final['Aging'] = (today - df_final['Creation Date']).dt.days
+    df_final.sort_values(["Source", "Aging"], ascending=[True, False], inplace=True)
     df_final['Creation Date'] = df_final['Creation Date'].dt.strftime('%Y-%m-%d')
 
-    final_cols = ["Source", "Trigger ID", "Timing Letter Number", "Plant", "Creation Date",
-                  "Approval Status", "Pending(Claimed)",
-                  "MPL - TL", "MDS - TL", "Pricing", "Purchasing", "MPL", "Customs",
-                  "Sales", "Manufacturing", "Costing", "MDS", "Aging"]
-    df_final   = df_final[final_cols]
-    df_pt01    = df_final[df_final['Plant'] == 'PT01'].copy()
-    df_pt02    = df_final[df_final['Plant'] == 'PT02'].copy()
+    df_final = df_final[final_cols]
+    df_pt01  = df_final[df_final['Plant'] == 'PT01'].copy()
+    df_pt02  = df_final[df_final['Plant'] == 'PT02'].copy()
 
+    # ------------------------------------------------------------------
+    # 8) EXCEL OUTPUT
+    # ------------------------------------------------------------------
     xlsx_bytes = io.BytesIO()
     with pd.ExcelWriter(xlsx_bytes, engine="openpyxl") as writer:
         df_pt01.to_excel(writer, sheet_name="PT01", index=False)
@@ -4670,7 +4809,6 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file):
     xlsx_bytes = _apply_conditional_formatting_in_memory(xlsx_bytes)
 
     return xlsx_bytes, df_pt01, df_pt02
-
 
 # =============================================================================
 # 7) COMPARE ADJUSTED REPORTS (Progress Tracking)
