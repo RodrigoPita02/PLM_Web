@@ -4174,8 +4174,8 @@ def run_data_cleanups_validation(
 
     results["FP in PT02"]                   = validar_fp_pt01_pt02_status55(zplm_marc, marc)
     results["EOPvsSL (Blank or Swapped)"]   = validar_fp55_eop_vs_service_liability(zplm_marc, marc)
-    results["Past Service Liability"]        = validar_fp55_service_liability_expired(zplm_marc, marc)
-    results["EOP Expired"]       = validar_fp50_eop_expired(zplm_marc, marc)
+    results["Past Service Liability"]       = validar_fp55_service_liability_expired(zplm_marc, marc)
+    results["EOP Expired"]                  = validar_fp50_eop_expired(zplm_marc, marc)
     results["No Standard Cost"]             = validar_fppp70_standard_price_mbew(zplm_marc, marc, mbew)
     results["Missing in ZPLM_MARC"]         = validar_marc_vs_zplm_marc_existence(marc, zplm_marc, mara)
     results["Missing in ZPLM_MARA"]         = validar_mara_vs_zplm_mara_existence(mara, zplm_mara)
@@ -4663,7 +4663,7 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file,
         instance_col_key = 'Instance ID.1'
         if instance_col_key not in df_wf.columns:
             # Fallback: pick last column named 'Instance ID' (case-insensitive)
-            candidates = [c for c in df_wf.columns if 'instance id' in c.lower()]
+            candidates = [c for c in df_wf.columns if 'Instance ID' in c.lower()]
             instance_col_key = candidates[-1] if candidates else None
         if instance_col_key is None:
             raise ValueError("C_WORKFLOWTASK: no Instance ID column found.")
@@ -4699,21 +4699,22 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file,
             if 'ready to approve' not in text.lower():
                 continue
 
-            # First word of the text = group identifier
-            # TL:   "MPL-TL 990000000051/CN00142474 Ready to Approve" → first word = "MPL-TL"
-            # Auto: "Pricing-Ready to Approve CN00141782"              → first word = "Pricing-Ready"
-            first_word = text.split()[0].strip()
-
-            if first_word.endswith('-TL'):
-                # Timing Letter group (e.g. "MPL-TL", "MDS-TL")
-                entry[first_word] = "X"
-            elif '-' in first_word:
-                # Automotive group: "Pricing-Ready" → group = "Pricing"
-                group = first_word.split('-', 1)[0]
-                entry[group] = "X"
+            # Extract group from Work item text.
+            # Known patterns:
+            #   TL:        "MPL-TL 990000000051/CN00142474 Ready to Approve"
+            #   Standard:  "Pricing-Ready to Approve CN00141782"
+            #   RT suffix: "MDS-RT4 400000000257 Ready to Approve"
+            #   Two-word:  "Master Data-Ready to Approve CN00142919" → MDS
+            import re as _re
+            _GROUP_ALIASES = {'Master Data': 'MDS'}
+            _first_word = text.split()[0].strip()
+            if _first_word.endswith('-TL'):
+                # Timing Letter group — always identifiable by first word
+                entry[_first_word] = "X"
             else:
-                # Single-word group with no dash (rare): use as-is
-                entry[first_word] = "X"
+                _m = _re.match(r'^(.+?)(?:-Ready|-RT\d+|\s+Ready)', text, _re.IGNORECASE)
+                _group_raw = _m.group(1).strip() if _m else _first_word
+                entry[_GROUP_ALIASES.get(_group_raw, _group_raw)] = "X"
 
         # Apply workflow_map to each dataframe
         def _tln_key(raw):
@@ -4721,8 +4722,11 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file,
             import math
             if raw is None or (isinstance(raw, float) and math.isnan(raw)):
                 return ''
-            if isinstance(raw, float):
-                return str(int(raw))
+            if isinstance(raw, (float, __builtins__.__class__)):
+                try:
+                    return str(int(raw))
+                except Exception:
+                    pass
             s = str(raw).strip()
             if s in ('', 'nan', 'NaN'):
                 return ''
@@ -4730,6 +4734,10 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file,
                 return str(int(float(s)))
             except Exception:
                 return s
+
+        # Reset index after dedup to avoid stale index issues with df.at[]
+        df_auto = df_auto.reset_index(drop=True)
+        df_plm  = df_plm.reset_index(drop=True)
 
         def apply_wf_map_auto(df):
             """Automotive: look up by Trigger ID (CN number)."""
@@ -4739,16 +4747,14 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file,
                 if not wf:
                     continue
                 for col, val in wf.items():
-                    if col.startswith('_'):
-                        continue
                     if col in df.columns:
                         df.at[idx, col] = val
             return df
 
         def apply_wf_map_tl(df):
-            """TimingLetter: ALWAYS look up by Timing Letter Number (990* key).
-            The Trigger ID of a TL row is a CN that may also exist in workflow_map
-            as an Automotive entry — using it would apply the wrong groups."""
+            """TimingLetter: look up by Timing Letter Number (990* key).
+            Never use Trigger ID — a TL's Trigger ID is a CN that also exists
+            in workflow_map as Automotive, which would apply wrong groups."""
             if 'Timing Letter Number' not in df.columns:
                 return df
             for idx, row in df.iterrows():
@@ -4757,8 +4763,6 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file,
                 if not wf:
                     continue
                 for col, val in wf.items():
-                    if col.startswith('_'):
-                        continue
                     if col in df.columns:
                         df.at[idx, col] = val
             return df
@@ -5162,7 +5166,6 @@ def save_run_log(payload: dict, *, base_dir: str = ".history",
 
     return path
 
-
 def list_run_logs(run_type: str, *, base_dir: str = ".history", limit: int = 25) -> list:
     """Lists the last `limit` log entries for a given run type."""
     subdir_map = {"sap": "sap", "atl": "atl", "progress": "progress",
@@ -5185,7 +5188,6 @@ def list_run_logs(run_type: str, *, base_dir: str = ".history", limit: int = 25)
         except Exception:
             continue
     return out
-
 
 def save_report_to_vault(excel_bytes: io.BytesIO, *, report_type: str = "sap",
                           plant_suffix: str = "ALL") -> str:

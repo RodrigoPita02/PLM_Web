@@ -30,12 +30,11 @@ except Exception:
 
 # --- COLOR UTILITIES ---
 def hex_to_rgba(hex_color: str, alpha: float) -> str:
-    """Convert #RRGGBB to rgba(r,g,b,a)."""
     hc = hex_color.lstrip("#")
     r = int(hc[0:2], 16)
     g = int(hc[2:4], 16)
     b = int(hc[4:6], 16)
-    return f"rgba({r}, {g}, {b}, {alpha})"
+    return f"rgba({r},{g},{b},{alpha})"
 
 # Palete oficial
 VISTEON_COLORS = ["#FF7200", "#6EC6FF", "#00A6A6", "#4D4D4D", "#D9D9D9"]
@@ -938,7 +937,7 @@ def render_evolution_dashboard():
     .kpi-delta-neu{  color:var(--txt-muted); font-weight: 700; font-size:.85rem; }
 
     /* ---------- Activity feed ---------- */
-    .activity-row{
+    ..activity-row{
     display:flex; align-items:center; gap:10px;
     padding:10px 8px; border-bottom: 1px solid var(--border);
     font-size: .9rem; background: transparent;
@@ -1158,6 +1157,7 @@ def render_evolution_dashboard():
         tln   = (atl_last.get("metrics",{}).get("PT01_with_TLN",0) +
                  atl_last.get("metrics",{}).get("PT02_with_TLN",0)) if atl_last else 0
         user  = atl_last.get("user","—") if atl_last else "—"
+        _atl_scope = atl_last.get("plant_scope", atl_last.get("plant_filter","ALL")) if atl_last else "ALL"
         total = pt01 + pt02
         prev_t = (atl_prev.get("metrics",{}).get("PT01_rows",0) +
                   atl_prev.get("metrics",{}).get("PT02_rows",0)) if atl_prev else None
@@ -1169,7 +1169,7 @@ def render_evolution_dashboard():
             dstr, good = None, None
         with kpi_cols[col_i]:
             st.markdown(_html_kpi("🚗 PLM — Open Change Numbers", f"{total:,}",
-                                   f"{tln:,} with TLN &nbsp;·&nbsp; {user} &nbsp;·&nbsp; {atl_age}",
+                                   f"{tln:,} with TLN &nbsp;·&nbsp; {user} &nbsp;·&nbsp; {_atl_scope} &nbsp;·&nbsp; {atl_age}",
                                    dstr, good, CLR["plm01"]), unsafe_allow_html=True)
         col_i += 1
 
@@ -1195,14 +1195,18 @@ def render_evolution_dashboard():
     icon_map  = {"sap":"📦","atl":"🚗","dataclean":"🧹"}
     lbl_map   = {"sap":"SAP Validation","atl":"PLM Workflow","dataclean":"Data Cleanups"}
     vkey_map  = {"sap":"total_errors","atl":"PT01_rows","dataclean":"outdated"}
-    vlbl_map  = {"sap":"errors","atl":"PT01 rows","dataclean":"outdated"}
+    vlbl_map  = {"sap":"errors","atl":"CNs","dataclean":"outdated"}
     acc_map   = {"sap":CLR["sap"],"atl":CLR["plm01"],"dataclean":CLR["cleanups"]}
 
     feed_html = ''
     for kind, logs in [("sap",sap_logs),("atl",atl_logs),("dataclean",dc_logs)]:
         for log in sorted(logs, key=lambda l: l.get("timestamp",""), reverse=True)[:3]:
             ts  = log.get("timestamp","")
-            val = log.get("metrics",{}).get(vkey_map[kind], 0)
+            m_  = log.get("metrics",{})
+            if kind == "atl":
+                val = m_.get("PT01_rows", 0) + m_.get("PT02_rows", 0)
+            else:
+                val = m_.get(vkey_map[kind], 0)
             scope = log.get("plant_filter", log.get("plant_scope","ALL"))
             feed_html += f'''
             <div class="activity-row">
@@ -1280,8 +1284,10 @@ def render_evolution_dashboard():
     if "PLM Workflow" in selected_sources:
         for log in atl_logs:
             ts = pd.to_datetime(log.get("timestamp")); m = log.get("metrics",{})
-            entries.append({"ts":ts,"plant":"PT01","source":"PLM Workflow PT01","value":m.get("PT01_rows",0)})
-            entries.append({"ts":ts,"plant":"PT02","source":"PLM Workflow PT02","value":m.get("PT02_rows",0)})
+            # ATL logs use 'plant_scope', not 'plant_filter'
+            _scope = log.get("plant_scope", log.get("plant_filter", "ALL"))
+            entries.append({"ts":ts,"plant":_scope if _scope in ("PT01","PT02") else "PT01","source":"PLM Workflow PT01","value":m.get("PT01_rows",0)})
+            entries.append({"ts":ts,"plant":_scope if _scope in ("PT01","PT02") else "PT02","source":"PLM Workflow PT02","value":m.get("PT02_rows",0)})
             if "PLM TLN" in selected_sources:
                 if m.get("PT01_with_TLN",0)>0:
                     entries.append({"ts":ts,"plant":"PT01","source":"PLM TLN PT01","value":m.get("PT01_with_TLN",0)})
