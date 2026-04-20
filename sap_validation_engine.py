@@ -4792,26 +4792,53 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file,
     # ------------------------------------------------------------------
     # 7) MERGE + FINAL COLUMNS
     # ------------------------------------------------------------------
+    # Build Creation Date map from C_WORKFLOWTASK (earliest 'Created' per CN/TL)
+    _wf_date_map: dict = {}
+    if workflowtask_file is not None:
+        try:
+            _df_wf_dates = load_xlsx_fast(workflowtask_file, sheet_name=0)
+            _df_wf_dates.columns = [str(c).strip() for c in _df_wf_dates.columns]
+            _iid_col = 'Instance ID.1' if 'Instance ID.1' in _df_wf_dates.columns else None
+            if _iid_col and 'Created' in _df_wf_dates.columns:
+                def _norm_iid(x):
+                    if pd.isna(x): return ''
+                    s = str(x).strip()
+                    try: return str(int(float(s)))
+                    except Exception: return s
+                _df_wf_dates[_iid_col] = _df_wf_dates[_iid_col].apply(_norm_iid)
+                _df_wf_dates = _df_wf_dates[_df_wf_dates[_iid_col] != '']
+                _df_wf_dates['Created'] = pd.to_datetime(_df_wf_dates['Created'], errors='coerce')
+                _wf_date_map = _df_wf_dates.groupby(_iid_col)['Created'].min().to_dict()
+        except Exception:
+            _wf_date_map = {}
+
+    def _get_creation_date(trigger_id, tln, fallback):
+        """Return earliest workflow creation date for a CN or TL."""
+        key_cn  = str(trigger_id).strip() if trigger_id else ''
+        key_tln = str(tln).strip() if tln and str(tln).strip() not in ('', 'nan', '0') else ''
+        dt = _wf_date_map.get(key_cn) or (_wf_date_map.get(key_tln) if key_tln else None)
+        return dt if dt is not None else fallback
+
     df_auto['Source'] = "Automotive"
     df_plm['Source']  = "TimingLetter"
 
+    group_cols = ["MPL-TL", "MDS-TL",
+                  "Pricing", "Purchasing", "MPL", "Customs",
+                  "Sales", "Manufacturing", "Costing", "MDS"]
+
     final_cols = [
-        "Source", "Trigger ID", "Timing Letter Number", "Plant",
+        "Trigger ID", "Timing Letter Number", "Plant",
         "Creation Date", "Approval Status",
-        "MPL-TL", "MDS-TL",
-        "Pricing", "Purchasing", "MPL", "Customs",
-        "Sales", "Manufacturing", "Costing", "MDS",
-        "Aging"
-    ]
+    ] + group_cols + ["Aging"]
 
     # Ensure all columns exist in both dataframes
-    for col in final_cols:
+    for col in final_cols + ["Source"]:
         if col not in df_auto.columns: df_auto[col] = ""
         if col not in df_plm.columns:  df_plm[col]  = ""
 
     df_final = pd.concat([df_auto, df_plm], ignore_index=True)
 
-    # Propagate TLN from TimingLetter rows to Automotive rows with same CN
+    # Propagate TLN from TimingLetter rows to Automotive rows with same Trigger ID
     tln_map = (
         df_final[df_final['Source'] == 'TimingLetter']
         [['Trigger ID', 'Timing Letter Number']]
@@ -4828,20 +4855,56 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file,
         axis=1
     )
 
-    # Remove REJECTED rows from the final report
+    # Remove REJECTED rows
     df_final = df_final[df_final['Approval Status'] != 'REJECTED'].copy()
 
-    df_final['Creation Date'] = pd.to_datetime(df_final['Creation Date'], errors='coerce')
-    df_final['Source'] = pd.Categorical(
-        df_final['Source'], categories=["Automotive", "TimingLetter"], ordered=True
-    )
+    # ── Merge duplicate rows (same Trigger ID in Automotive + TimingLetter) ──
+    # Combine group X marks from both sources into one row per CN/TL.
+    merged_rows = []
+    for trigger_id, grp in df_final.groupby('Trigger ID', sort=False):
+        if len(grp) == 1:
+            merged_rows.append(grp.iloc[0].to_dict())
+            continue
 
+        # Start from the Automotive row if present (for Approval Status / Plant)
+        auto_rows = grp[grp['Source'] == 'Automotive']
+        base_row  = auto_rows.iloc[0].to_dict() if not auto_rows.empty else grp.iloc[0].to_dict()
+
+        # Merge ALL group X marks across all rows
+        for _, other in grp.iterrows():
+            for gc in group_cols:
+                if str(other.get(gc, '')).strip().upper() == 'X':
+                    base_row[gc] = 'X'
+            # Fill TLN if missing in base
+            if not base_row.get('Timing Letter Number') or                str(base_row['Timing Letter Number']).strip() in ('', 'nan', '0'):
+                tln_other = str(other.get('Timing Letter Number', '')).strip()
+                if tln_other not in ('', 'nan', '0'):
+                    base_row['Timing Letter Number'] = tln_other
+
+        merged_rows.append(base_row)
+
+    df_final = pd.DataFrame(merged_rows)
+
+    # Apply Creation Date from C_WORKFLOWTASK (earliest workflow date per CN/TL)
+    df_final['Creation Date'] = df_final.apply(
+        lambda row: _get_creation_date(
+            row.get('Trigger ID'),
+            row.get('Timing Letter Number'),
+            pd.to_datetime(row.get('Creation Date'), errors='coerce')
+        ),
+        axis=1
+    )
+    df_final['Creation Date'] = pd.to_datetime(df_final['Creation Date'], errors='coerce')
+
+    # Compute Aging and sort by Aging descending
     today = datetime.now()
     df_final['Aging'] = (today - df_final['Creation Date']).dt.days
-    df_final.sort_values(["Source", "Aging"], ascending=[True, False], inplace=True)
+    df_final.sort_values('Aging', ascending=False, inplace=True)
     df_final['Creation Date'] = df_final['Creation Date'].dt.strftime('%Y-%m-%d')
 
-    df_final = df_final[final_cols]
+    # Final column selection — no Source column
+    df_final = df_final[[c for c in final_cols if c in df_final.columns]]
+
     df_pt01  = df_final[df_final['Plant'] == 'PT01'].copy()
     df_pt02  = df_final[df_final['Plant'] == 'PT02'].copy()
 

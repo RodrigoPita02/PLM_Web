@@ -420,21 +420,35 @@ def render_atl_run_charts(df_pt01: pd.DataFrame, df_pt02: pd.DataFrame) -> None:
     # --- Top 15 CNs mais antigos (maior Aging) ---
     if 'Aging' in df_all.columns and 'Trigger ID' in df_all.columns:
         aging_num = pd.to_numeric(df_all['Aging'], errors='coerce')
+
+        cols = ['Trigger ID', 'Plant', 'Timing Letter Number', '_aging']
+        if 'Source' in df_all.columns:
+            cols.insert(1, 'Source')
+        cols = [c for c in cols if c in df_all.columns or c == '_aging']
+
         top_aging = (
             df_all.assign(_aging=aging_num)
             .dropna(subset=['_aging'])
             .sort_values('_aging', ascending=False)
             .drop_duplicates(subset=['Trigger ID'])
-            .head(15)[['Trigger ID', 'Source', 'Plant', 'Timing Letter Number', '_aging']]
+            .head(15)
+            .loc[:, cols]
             .rename(columns={'_aging': 'Aging (days)'})
             .reset_index(drop=True)
         )
+
         if not top_aging.empty:
             if PLOTLY_AVAILABLE:
+                hover_data = []
+                if 'Source' in top_aging.columns:
+                    hover_data.append('Source')
+                if 'Timing Letter Number' in top_aging.columns:
+                    hover_data.append('Timing Letter Number')
+
                 fig = px.bar(top_aging, x='Trigger ID', y='Aging (days)', color='Plant',
                              title="Top 15 Oldest Change Numbers (by Aging)",
                              text='Aging (days)',
-                             hover_data=['Source', 'Timing Letter Number'])
+                             hover_data=hover_data or None)
                 fig.update_traces(textposition='outside')
                 fig = style_plotly(fig, height=420)
                 fig.update_layout(xaxis_tickangle=-45)
