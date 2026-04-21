@@ -823,32 +823,33 @@ def render_evolution_dashboard():
         PLOTLY_OK = False
 
     # ── Palette & theme ───────────────────────────────────────────────────────
-    # ── Palette & theme ───────────────────────────────────────────────────────
+    _is_dark = st.get_option("theme.base") == "dark"
+
     CLR = {
-        # Brand accents (Visteon)
-        "sap":        "#FF7200",   # Visteon orange
-        "plm01":      "#6EC6FF",   # light blue
-        "plm02":      "#00A6A6",   # teal
-        "tln01":      "#2176AE",   # blue
-        "tln02":      "#1A936F",   # green
-        "cleanups":   "#4D4D4D",   # graphite
+        # Brand accents (Visteon) — always the same regardless of theme
+        "sap":        "#FF7200",
+        "plm01":      "#6EC6FF",
+        "plm02":      "#00A6A6",
+        "tln01":      "#2176AE",
+        "tln02":      "#1A936F",
+        "cleanups":   "#4D4D4D",
 
         # Status
         "green":      "#1A936F",
         "amber":      "#F4A011",
         "red":        "#C00000",
 
-        # DARK UI tokens (new)
-        "bg_page":    "#0F141A",   # app background
-        "bg_panel":   "#141B22",   # section panels
-        "bg_card":    "#161F28",   # cards
-        "bg_alt":     "#1A2330",   # alt rows / hover
-        "border":     "#253041",
-        "grid":       "#2A384D",   # grid lines on plots
-        "text_main":  "#E6EDF3",   # main text
-        "text_muted": "#9FB0C0",   # secondary text
-        "text_invert":"#0E1116",   # for pills/badges on light fills
-        "badge_bg":   "#0E1A26",   # subtle badge background
+        # UI tokens — switch with theme
+        "bg_page":    "#0F141A"  if _is_dark else "#ffffff",
+        "bg_panel":   "#141B22"  if _is_dark else "#f5f7fa",
+        "bg_card":    "#161F28"  if _is_dark else "#ffffff",
+        "bg_alt":     "#1A2330"  if _is_dark else "#f0f2f5",
+        "border":     "#253041"  if _is_dark else "#e5e7eb",
+        "grid":       "#2A384D"  if _is_dark else "#e5e7eb",
+        "text_main":  "#E6EDF3"  if _is_dark else "#1f2937",
+        "text_muted": "#9FB0C0"  if _is_dark else "#6b7280",
+        "text_invert":"#0E1116",
+        "badge_bg":   "#0E1A26"  if _is_dark else "#f3f4f6",
     }
 
     COLOR_MAP = {
@@ -862,45 +863,59 @@ def render_evolution_dashboard():
 
 
     # ── CSS injection ─────────────────────────────────────────────────────────
+    # NOTE: Background/color of html/body is intentionally NOT set here.
+    # Streamlit controls that via html[data-theme] in styles.css.
+    # These variables bridge the dashboard components to the active theme.
     st.markdown("""
     <style>
-    /* ---------- Page & Typography ---------- */
-    :root{
+    /* ---------- Light theme tokens ---------- */
+    html[data-theme="light"] {
+    --bg-page:   #ffffff;
+    --bg-panel:  #f5f7fa;
+    --bg-card:   #ffffff;
+    --bg-alt:    #f0f2f5;
+    --border:    #e5e7eb;
+    --grid:      #e5e7eb;
+    --txt-main:  #1f2937;
+    --txt-muted: #6b7280;
+    --txt-inv:   #0E1116;
+    --badge-bg:  #f3f4f6;
+    }
+
+    /* ---------- Dark theme tokens ---------- */
+    html[data-theme="dark"] {
     --bg-page:   #0F141A;
     --bg-panel:  #141B22;
     --bg-card:   #161F28;
     --bg-alt:    #1A2330;
     --border:    #253041;
     --grid:      #2A384D;
-
     --txt-main:  #E6EDF3;
     --txt-muted: #9FB0C0;
     --txt-inv:   #0E1116;
+    --badge-bg:  #0E1A26;
+    }
 
+    /* ---------- Brand colours (always the same) ---------- */
+    :root {
     --sap:   #FF7200;
     --plm01: #6EC6FF;
     --plm02: #00A6A6;
     --tln01: #2176AE;
     --tln02: #1A936F;
     --clean: #4D4D4D;
-
     --good:  #1A936F;
     --warn:  #F4A011;
     --bad:   #C00000;
-
-    --badge-bg: #0E1A26;
     }
 
-    html, body, .block-container{
-    background: var(--bg-page) !important;
-    color: var(--txt-main) !important;
-    }
+    /* ---------- Typography (inherits from theme, no override) ---------- */
     h1,h2,h3,h4,h5,h6{ color: var(--txt-main); }
     hr{ border-color: var(--border); opacity: 0.6; }
 
     /* ---------- Exec banner ---------- */
     .exec-banner {
-    background: linear-gradient(135deg, #10304C 0%, #1D4F7A 60%, #2A6FA5 100%);
+    background: linear-gradient(135deg, #F8FAFC 0%, #E5E7EB 60%, #CBD5E1 100%);
     border-radius: 14px;
     padding: 22px 28px 18px 28px;
     margin: 10px 0 20px 0;
@@ -912,13 +927,13 @@ def render_evolution_dashboard():
     font-size: 1.55rem; font-weight: 800; margin: 0 0 6px 0;
     }
     .exec-banner .subtitle{
-    font-size: .9rem; color: #E6EDF3; opacity: .9; margin: 0;
+    font-size: .9rem; color: black; opacity: .9; margin: 0;
     }
     .exec-banner .badge{
     display: inline-block; padding: 4px 12px; border-radius: 999px;
     font-size: .80rem; font-weight: 700; margin-left: 10px;
     background: var(--badge-bg); border: 1px solid var(--border);
-    color: #E6EDF3;
+    color: var(--txt-main);
     }
     .badge-green{ background:#0F251E; color:#30C08D; border-color:#1B5E4B; }
     .badge-amber{ background:#281E05; color:#F4A011; border-color:#5A4108; }
@@ -938,7 +953,7 @@ def render_evolution_dashboard():
     border-radius: 12px;
     padding: 14px 16px 12px 16px;
     margin-bottom: 8px;
-    box-shadow: 0 6px 16px rgba(0,0,0,.20);
+    box-shadow: 0 6px 16px rgba(0,0,0,.10);
     }
     .kpi-card .kpi-label{
     color: var(--txt-muted); font-size: .75rem; font-weight: 700;
@@ -951,7 +966,7 @@ def render_evolution_dashboard():
     .kpi-delta-neu{  color:var(--txt-muted); font-weight: 700; font-size:.85rem; }
 
     /* ---------- Activity feed ---------- */
-    ..activity-row{
+    .activity-row{
     display:flex; align-items:center; gap:10px;
     padding:10px 8px; border-bottom: 1px solid var(--border);
     font-size: .9rem; background: transparent;
@@ -964,7 +979,7 @@ def render_evolution_dashboard():
     /* ---------- Trend panels ---------- */
     .trend-panel{
     background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
-    padding: 14px 16px; margin: 6px 0; box-shadow: 0 6px 16px rgba(0,0,0,.20);
+    padding: 14px 16px; margin: 6px 0; box-shadow: 0 6px 16px rgba(0,0,0,.10);
     }
     .trend-icon{ font-size: 2.0rem; line-height:1; }
     .trend-label{ font-size: 1.05rem; font-weight: 800; color: var(--txt-main); }
@@ -975,10 +990,10 @@ def render_evolution_dashboard():
     border-radius:10px; padding:10px 14px; margin:6px 0; font-size:.9rem; line-height:1.55;
     border: 1px solid var(--border);
     }
-    .insight-neutral{ background:#0F1B28; color:var(--txt-main); }
-    .insight-good{    background:#0F251E; color:var(--txt-main); }
-    .insight-warn{    background:#2A1F0E; color:var(--txt-main); }
-    .insight-bad{     background:#2B0E0E; color:var(--txt-main); }
+    .insight-neutral{ background:var(--bg-panel); color:var(--txt-main); }
+    .insight-good{    background:var(--bg-panel); color:var(--txt-main); border-color: #1A936F; }
+    .insight-warn{    background:var(--bg-panel); color:var(--txt-main); border-color: #F4A011; }
+    .insight-bad{     background:var(--bg-panel); color:var(--txt-main); border-color: #C00000; }
 
     /* ---------- Streamlit bits ---------- */
     .block-container{ padding-top: 1.0rem; }
