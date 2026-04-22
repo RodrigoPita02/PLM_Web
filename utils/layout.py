@@ -109,17 +109,23 @@ def inject_theme_overrides(theme_name: str | None) -> None:
     """
     Injects the chosen theme CSS variables into :root on every rerun.
 
-    The critical fix vs the original: this must be called at the TOP of every
-    rerun (before any other st.* call), not just when the selectbox changes.
-    Streamlit wipes injected CSS on each rerun, so we must re-inject every time.
+    Rules:
+    - Called ONCE per rerun, at the top of render_header (before the selectbox).
+    - ALL element overrides (background, color) are always emitted — not just
+      for dark themes. This ensures that switching back to a light theme properly
+      clears any dark values left over from a previous rerun.
+    - dashboard.py must read the active theme from session_state["theme_picker"],
+      not from st.get_option("theme.base"), which only reflects config.toml.
     """
     name    = theme_name or "🟠 Visteon Corporate (default)"
     palette = THEMES.get(name, THEMES["🟠 Visteon Corporate (default)"])
 
     css_vars = "\n    ".join(f"{k}: {v};" for k, v in palette.items())
 
-    is_dark = name in _DARK_THEMES
-    dark_overrides = """
+    # Always inject element overrides regardless of light/dark.
+    # Without this, switching from dark -> light leaves the dark !important
+    # rules in the DOM because Streamlit never removes injected <style> tags.
+    element_overrides = """
         .stApp, .main, section.main, .block-container,
         [data-testid="stAppViewContainer"] {
             background-color: var(--app-bg) !important;
@@ -130,23 +136,114 @@ def inject_theme_overrides(theme_name: str | None) -> None:
         [data-baseweb="textarea"] textarea {
             background-color: var(--menu-item-bg) !important;
             color: var(--app-fg) !important;
+            border-color: var(--app-border) !important;
         }
         [data-testid="metric-container"] {
             background-color: var(--card-bg-1) !important;
             border: 1px solid var(--app-border) !important;
-            border-radius: 10px; padding: 12px;
+            border-radius: 10px;
+            padding: 12px;
         }
-        .stMarkdown, .stText, p, li, td, th {
+        [data-testid="metric-container"] label,
+        [data-testid="metric-container"] [data-testid="stMetricValue"],
+        [data-testid="metric-container"] [data-testid="stMetricDelta"] {
+            color: var(--app-fg) !important;
+        }
+        .stMarkdown, .stText, p, li, td, th, label {
             color: var(--app-fg) !important;
         }
         [data-testid="stExpander"] {
             background-color: var(--app-bg-secondary) !important;
             border-color: var(--app-border) !important;
         }
-    """ if is_dark else ""
+        [data-testid="stDataFrame"] th {
+            background-color: var(--app-bg-secondary) !important;
+            color: var(--app-fg) !important;
+        }
+        [data-baseweb="select"] > div {
+            background-color: var(--menu-item-bg) !important;
+            border-color: var(--app-border) !important;
+        }
+        [data-baseweb="select"] span {
+            color: var(--app-fg) !important;
+        }
+        section[data-testid="stSidebar"] {
+            background-color: var(--menu-bg) !important;
+        }
+
+        /* ---- Streamlit top toolbar ---- */
+        [data-testid="stHeader"] {
+            background-color: var(--app-bg) !important;
+            border-bottom: 1px solid var(--app-border) !important;
+        }
+        [data-testid="stHeader"] button svg,
+        [data-testid="stHeader"] a svg {
+            fill: var(--app-fg) !important;
+        }
+        [data-testid="stToolbar"] {
+            background-color: var(--app-bg) !important;
+        }
+        [data-testid="stDecoration"] {
+            background: var(--primary) !important;
+        }
+
+        /* ---- BaseWeb dropdowns / selects (full coverage) ---- */
+        [data-baseweb="select"] > div:first-child {
+            background-color: var(--menu-item-bg) !important;
+            border-color: var(--app-border) !important;
+            color: var(--app-fg) !important;
+        }
+        [data-baseweb="select"] [data-baseweb="icon"] svg path {
+            fill: var(--app-fg) !important;
+        }
+        /* Dropdown list popup */
+        [data-baseweb="popover"] [data-baseweb="menu"],
+        [data-baseweb="menu"] {
+            background-color: var(--menu-item-bg) !important;
+            border-color: var(--app-border) !important;
+        }
+        [data-baseweb="menu"] li,
+        [data-baseweb="menu"] [role="option"] {
+            background-color: var(--menu-item-bg) !important;
+            color: var(--app-fg) !important;
+        }
+        [data-baseweb="menu"] li:hover,
+        [data-baseweb="menu"] [role="option"]:hover,
+        [data-baseweb="menu"] [aria-selected="true"] {
+            background-color: var(--menu-item-hover) !important;
+            color: var(--app-fg) !important;
+        }
+        /* Selected option tag inside multiselect */
+        [data-baseweb="tag"] {
+            background-color: var(--menu-item-active) !important;
+            color: var(--app-fg) !important;
+        }
+        /* Placeholder text */
+        [data-baseweb="select"] input::placeholder {
+            color: var(--app-fg-muted, var(--txt-muted)) !important;
+        }
+
+        /* ---- st.multiselect / st.text_input backgrounds ---- */
+        [data-baseweb="base-input"] {
+            background-color: var(--menu-item-bg) !important;
+            color: var(--app-fg) !important;
+        }
+
+        /* ---- st.tabs ---- */
+        [data-baseweb="tab-list"] {
+            background-color: var(--app-bg) !important;
+        }
+        [data-baseweb="tab"] {
+            background-color: var(--app-bg) !important;
+            color: var(--app-fg-muted, var(--txt-muted)) !important;
+        }
+        [aria-selected="true"][data-baseweb="tab"] {
+            color: var(--primary) !important;
+        }
+    """
 
     st.markdown(
-        f"<style>:root {{\n    {css_vars}\n}}\n{dark_overrides}</style>",
+        f"<style>:root {{\n    {css_vars}\n}}\n{element_overrides}</style>",
         unsafe_allow_html=True,
     )
 
@@ -156,8 +253,11 @@ def render_header(page_title: str, *, show_theme_picker: bool = True) -> str:
     Draws the app header with title and theme picker.
     Returns the chosen theme name.
 
-    Fix: theme is read from session_state and injected at the very start of
-    every rerun — this ensures the theme actually persists and applies.
+    inject_theme_overrides is called exactly ONCE per rerun — before the
+    selectbox renders. The selectbox writes to session_state["theme_picker"]
+    which triggers a rerun, and the next rerun picks up the new value at the
+    top. Calling inject_theme_overrides a second time after the selectbox
+    causes duplicate <style> blocks that fight each other in the DOM.
     """
     default_theme = "🟠 Visteon Corporate (default)"
 
@@ -165,7 +265,7 @@ def render_header(page_title: str, *, show_theme_picker: bool = True) -> str:
     if "theme_picker" not in st.session_state:
         st.session_state["theme_picker"] = default_theme
 
-    # CRITICAL: inject theme at top of every rerun, before any other content
+    # Inject ONCE, at the very top of every rerun, before any widgets.
     inject_theme_overrides(st.session_state["theme_picker"])
 
     with st.container():
@@ -188,10 +288,9 @@ def render_header(page_title: str, *, show_theme_picker: bool = True) -> str:
                     ),
                     key="theme_picker",
                     label_visibility="collapsed",
+                    # Changing the selectbox triggers a rerun automatically;
+                    # the new theme is injected at the top of that rerun.
                 )
-                # Re-inject immediately after selectbox so theme applies
-                # on the same rerun that the user picks it
-                inject_theme_overrides(st.session_state["theme_picker"])
 
         st.markdown('</div>', unsafe_allow_html=True)
 

@@ -823,7 +823,8 @@ def render_evolution_dashboard():
         PLOTLY_OK = False
 
     # ── Palette & theme ───────────────────────────────────────────────────────
-    _is_dark = st.get_option("theme.base") == "dark"
+    _DARK_THEMES = {"🌙 Dark Mode", "🔲 High Contrast"}
+    _is_dark = st.session_state.get("theme_picker", "") in _DARK_THEMES
 
     CLR = {
         # Brand accents (Visteon) — always the same regardless of theme
@@ -914,30 +915,33 @@ def render_evolution_dashboard():
     hr{ border-color: var(--border); opacity: 0.6; }
 
     /* ---------- Exec banner ---------- */
+    /* Uses --primary from the active theme for the accent line;
+       background is always a dark navy so text is always white/readable. */
     .exec-banner {
-    background: linear-gradient(135deg, #F8FAFC 0%, #E5E7EB 60%, #CBD5E1 100%);
+    background: linear-gradient(135deg, #0D2137 0%, #163859 55%, #1B4F80 100%);
     border-radius: 14px;
     padding: 22px 28px 18px 28px;
     margin: 10px 0 20px 0;
-    color: #fff;
-    border: 1px solid var(--border);
-    box-shadow: 0 10px 30px rgba(0,0,0,.28);
+    color: #ffffff !important;
+    border: 2px solid var(--primary);
+    box-shadow: 0 10px 30px rgba(0,0,0,.35), 0 0 0 1px rgba(255,106,19,.15);
     }
     .exec-banner h1{
     font-size: 1.55rem; font-weight: 800; margin: 0 0 6px 0;
+    color: #ffffff !important;
     }
-    .exec-banner .subtitle{
-    font-size: .9rem; color: black; opacity: .9; margin: 0;
+    .exec-banner p, .exec-banner .subtitle{
+    font-size: .9rem; color: rgba(255,255,255,.85) !important; margin: 0;
     }
+    .exec-banner strong { color: #ffffff !important; }
     .exec-banner .badge{
     display: inline-block; padding: 4px 12px; border-radius: 999px;
     font-size: .80rem; font-weight: 700; margin-left: 10px;
-    background: var(--badge-bg); border: 1px solid var(--border);
-    color: var(--txt-main);
     }
-    .badge-green{ background:#0F251E; color:#30C08D; border-color:#1B5E4B; }
-    .badge-amber{ background:#281E05; color:#F4A011; border-color:#5A4108; }
-    .badge-red{   background:#2B0E0E; color:#E05858; border-color:#5B1A1A; }
+    /* Status badges — always legible on dark banner */
+    .badge-green{ background:rgba(26,147,111,.25); color:#4ade80; border: 1px solid #1A936F; }
+    .badge-amber{ background:rgba(244,160,17,.20); color:#fbbf24; border: 1px solid #F4A011; }
+    .badge-red{   background:rgba(192,0,0,.25);    color:#f87171; border: 1px solid #C00000; }
 
     /* ---------- Section header ---------- */
     .section-header{
