@@ -1156,6 +1156,7 @@ def validar_mrp_type(df, resultados, zplm_marc_df=None,
             resultados.append({'Line': idx + 2, 'Field': 'MRP Type',
                                'Error': ' \n'.join(erros), 'Material': material, 'Plant': plant})
 
+
 def validar_price_control(df, resultados):
     """Price Control must always be 'S'."""
     if 'Price Control' not in df.columns:
@@ -1326,7 +1327,9 @@ def validar_profit_center(df, resultados):
 
 
 def validar_purchasing_group(df, resultados):
-    """Purchasing Group is mandatory only for Plant Type = PP."""
+    """Purchasing Group is mandatory only for Plant Type = PP.
+    MP and FP should not have a Purchasing Group
+    """
     if 'Plant Type' not in df.columns or 'Purchasing Group' not in df.columns:
         print("⚠️ Columns 'Plant Type' or 'Purchasing Group' not found.")
         return
@@ -1337,6 +1340,10 @@ def validar_purchasing_group(df, resultados):
             val = str(row['Purchasing Group']).strip()
             if pd.isna(row['Purchasing Group']) or val == '':
                 erros.append("Mandatory field blank For Plant Type 'PP'")
+        elif str(row['Plant Type']).strip() in ['MP', 'FP']:
+            val = str(row['Purchasing Group']).strip()
+            if not pd.isna(row['Purchasing Group']) and val != '':
+                erros.append("Field should be blank For Plant Type 'MP' or 'FP'")
         if erros:
             resultados.append({'Line': idx + 2, 'Field': 'Purchasing Group',
                                'Error': ' | '.join(erros),
@@ -1635,7 +1642,6 @@ def validar_plant_specific_material_status(df, resultados):
                                'Plant':    str(row.get('Plant', '')).strip()})
 
 
-
 # =============================================================================
 # B) CROSS-FILE VALIDATIONS (SAPUI5 + MVKE / QMAT / MARC / MARA)
 # =============================================================================
@@ -1881,57 +1887,169 @@ def validar_product_hierarchy_vs_enterproj(mara_df, zplm_mara_df, resultados):
                                'Error': f"PH mismatch: ProductHierarchy→'{ph_norm}' ≠ Enterproj→'{ep_norm}'"})
 
 
-def validar_inspection_type_qmat(sap_df, marc_df, qmat_df, resultados):
+def validar_marm_pc_ea_roh_halb(marm_df, mara_df, resultados):
     """
-    QMAT — Inspection Type validation:
-    - Rule 2 (ROH/HALB): Inspection Type '08' must NOT have Active flag = 'X'.
-    - Rule 3 (FERT/HALB/ROH): Inspection Type '1708' must NOT have Active flag = 'X'.
+    MARM validation (material-level, single error per material)
+
+    Applies ONLY when:
+      - Material Type ∈ {ROH, HALB}
+      - Base Unit of Measure (MARA) = 'EA'
+
+    Rule:
+      The material MUST have at least ONE Alternative Unit of Measure = 'PC'
+      with Numerator = 1 and Denominator = 1.
+
+    Behaviour:
+      - One single error per material
+      - Error message includes:
+          * Material Type
+          * Alternative UoM(s) found in MARM
+      - No duplicated errors
     """
-    if qmat_df is None or qmat_df.empty:
-        print("⚠️ QMAT.xlsx missing, QMAT validation skipped.")
+
+    if marm_df is None or marm_df.empty or mara_df is None or mara_df.empty:
         return
 
-    qmat = qmat_df.copy()
-    qmat.columns = [c.strip().upper() for c in qmat.columns]
+    required_marm = {
+        'Material',
+        'Alternative Unit of Measure',
+        'Numerator',
+        'Denominator'
+    }
 
-    col_mat    = next((c for c in ["MATERIAL", "MATNR"] if c in qmat.columns), None)
-    col_plant  = next((c for c in ["PLANT", "WERKS"] if c in qmat.columns), None)
-    col_insp   = next((c for c in ["INSPECTION TYPE", "QMTXT", "ART"] if c in qmat.columns), None)
-    col_active = next((c for c in ["INSPTYPE-MATL ACTIVE", "ACTIVE", "STATUS"] if c in qmat.columns), None)
+    required_mara = {
+        'Material',
+        'Material Type',
+        'Base Unit of Measure'
+    }
 
-    if not all([col_mat, col_plant, col_insp, col_active]):
-        print("⚠️ QMAT has insufficient columns. Skipped.")
+    if not required_marm.issubset(marm_df.columns):
+        print("⚠️ MARM missing required columns for PC validation.")
         return
 
-    qmat["MAT"]  = qmat[col_mat].astype(str).str.strip()
-    qmat["PLT"]  = qmat[col_plant].astype(str).str.strip()
-    qmat["INSP"] = qmat[col_insp].astype(str).str.strip().str.upper()
-    qmat["ACT"]  = qmat[col_active].astype(str).str.strip().str.upper()
+    if not required_mara.issubset(mara_df.columns):
+        print("⚠️ MARA missing required columns for PC validation.")
+        return
 
-    mt_map = dict(zip(
-        sap_df['Material'].astype(str).str.strip(),
-        sap_df['Material Type'].astype(str).str.strip().str.upper()
-    ))
+    # Normalise
+    marm = marm_df.copy()
+    mara = mara_df.copy()
 
-    marc = marc_df.copy()
-    marc.columns = [c.strip() for c in marc.columns]
+    marm.columns = marm.columns.astype(str).str.strip()
+    mara.columns = mara.columns.astype(str).str.strip()
 
-    for idx, row in marc.iterrows():
-        material = str(row.get("Material", "")).strip()
-        plant    = str(row.get("Plant", "")).strip()
-        mt       = mt_map.get(material, "")
+    # Filter MARA to relevant materials
+    mara_relevant = mara[
+    mara['Material Type'].astype(str).str.strip().str.upper().isin({'ROH', 'HALB'}) & (mara['Base Unit of Measure'].astype(str).str.strip().str.upper() == 'EA')
+    ].copy()
 
-        for insp_type, valid_types in [("08", ["HALB", "ROH"]), ("1708", ["FERT", "HALB", "ROH"])]:
-            if mt in valid_types:
-                subset = qmat[(qmat["MAT"] == material) & (qmat["PLT"] == plant) & (qmat["INSP"] == insp_type)]
-                for _, r in subset.iterrows():
-                    if r["ACT"] == "X":
-                        resultados.append({
-                            'Line': idx + 2, 'Field': f'Inspection Type (QMAT {insp_type})',
-                            'Error': f"Inspection Type '{insp_type}' has Active flag = 'X' in QMAT",
-                            'Material': material, 'Plant': plant
-                        })
+    if mara_relevant.empty:
+        return
 
+    # Group MARM by Material
+    marm_groups = marm.groupby(marm['Material'].astype(str).str.strip())
+
+    for _, mara_row in mara_relevant.iterrows():
+        material = str(mara_row['Material']).strip()
+        material_type = str(mara_row['Material Type']).strip().upper()
+
+        # Material not present in MARM
+        if material not in marm_groups.groups:
+            error_msg = (
+                f"Material Type: {material_type} | "
+                f"Alternative UoM found: none | "
+                "Expected at least one Alternative Unit of Measure 'PC' "
+                "with Numerator = 1 and Denominator = 1"
+            )
+
+            resultados.append({
+                'Line': '',
+                'Field': 'Alternative UoM',
+                'Error': error_msg,
+                'Material': material,
+                'Plant': ''
+            })
+            continue
+
+        df_m = marm_groups.get_group(material)
+
+        # List all Alternative UoM found
+        alt_uoms = (
+            df_m['Alternative Unit of Measure']
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            .dropna()
+            .unique()
+            .tolist()
+        )
+
+        alt_uoms_str = ", ".join(sorted(alt_uoms)) if alt_uoms else "none"
+        base_msg = f"Material Type: {material_type} | Alternative UoM found: {alt_uoms_str}"
+
+        # Filter PC rows
+        pc_rows = df_m[
+            df_m['Alternative Unit of Measure']
+            .astype(str).str.strip().str.upper() == 'PC'
+        ]
+
+        if pc_rows.empty:
+            error_msg = (
+                f"{base_msg} | "
+                "Expected at least one Alternative Unit of Measure 'PC' "
+                "with Numerator = 1 and Denominator = 1"
+            )
+
+            resultados.append({
+                'Line': '',
+                'Field': 'Alternative UoM',
+                'Error': error_msg,
+                'Material': material,
+                'Plant': ''
+            })
+            continue
+
+        # Check if ANY PC row is valid (1 / 1)
+        valid_pc_found = False
+        num_invalid = False
+        den_invalid = False
+
+        for _, r in pc_rows.iterrows():
+            try:
+                num = int(float(r.get('Numerator')))
+                den = int(float(r.get('Denominator')))
+            except Exception:
+                num = den = None
+
+            if num == 1 and den == 1:
+                valid_pc_found = True
+                break
+
+            if num != 1:
+                num_invalid = True
+            if den != 1:
+                den_invalid = True
+
+        if valid_pc_found:
+            continue
+
+        # Build aggregated error message
+        if num_invalid and den_invalid:
+            reason = "Alternative Unit of Measure 'PC' exists but Numerator and Denominator must be 1"
+        elif num_invalid:
+            reason = "Alternative Unit of Measure 'PC' exists but Numerator must be 1"
+        else:
+            reason = "Alternative Unit of Measure 'PC' exists but Denominator must be 1"
+
+        error_msg = f"{base_msg} | {reason}"
+
+        resultados.append({
+            'Line': '',
+            'Field': 'Alternative UoM',
+            'Error': error_msg,
+            'Material': material,
+            'Plant': ''
+        })
 
 # =============================================================================
 # C) DATA CLEANUP VALIDATIONS
@@ -3278,6 +3396,7 @@ def run_full_validation(
     marc_file,
     mvke_file,
     qmat_file,
+    marm_file=None,
     roles_file=None,
     zplm_marc_file=None,
     zplm_mara_file=None,
@@ -3316,25 +3435,25 @@ def run_full_validation(
     _cb(12, "Loading MVKE...")
     mvke_df = load_xlsx_fast(mvke_file, sheet_name=0)
 
-    _cb(14, "Loading QMAT...")
-    qmat_df = load_xlsx_fast(qmat_file, sheet_name=0)
-
     if roles_file is None:
         roles_file = get_rolesviews_bytesio()
     rolesviews_dict = load_xlsx_fast(roles_file, sheet_name=None)
 
-    _cb(16, "Loading ZPLM data...")
+    _cb(14, "Loading ZPLM data...")
     zplm_marc_df = load_xlsx_fast(zplm_marc_file, sheet_name=0) if zplm_marc_file else None
 
-    _cb(18, "Preparing ZPLM data...")
+    _cb(16, "Preparing ZPLM data...")
     zplm_mara_df = load_xlsx_fast(zplm_mara_file, sheet_name=0) if zplm_mara_file else None
 
-    _cb(19, "Loading CSR data...")
+    _cb(18, "Loading CSR data...")
     csr_item_df = load_xlsx_fast(csr_item_file, sheet_name=0) if csr_item_file else None
     csr_head_df = load_xlsx_fast(csr_head_file, sheet_name=0) if csr_head_file else None
 
     _cb(20, "Loading MATPLSTA data...")
     matplsta_df = load_xlsx_fast(matplsta_file, sheet_name=0) if matplsta_file else None
+
+    _cb(21, "Loading MARM data...")
+    marm_df = load_xlsx_fast(marm_file, sheet_name=0) if marm_file else None
 
     # ------------------------------------------------------------------
     # 2) Basic sanity checks
@@ -3347,8 +3466,8 @@ def run_full_validation(
         raise ValueError("MARC.xlsx not loaded.")
     if mvke_df is None:
         raise ValueError("MVKE.xlsx not loaded.")
-    if qmat_df is None:
-        raise ValueError("QMAT.xlsx not loaded.")
+    if marm_df is None:
+        raise ValueError("MARM.xlsx not loaded.")
     if "Roles" not in rolesviews_dict or "Views" not in rolesviews_dict:
         raise ValueError("RolesViews.xlsx must contain sheets 'Roles' and 'Views'.")
 
@@ -3411,20 +3530,29 @@ def run_full_validation(
         (82, lambda: validar_valuation_class(sap_df, resultados)),
         (84, lambda: validar_with_qty_structure(sap_df, resultados)),
         (86, lambda: validar_enterproj_number(sap_df, resultados)),
-        (88, lambda: validar_inspection_type_qmat(sap_df, marc_df, qmat_df, resultados)),
-        (90, lambda: validar_mrp_controller(sap_df, resultados)),
-        (92, lambda: validar_plant_specific_material_status(sap_df, resultados)),
-        (94, lambda: validar_backflush(sap_df, resultados)),
-        (96, lambda: validar_strategy_group(sap_df, resultados)),
-        (98, lambda: validar_product_related_origin(sap_df, resultados)),
-        (99, lambda: validar_availability_check(sap_df, resultados)),
-        (99, lambda: validar_material_group_appoint(sap_df, resultados)),
-        (99, lambda: validar_purchasing_group_dxx(sap_df, resultados)),
+        (88, lambda: validar_mrp_controller(sap_df, resultados)),
+        (90, lambda: validar_plant_specific_material_status(sap_df, resultados)),
+        (91, lambda: validar_backflush(sap_df, resultados)),
+        (92, lambda: validar_strategy_group(sap_df, resultados)),
+        (93, lambda: validar_product_related_origin(sap_df, resultados)),
+        (94, lambda: validar_availability_check(sap_df, resultados)),
+        (95, lambda: validar_material_group_appoint(sap_df, resultados)),
+        (96, lambda: validar_purchasing_group_dxx(sap_df, resultados)),
     ]
 
     for pct, fn in validations:
         _cb(pct, "Running field validations...")
         fn()
+
+    # ------------------------------------------------------------------
+    # 4B) Cross-file validations (non-SAPUI5 tables)
+    # ------------------------------------------------------------------
+    _cb(97, "Validating MARM Alternative UoM rules...")
+    validar_marm_pc_ea_roh_halb(
+        marm_df=marm_df,
+        mara_df=mara_df,
+        resultados=resultados
+    )
 
     # ------------------------------------------------------------------
     # 5) Build errors DataFrame

@@ -118,10 +118,10 @@ _CLASSIFY_RULES: list[tuple[str, object]] = [
     ("mara",        lambda n: "mara" in n),
     ("marc",        lambda n: "marc" in n),
     ("mvke",        lambda n: "mvke" in n),
-    ("qmat",        lambda n: "qmat" in n),
     ("mbew",        lambda n: "mbew" in n),
     ("ekpo",        lambda n: "ekpo" in n),
     ("mard",        lambda n: "mard" in n),
+    ("marm",        lambda n: "marm" in n),
     # ATL
     ("auto",        lambda n: "automotive" in n),
     ("plm",         lambda n: "timingletter" in n or "timing_letter" in n),
@@ -161,10 +161,10 @@ LABELS_PT = {
     "mvke":      "MVKE.xlsx",
     "zplm_marc": "ZPLM MARC.xlsx",
     "zplm_mara": "ZPLM MARA.xlsx",
-    "qmat":      "QMAT.xlsx",
     "mbew":      "MBEW.xlsx",
     "ekpo":      "EKPO.xlsx",
     "mard":      "MARD.xlsx",
+    "marm":      "MARM.xlsx",
     "auto":      "PLM Automotive Validation.xlsx",
     "plm":       "PLM TimingLetter Validation.xlsx",
     "timing":    "Timing Letters.xlsx",
@@ -187,10 +187,10 @@ FILE_EXPECTED_COLS: dict[str, list[list[str]]] = {
     "mvke":      [["Material", "Sales Organization"]],
     "zplm_marc": [["Material", "Plant", "Material Plant Type"]],
     "zplm_mara": [["Material", "Enterproj Number"]],
-    "qmat":      [["Material", "Plant"]],
     "mbew":      [["Material"]],
     "ekpo":      [["Material"]],
     "mard":      [["Material", "Plant"]],
+    "marm":      [["Material", "Alternative Unit of Measure", "Numerator", "Denominator"]],
     "auto":      [["Plant", "Approval Status", "Trigger ID"]],
     "plm":       [["Plant", "Approval Status", "Trigger ID"]],
     "timing":    [["Timing Letter Number", "Change Number"]],
@@ -249,7 +249,7 @@ def validate_uploaded_files(persisted: dict, keys_to_check: list[str]) -> dict[s
 
 # Keys obrigatórias por página
 REQUIRED_KEYS: dict[str, list[str]] = {
-    "📦 SAP Material Validation":         ["sap", "mara", "marc", "mvke", "zplm_marc", "zplm_mara", "qmat"],
+    "📦 SAP Material Validation":         ["sap", "mara", "marc", "mvke", "zplm_marc", "zplm_mara", "marm"],
     "🧮 MRP Validation":                  ["mara", "marc"],
     "Automotive + Timing Letter (A & TL)":["auto", "plm", "timing"],
     "📊 SAP Validation Progress": [],   # gerido pelo modo Auto/Manual
@@ -365,10 +365,10 @@ def show_file_status(required_keys: list[str], files: dict, persisted: dict,
                 "mara":       "MARA.xlsx",
                 "marc":       "MARC.xlsx",
                 "mvke":       "MVKE.xlsx",
-                "qmat":       "QMAT.xlsx",
                 "mbew":       "MBEW.xlsx",
                 "ekpo":       "EKPO.xlsx",
                 "mard":       "MARD.xlsx",
+                "marm":       "MARM.xlsx",
                 "zplm":       "ZPLM MARC.xlsx or ZPLM MARA.xlsx",
                 "sapui5":     "SAPUI5 Export.xlsx",
                 "automotive": "PLM Automotive Validation.xlsx",
@@ -849,7 +849,7 @@ elif main_choice == "📦 SAP Material Validation":
         <tr><td style="padding:3px 8px">📄 <strong>MARC</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MARC (plant-level material data)</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>MVKE</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MVKE (sales organisation data)</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>ZPLM MARC / MARA</strong></td><td style="color:var(--app-fg-muted)">PLM custom tables (ZPLM_MARC / ZPLM_MARA export)</td></tr>
-        <tr><td style="padding:3px 8px">📄 <strong>QMAT</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → QMAT (inspection types)</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>MARM</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MARM (units of measure)</td></tr>
         <tr><td style="padding:3px 8px; color:var(--color-ok)">🔓 <strong>CSR Item / Head</strong></td><td style="color:var(--app-fg-muted)">Optional — enables CSR exemption rules for MRP Type</td></tr>
         <tr><td style="padding:3px 8px; color:var(--color-ok)">🔓 <strong>MATPLSTA</strong></td><td style="color:var(--app-fg-muted)">Optional — enables Planning Status = 9 exemption for ROH Per.Lot Sz.Plng Cal. rule</td></tr>
         </table>
@@ -955,7 +955,7 @@ elif main_choice == "📦 SAP Material Validation":
             mvke_file = files.get("mvke")
             zplm_marc = files.get("zplm_marc")
             zplm_mara = files.get("zplm_mara")
-            qmat_file = files.get("qmat")
+            marm_file = files.get("marm")
             csr_item  = files.get("csr_item")
             csr_head  = files.get("csr_head")
             matplsta  = files.get("matplsta")
@@ -977,8 +977,9 @@ elif main_choice == "📦 SAP Material Validation":
             with st.spinner("Validating materials..."):
                 excel_display, errors_df, summary_df = run_full_validation(
                     sap_file=sap_file, mara_file=mara_file, marc_file=marc_file,
-                    mvke_file=mvke_file, qmat_file=qmat_file,
+                    mvke_file=mvke_file,
                     zplm_marc_file=zplm_marc, zplm_mara_file=zplm_mara,
+                    marm_file=marm_file,
                     previous_report=None,
                     plant_filter=plant_filter_display,
                     progress_callback=update_progress,
