@@ -183,11 +183,11 @@ def display_to_internal_key(display_name: str):
 FILE_EXPECTED_COLS: dict[str, list[list[str]]] = {
     "sap":       [["Material", "Plant", "Material Type", "MRP Type"]],
     "mara":      [["Material", "Material Type"]],
-    "marc":      [["Material", "Plant", "Maintenance status"]],
+    "marc":      [["Material", "Plant", "Maintenance status", "Cntry/Reg of Origin"]],
     "mvke":      [["Material", "Sales Organization"]],
     "zplm_marc": [["Material", "Plant", "Material Plant Type"]],
     "zplm_mara": [["Material", "Enterproj Number"]],
-    "mbew":      [["Material"]],
+    "mbew":      [["Material", "LIFO/FIFO-relevant"]],
     "ekpo":      [["Material"]],
     "mard":      [["Material", "Plant"]],
     "marm":      [["Material", "Alternative Unit of Measure", "Numerator", "Denominator"]],
@@ -249,7 +249,7 @@ def validate_uploaded_files(persisted: dict, keys_to_check: list[str]) -> dict[s
 
 # Keys obrigatórias por página
 REQUIRED_KEYS: dict[str, list[str]] = {
-    "📦 SAP Material Validation":         ["sap", "mara", "marc", "mvke", "zplm_marc", "zplm_mara", "marm"],
+    "📦 SAP Material Validation":         ["sap", "mara", "marc", "mvke", "zplm_marc", "zplm_mara", "marm", "mbew"],
     "🧮 MRP Validation":                  ["mara", "marc"],
     "Automotive + Timing Letter (A & TL)":["auto", "plm", "timing"],
     "📊 SAP Validation Progress": [],   # gerido pelo modo Auto/Manual
@@ -850,6 +850,7 @@ elif main_choice == "📦 SAP Material Validation":
         <tr><td style="padding:3px 8px">📄 <strong>MVKE</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MVKE (sales organisation data)</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>ZPLM MARC / MARA</strong></td><td style="color:var(--app-fg-muted)">PLM custom tables (ZPLM_MARC / ZPLM_MARA export)</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>MARM</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MARM (units of measure)</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>MBEW</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MBEW (valuation data)</td></tr>
         <tr><td style="padding:3px 8px; color:var(--color-ok)">🔓 <strong>CSR Item / Head</strong></td><td style="color:var(--app-fg-muted)">Optional — enables CSR exemption rules for MRP Type</td></tr>
         <tr><td style="padding:3px 8px; color:var(--color-ok)">🔓 <strong>MATPLSTA</strong></td><td style="color:var(--app-fg-muted)">Optional — enables Planning Status = 9 exemption for ROH Per.Lot Sz.Plng Cal. rule</td></tr>
         </table>
@@ -956,6 +957,7 @@ elif main_choice == "📦 SAP Material Validation":
             zplm_marc = files.get("zplm_marc")
             zplm_mara = files.get("zplm_mara")
             marm_file = files.get("marm")
+            mbew_file = files.get("mbew")
             csr_item  = files.get("csr_item")
             csr_head  = files.get("csr_head")
             matplsta  = files.get("matplsta")
@@ -984,7 +986,7 @@ elif main_choice == "📦 SAP Material Validation":
                     plant_filter=plant_filter_display,
                     progress_callback=update_progress,
                     csr_item_file=csr_item, csr_head_file=csr_head,
-                    matplsta_file=matplsta,
+                    matplsta_file=matplsta, mbew_file=mbew_file,
                 )
 
                 try:

@@ -2051,6 +2051,79 @@ def validar_marm_pc_ea_roh_halb(marm_df, mara_df, resultados):
             'Plant': ''
         })
 
+def validar_lifo_fifo_relevant_mbew(mbew_df, mara_df, resultados):
+    """
+    SAP Material Validation:
+    MBEW - LIFO/FIFO-relevant must be 'X' for FERT, HALB and ROH
+    per (Material, Valuation Area = Plant).
+    """
+
+    if mbew_df is None or mbew_df.empty:
+        return
+
+    required_mbew = {'Material', 'Valuation Area', 'LIFO/FIFO-relevant'}
+    required_mara = {'Material', 'Material Type'}
+
+    if (not required_mbew.issubset(mbew_df.columns) or
+        not required_mara.issubset(mara_df.columns)):
+        return
+
+    mbew = mbew_df.copy()
+    mara = mara_df[['Material', 'Material Type']].copy()
+
+    # Join Material Type
+    df = mbew.merge(mara, on='Material', how='left')
+
+    scope = df['Material Type'].isin(['FERT', 'HALB', 'ROH'])
+
+    for idx, row in df[scope].iterrows():
+        val = str(row.get('LIFO/FIFO-relevant', '')).strip().upper()
+        plant = str(row.get('Valuation Area', '')).strip()
+
+        if val != 'X':
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'LIFO/FIFO-relevant',
+                'Error': "Must be 'X' for material types FERT / HALB / ROH",
+                'Material': str(row.get('Material', '')).strip(),
+                'Plant': plant
+            })
+
+def validar_country_region_origin_fp(marc_df, resultados):
+    """
+    SAP Material Validation:
+    MARC - Country/Region of Origin is mandatory for:
+    - Plant Type = FP
+    - PSMS in {30,40,45,50,55,65}
+    """
+
+    required = {
+        'Material',
+        'Plant',
+        'Plant Type',
+        'Plant Specific Material Status',
+        'Cntry/Reg of Origin'
+    }
+
+    if marc_df is None or marc_df.empty or not required.issubset(marc_df.columns):
+        return
+
+    valid_status = {'30', '40', '45', '50', '55', '65'}
+
+    for idx, row in marc_df.iterrows():
+        plant_type = str(row.get('Plant Type', '')).strip().upper()
+        psms = normalize_code(row.get('Plant-Specific Material Status', ''), as_int=True)
+        origin = str(row.get('Cntry/Reg of Origin', '')).strip()
+
+        if plant_type == 'FP' and psms in valid_status and origin == '':
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'Cntry/Reg of Origin',
+                'Error': 'Mandatory for FP materials with PSMS 30/40/45/50/55/65',
+                'Material': str(row.get('Material', '')).strip(),
+                'Plant': str(row.get('Plant', '')).strip()
+            })
+
 # =============================================================================
 # C) DATA CLEANUP VALIDATIONS
 # =============================================================================
@@ -3336,6 +3409,8 @@ def postprocess_with_views_roles_and_classification(
         'Material Group':                    lambda mt, pt: True,
         'JIT Delivery Sched.':               lambda mt, pt: pt == 'PP',
         'Issue Storage Location':            lambda mt, pt: True,
+        'Cntry/Reg of Origin':               lambda mt, pt: pt == 'FP',
+        'LIFO/FIFO-relevant':                lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
     }
 
     def is_view_required(material_type, plant_type, view_code):
@@ -3395,6 +3470,7 @@ def run_full_validation(
     marc_file,
     mvke_file,
     marm_file=None,
+    mbew_file=None,
     roles_file=None,
     zplm_marc_file=None,
     zplm_mara_file=None,
@@ -3447,11 +3523,14 @@ def run_full_validation(
     csr_item_df = load_xlsx_fast(csr_item_file, sheet_name=0) if csr_item_file else None
     csr_head_df = load_xlsx_fast(csr_head_file, sheet_name=0) if csr_head_file else None
 
-    _cb(20, "Loading MATPLSTA data...")
+    _cb(19, "Loading MATPLSTA data...")
     matplsta_df = load_xlsx_fast(matplsta_file, sheet_name=0) if matplsta_file else None
 
-    _cb(21, "Loading MARM data...")
+    _cb(20, "Loading MARM data...")
     marm_df = load_xlsx_fast(marm_file, sheet_name=0) if marm_file else None
+
+    _cb(21, "Loading MBEW data...")
+    mbew_df = load_xlsx_fast(mbew_file, sheet_name=0) if mbew_file else None
 
     # ------------------------------------------------------------------
     # 2) Basic sanity checks
@@ -3466,6 +3545,8 @@ def run_full_validation(
         raise ValueError("MVKE.xlsx not loaded.")
     if marm_df is None:
         raise ValueError("MARM.xlsx not loaded.")
+    if mbew_df is None:
+        raise ValueError("MBEW.xlsx not loaded.")
     if "Roles" not in rolesviews_dict or "Views" not in rolesviews_dict:
         raise ValueError("RolesViews.xlsx must contain sheets 'Roles' and 'Views'.")
 
@@ -3519,7 +3600,9 @@ def run_full_validation(
         (64, lambda: validar_product_hierarchy(sap_df, resultados, mvke_df, mara_df)),
         (66, lambda: validar_product_hierarchy_vs_enterproj(mara_df, zplm_mara_df, resultados)),
         (68, lambda: validar_production_scheduling_profile(sap_df, resultados)),
+        (69, lambda: validar_country_region_origin_fp(marc_df, resultados)),
         (70, lambda: validar_profit_center(sap_df, resultados)),
+        (71, lambda: validar_lifo_fifo_relevant_mbew(mbew_df, mara_df, resultados)),
         (72, lambda: validar_purchasing_group(sap_df, resultados)),
         (74, lambda: validar_repetitive_manufacturing(sap_df, resultados)),
         (76, lambda: validar_repetitive_manufacturing_profile(sap_df, resultados)),
