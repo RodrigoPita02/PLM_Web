@@ -258,7 +258,7 @@ def build_csr_exempt_set(csr_item_df, csr_head_df) -> set:
 #
 # SECTIONS:
 #   A) SAPUI5 Export — field-level validations
-#   B) Cross-file validations (SAPUI5 + MVKE, QMAT, MARC, MARA, ZPLM)
+#   B) Cross-file validations (SAPUI5 + MVKE, MARC, MARA, ZPLM)
 #   C) Data Cleanup validations (FP55, LTB, EKPO, MARD, stock)
 #   D) Cross-existence validations (MARA ↔ ZPLM MARA, MARC ↔ ZPLM MARC)
 #   E) Post-processing helpers (Old material number, Enterproj enrichment, Neg. stocks)
@@ -1643,7 +1643,7 @@ def validar_plant_specific_material_status(df, resultados):
 
 
 # =============================================================================
-# B) CROSS-FILE VALIDATIONS (SAPUI5 + MVKE / QMAT / MARC / MARA)
+# B) CROSS-FILE VALIDATIONS (SAPUI5 + MVKE / MARC / MARA)
 # =============================================================================
 
 def validar_account_assignment_group(df, resultados, mvke_df):
@@ -3323,7 +3323,6 @@ def postprocess_with_views_roles_and_classification(
         'Planning Calendar':                 lambda mt, pt: True,
         'Period Type':                       lambda mt, pt: True,
         'Strategy Group':                    lambda mt, pt: True,
-        'Inspection Type (QMAT 08)':         lambda mt, pt: mt in ['HALB', 'ROH'],
         'MRP Controller':                    lambda mt, pt: True,
         'Plant Specific Material Status':    lambda mt, pt: True,
         'Backflush':                         lambda mt, pt: True,
@@ -3395,7 +3394,6 @@ def run_full_validation(
     mara_file,
     marc_file,
     mvke_file,
-    qmat_file,
     marm_file=None,
     roles_file=None,
     zplm_marc_file=None,
@@ -3530,14 +3528,14 @@ def run_full_validation(
         (82, lambda: validar_valuation_class(sap_df, resultados)),
         (84, lambda: validar_with_qty_structure(sap_df, resultados)),
         (86, lambda: validar_enterproj_number(sap_df, resultados)),
-        (88, lambda: validar_mrp_controller(sap_df, resultados)),
-        (90, lambda: validar_plant_specific_material_status(sap_df, resultados)),
-        (91, lambda: validar_backflush(sap_df, resultados)),
-        (92, lambda: validar_strategy_group(sap_df, resultados)),
-        (93, lambda: validar_product_related_origin(sap_df, resultados)),
-        (94, lambda: validar_availability_check(sap_df, resultados)),
-        (95, lambda: validar_material_group_appoint(sap_df, resultados)),
-        (96, lambda: validar_purchasing_group_dxx(sap_df, resultados)),
+        (87, lambda: validar_mrp_controller(sap_df, resultados)),
+        (88, lambda: validar_plant_specific_material_status(sap_df, resultados)),
+        (89, lambda: validar_backflush(sap_df, resultados)),
+        (90, lambda: validar_strategy_group(sap_df, resultados)),
+        (91, lambda: validar_product_related_origin(sap_df, resultados)),
+        (92, lambda: validar_availability_check(sap_df, resultados)),
+        (93, lambda: validar_material_group_appoint(sap_df, resultados)),
+        (94, lambda: validar_purchasing_group_dxx(sap_df, resultados)),
     ]
 
     for pct, fn in validations:
@@ -3547,7 +3545,7 @@ def run_full_validation(
     # ------------------------------------------------------------------
     # 4B) Cross-file validations (non-SAPUI5 tables)
     # ------------------------------------------------------------------
-    _cb(97, "Validating MARM Alternative UoM rules...")
+    _cb(95, "Validating MARM Alternative UoM rules...")
     validar_marm_pc_ea_roh_halb(
         marm_df=marm_df,
         mara_df=mara_df,
@@ -4703,6 +4701,42 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file,
             raise ValueError(f"Column '{col}' missing in Automotive file.")
         if col not in df_plm.columns:
             raise ValueError(f"Column '{col}' missing in TimingLetter PLM file.")
+
+    # Enterproj Number and Project Name are optional — present when already
+    # linked to a CN in PLM. If the columns don't exist, we create them empty.
+    for ep_col in ['Enterproj Number', 'Project Name']:
+        if ep_col not in df_auto.columns:
+            df_auto[ep_col] = ""
+        if ep_col not in df_plm.columns:
+            df_plm[ep_col] = ""
+
+    # ── Build EP map HERE — before any filter or dedup ────────────────────────
+    # The Automotive file is the only source of Enterproj Number / Project Name.
+    # We build the lookup now, using ALL rows (including non-INAPPROVAL ones),
+    # so that every CN that has these fields populated can later enrich the
+    # TimingLetter rows — regardless of Approval Status.
+    # Key = normalised CN string (same format used throughout the rest of the fn)
+    _auto_ep_map: dict[str, dict] = {}
+    for _, _ar in df_auto.iterrows():
+        _key = str(_ar.get('Trigger ID', '')).strip()
+        try:
+            _key = str(int(float(_key)))
+        except Exception:
+            pass
+        if not _key or _key in ('', 'nan'):
+            continue
+        _ep = str(_ar.get('Enterproj Number', '')).strip()
+        _pn = str(_ar.get('Project Name', '')).strip()
+        # Normalise numeric Enterproj values (e.g. '1234.0' → '1234')
+        try:
+            _ep = str(int(float(_ep))) if _ep not in ('', 'nan') else ''
+        except Exception:
+            pass
+        if _ep not in ('', 'nan') or _pn not in ('', 'nan'):
+            _auto_ep_map[_key] = {
+                'Enterproj Number': _ep if _ep not in ('', 'nan') else '',
+                'Project Name':     _pn if _pn not in ('', 'nan') else '',
+            }
     if 'Timing Letter Number' not in df_timing.columns or 'Change Number' not in df_timing.columns:
         raise ValueError("Timing Letters file must contain 'Timing Letter Number' and 'Change Number'.")
 
@@ -4955,7 +4989,7 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file,
                   "Sales", "Manufacturing", "Costing", "MDS"]
 
     final_cols = [
-        "Trigger ID", "Timing Letter Number", "Plant",
+        "Trigger ID", "Timing Letter Number", "Enterproj Number", "Project Name", "Plant",
         "Creation Date", "Approval Status",
     ] + group_cols + ["Aging"]
 
@@ -4991,7 +5025,17 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file,
     merged_rows = []
     for trigger_id, grp in df_final.groupby('Trigger ID', sort=False):
         if len(grp) == 1:
-            merged_rows.append(grp.iloc[0].to_dict())
+            row_dict = grp.iloc[0].to_dict()
+            # If this is a TimingLetter-only row, enrich from the Automotive map
+            if str(row_dict.get('Source', '')).strip() == 'TimingLetter':
+                ep_data = _auto_ep_map.get(str(trigger_id).strip(), {})
+                for ep_col in ('Enterproj Number', 'Project Name'):
+                    if not row_dict.get(ep_col) or \
+                       str(row_dict[ep_col]).strip() in ('', 'nan'):
+                        fallback = ep_data.get(ep_col, '')
+                        if fallback not in ('', 'nan'):
+                            row_dict[ep_col] = fallback
+            merged_rows.append(row_dict)
             continue
 
         # Start from the Automotive row if present (for Approval Status / Plant)
@@ -5004,14 +5048,42 @@ def run_plm_workflow_combined(auto_file, plm_file, timing_file,
                 if str(other.get(gc, '')).strip().upper() == 'X':
                     base_row[gc] = 'X'
             # Fill TLN if missing in base
-            if not base_row.get('Timing Letter Number') or                str(base_row['Timing Letter Number']).strip() in ('', 'nan', '0'):
+            if not base_row.get('Timing Letter Number') or \
+               str(base_row['Timing Letter Number']).strip() in ('', 'nan', '0'):
                 tln_other = str(other.get('Timing Letter Number', '')).strip()
                 if tln_other not in ('', 'nan', '0'):
                     base_row['Timing Letter Number'] = tln_other
+            # Fill Enterproj Number / Project Name if missing in base
+            for ep_col in ('Enterproj Number', 'Project Name'):
+                if not base_row.get(ep_col) or \
+                   str(base_row[ep_col]).strip() in ('', 'nan'):
+                    ep_other = str(other.get(ep_col, '')).strip()
+                    if ep_other not in ('', 'nan'):
+                        base_row[ep_col] = ep_other
 
         merged_rows.append(base_row)
 
     df_final = pd.DataFrame(merged_rows)
+
+    # ── Universal EP enrichment — apply map to every row ─────────────────────
+    # After all merging, do a final pass to ensure every CN that has
+    # Enterproj Number / Project Name in the Automotive file gets it populated,
+    # regardless of which code path the row went through above.
+    def _enrich_ep(row):
+        trigger = str(row.get('Trigger ID', '')).strip()
+        try:
+            trigger = str(int(float(trigger)))
+        except Exception:
+            pass
+        ep_data = _auto_ep_map.get(trigger, {})
+        for ep_col in ('Enterproj Number', 'Project Name'):
+            current = str(row.get(ep_col, '')).strip()
+            if current in ('', 'nan') and ep_data.get(ep_col, '') not in ('', 'nan'):
+                row[ep_col] = ep_data[ep_col]
+        return row
+
+    if not df_final.empty:
+        df_final = df_final.apply(_enrich_ep, axis=1)
 
     # Apply Creation Date from C_WORKFLOWTASK (earliest workflow date per CN/TL)
     df_final['Creation Date'] = df_final.apply(
@@ -5698,7 +5770,6 @@ __all__ = [
     # --- Part 2: Cross-file validations ---
     "validar_account_assignment_group",
     "validar_item_category_group",
-    "validar_inspection_type_qmat",
 
     # --- Part 2: Data Cleanup validations ---
     "validar_fp_pt01_pt02_status55",
