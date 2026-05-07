@@ -1,0 +1,40 @@
+{
+  "run_type": "SAP_VALIDATION",
+  "timestamp": "2026-05-07T15:34:27",
+  "user": "RPITA",
+  "plant_filter": "ALL",
+  "metrics": {
+    "total_errors": 81386,
+    "fields_with_error": 29,
+    "materials_with_error": 26224
+  },
+  "files": {
+    "sap": "Item Browse Report.xlsx",
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "mvke": "MVKE.xlsx"
+  },
+  "top_fields": [
+    {
+      "Field": "Stock Determination Group",
+      "Adjusted Nº of Errors": 27037
+    },
+    {
+      "Field": "Packaging Mat. Type",
+      "Adjusted Nº of Errors": 26224
+    },
+    {
+      "Field": "Purchasing Group (DXX)",
+      "Adjusted Nº of Errors": 8362
+    },
+    {
+      "Field": "Purchasing Group",
+      "Adjusted Nº of Errors": 6446
+    },
+    {
+      "Field": "LIFO/FIFO-relevant",
+      "Adjusted Nº of Errors": 3682
+    }
+  ],
+  "report_path": "C:\\Users\\RPITA\\OneDrive - Visteon\\Desktop\\Rodrigo\\PLM_Web\\reports\\sap\\2026-05\\20260507_153427_SAP_Validation_ALL.xlsx"
+}

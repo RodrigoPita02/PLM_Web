@@ -56,6 +56,12 @@ def load_xlsx(file, *, sheet_name=None):
 
     raise ValueError(f"Unsupported file type: {type(file)}")
 
+# =============================================================================
+# MATERIAL TYPE OVERRIDES (business exceptions)
+# =============================================================================
+MATERIAL_TYPE_OVERRIDES = {
+    "VPRMKF-10849-LB": "FERT",
+}
 
 # =============================================================================
 # 2) GENERAL HELPERS
@@ -243,6 +249,36 @@ def build_csr_exempt_set(csr_item_df, csr_head_df) -> set:
     exempt = set(zip(merged[i_mat].str.strip(), merged[h_plant]))
     _log.debug("build_csr_exempt_set: %d exempt (Material, Plant) pairs built.", len(exempt))
     return exempt
+
+
+def apply_material_type_overrides(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Forces Material Type overrides for specific materials.
+    Applies only if columns 'Material' and 'Material Type' exist.
+    """
+    if df is None or df.empty:
+        return df
+
+    required_cols = {"Material", "Material Type"}
+    if not required_cols.issubset(df.columns):
+        return df
+
+    df = df.copy()
+    df["Material"] = df["Material"].astype(str).str.strip()
+
+    
+    for material, forced_type in MATERIAL_TYPE_OVERRIDES.items():
+        mask = df["Material"] == material
+        if mask.any():
+            original = df.loc[mask, "Material Type"].iloc[0]
+            if original != forced_type:
+                print(
+                    f"⚠️ Material Type override applied: "
+                    f"{material} [{original} → {forced_type}]"
+                )
+            df.loc[mask, "Material Type"] = forced_type
+
+    return df
 
 # =============================================================================
 # 3) LOG PAYLOAD BUILDERS
@@ -2089,39 +2125,386 @@ def validar_lifo_fifo_relevant_mbew(mbew_df, mara_df, resultados):
                 'Plant': plant
             })
 
-def validar_country_region_origin_fp(marc_df, resultados):
+def validar_country_region_origin_fp(marc_df, zplm_marc_df, resultados):
     """
     SAP Material Validation:
     MARC - Country/Region of Origin is mandatory for:
-    - Plant Type = FP
+    - Plant Type = FP (from ZPLM MARC)
     - PSMS in {30,40,45,50,55,65}
     """
 
-    required = {
+    required_marc = {
+        'Material',
+        'Plant',
+        'Plant Specific Material Status',
+        'Cntry/Reg of Origin',
+    }
+    required_zplm = {
         'Material',
         'Plant',
         'Plant Type',
-        'Plant Specific Material Status',
-        'Cntry/Reg of Origin'
     }
 
-    if marc_df is None or marc_df.empty or not required.issubset(marc_df.columns):
+    if (
+        marc_df is None or zplm_marc_df is None
+        or marc_df.empty or zplm_marc_df.empty
+        or not required_marc.issubset(marc_df.columns)
+        or not required_zplm.issubset(zplm_marc_df.columns)
+    ):
         return
 
     valid_status = {'30', '40', '45', '50', '55', '65'}
 
-    for idx, row in marc_df.iterrows():
+    # Join MARC with ZPLM MARC to get Plant Type
+    df = marc_df.merge(
+        zplm_marc_df[['Material', 'Plant', 'Plant Type']],
+        on=['Material', 'Plant'],
+        how='left'
+    )
+
+    for idx, row in df.iterrows():
         plant_type = str(row.get('Plant Type', '')).strip().upper()
-        psms = normalize_code(row.get('Plant-Specific Material Status', ''), as_int=True)
+        psms = normalize_code(
+            row.get('Plant Specific Material Status', ''),
+            as_int=True
+        )
         origin = str(row.get('Cntry/Reg of Origin', '')).strip()
 
         if plant_type == 'FP' and psms in valid_status and origin == '':
             resultados.append({
                 'Line': idx + 2,
                 'Field': 'Cntry/Reg of Origin',
-                'Error': 'Mandatory for FP materials with PSMS 30/40/45/50/55/65',
+                'Error': (
+                    'Mandatory for FP materials with '
+                    'PSMS 30/40/45/50/55/65'
+                ),
                 'Material': str(row.get('Material', '')).strip(),
-                'Plant': str(row.get('Plant', '')).strip()
+                'Plant': str(row.get('Plant', '')).strip(),
+            })
+
+def validar_stock_determination_group_marc(marc_df, mara_df, resultados):
+    """
+    MARC:
+    Stock Determination Group must be '0001' for Material Types:
+    - FERT
+    - HALB
+    - ROH
+    Validation is per (Material, Plant).
+    """
+    required_marc = {"Material", "Plant", "Stock Determination Group"}
+    required_mara = {"Material", "Material Type"}
+
+    if (
+        marc_df is None or mara_df is None
+        or not required_marc.issubset(marc_df.columns)
+        or not required_mara.issubset(mara_df.columns)
+    ):
+        return
+
+    df = marc_df.merge(
+        mara_df[["Material", "Material Type"]],
+        on="Material",
+        how="left"
+    )
+
+    for idx, row in df.iterrows():
+        material = str(row.get("Material", "")).strip()
+        plant = str(row.get("Plant", "")).strip()
+        mt = str(row.get("Material Type", "")).strip()
+
+        # ✅ NORMALIZAÇÃO CORRETA
+        sdg = normalize_code(
+            row.get("Stock Determination Group", ""),
+            as_int=True,
+            zero_pad=4
+        )
+
+        if mt in {"FERT", "HALB", "ROH"}:
+            if sdg == "":
+                error = "Mandatory field blank (should be '0001')"
+            elif sdg != "0001":
+                error = f"Invalid value: '{sdg}' (should be '0001')"
+            else:
+                continue
+
+            resultados.append({
+                "Line": idx + 2,
+                "Field": "Stock Determination Group",
+                "Error": error,
+                "Material": material,
+                "Plant": plant,
+            })
+
+def validar_storage_location_ext_procurement(marc_df, zplm_marc_df, resultados):
+    """
+    MARC:
+    Storage Location for Ext. Procurement must be filled
+    when Plant Type = PP.
+    Plant Type is sourced from ZPLM MARC (source of truth).
+    Validation per (Material, Plant).
+    """
+    required_marc = {
+        "Material",
+        "Plant",
+        "Storage Location for Ext. Procurement",
+    }
+    required_zplm = {
+        "Material",
+        "Plant",
+        "Plant Type",
+    }
+
+    if (
+        marc_df is None
+        or zplm_marc_df is None
+        or not required_marc.issubset(marc_df.columns)
+        or not required_zplm.issubset(zplm_marc_df.columns)
+    ):
+        return
+
+    # Join MARC with ZPLM MARC to get Plant Type
+    df = marc_df.merge(
+        zplm_marc_df[["Material", "Plant", "Plant Type"]],
+        on=["Material", "Plant"],
+        how="left",
+    )
+
+    for idx, row in df.iterrows():
+        material = str(row.get("Material", "")).strip()
+        plant = str(row.get("Plant", "")).strip()
+        plant_type = str(row.get("Plant Type", "")).strip()
+        sloc_ext = str(row.get("Storage Location for Ext. Procurement", "")).strip()
+
+        if plant_type == "PP" and sloc_ext == "":
+            resultados.append({
+                "Line": idx + 2,
+                "Field": "Storage Location for Ext. Procurement",
+                "Error": "Mandatory field blank for Plant Type PP",
+                "Material": material,
+                "Plant": plant,
+            })
+
+def validar_individual_collective_requirements_marc(marc_df, mara_df, resultados):
+    """
+    MARC:
+    Individual/Collective Requirements must be '1'
+    for Material Types:
+    - FERT
+    - HALB
+    - ROH
+    Validation is per (Material, Plant).
+    """
+    required_marc = {
+        "Material",
+        "Plant",
+        "Individual/ Collective Requirements",
+    }
+    required_mara = {
+        "Material",
+        "Material Type",
+    }
+
+    if (
+        marc_df is None or mara_df is None
+        or not required_marc.issubset(marc_df.columns)
+        or not required_mara.issubset(mara_df.columns)
+    ):
+        return
+
+    # Join MARC + MARA to get Material Type
+    df = marc_df.merge(
+        mara_df[["Material", "Material Type"]],
+        on="Material",
+        how="left",
+    )
+
+    for idx, row in df.iterrows():
+        material = str(row.get("Material", "")).strip()
+        plant = str(row.get("Plant", "")).strip()
+        mt = str(row.get("Material Type", "")).strip()
+
+        # ✅ Normalização correta do campo SAP numérico
+        icr = normalize_code(
+            row.get("Individual/ Collective Requirements", ""),
+            as_int=True,
+        )
+
+        if mt in {"FERT", "HALB", "ROH"}:
+            if icr == "":
+                error = "Mandatory field blank (should be '1')"
+            elif icr != "1":
+                error = f"Invalid value: '{icr}' (should be '1')"
+            else:
+                continue  # válido
+
+            resultados.append({
+                "Line": idx + 2,
+                "Field": "Individual/ Collective Requirements",
+                "Error": error,
+                "Material": material,
+                "Plant": plant,
+            })
+
+def validar_packaging_material_type_mara(mara_df, resultados):
+    """
+    MARA:
+    Packaging Mat. Type must be EMPTY for Material Types:
+    - FERT
+    - HALB
+    - ROH
+    """
+    required_cols = {
+        "Material",
+        "Material Type",
+        "Packaging Mat. Type",
+    }
+
+    if mara_df is None or not required_cols.issubset(mara_df.columns):
+        return
+
+    for idx, row in mara_df.iterrows():
+        material = str(row.get("Material", "")).strip()
+        mt = str(row.get("Material Type", "")).strip()
+
+        # ✅ TRATAMENTO CORRETO DE VALORES VAZIOS
+        raw_pkg = row.get("Packaging Mat. Type", "")
+        pkg_type = "" if pd.isna(raw_pkg) else str(raw_pkg).strip()
+
+        if mt in {"FERT", "HALB", "ROH"} and pkg_type != "":
+            resultados.append({
+                "Line": idx + 2,
+                "Field": "Packaging Mat. Type",
+                "Error": "Field must be empty for FERT, HALB and ROH materials",
+                "Material": material,
+                "Plant": "",  # MARA → sem plant
+            })
+
+def validar_production_supervisor_marc(marc_df, mara_df, resultados):
+    """
+    MARC:
+    Production Supervisor must be 'Z01'
+    for Material Types:
+    - FERT
+    - HALB
+    Validation is per (Material, Plant).
+    """
+    required_marc = {
+        "Material",
+        "Plant",
+        "Production Supervisor",
+    }
+    required_mara = {
+        "Material",
+        "Material Type",
+    }
+
+    if (
+        marc_df is None or mara_df is None
+        or not required_marc.issubset(marc_df.columns)
+        or not required_mara.issubset(mara_df.columns)
+    ):
+        return
+
+    # Join MARC + MARA to get Material Type
+    df = marc_df.merge(
+        mara_df[["Material", "Material Type"]],
+        on="Material",
+        how="left",
+    )
+
+    for idx, row in df.iterrows():
+        material = str(row.get("Material", "")).strip()
+        plant = str(row.get("Plant", "")).strip()
+        mt = str(row.get("Material Type", "")).strip()
+
+        # ✅ normalização segura (NaN → '')
+        psuper = _norm_str(row.get("Production Supervisor")).upper()
+
+        if mt in {"FERT", "HALB"}:
+            if psuper == "":
+                error = "Mandatory field blank (should be 'Z01')"
+            elif psuper != "Z01":
+                error = f"Invalid value: '{psuper}' (should be 'Z01')"
+            else:
+                continue  # válido
+
+            resultados.append({
+                "Line": idx + 2,
+                "Field": "Production Supervisor",
+                "Error": error,
+                "Material": material,
+                "Plant": plant,
+            })
+
+def validar_batch_management_plant_marc(marc_df, zplm_marc_df, resultados):
+    """
+    MARC:
+    Batch Management (Plant) rules:
+    - If Plant Type ∈ {PP, COI} → must be 'X'
+    - It may be 'X' ONLY if Batch Management = 'X'
+    Validation per (Material, Plant).
+    """
+    required_marc = {
+        "Material",
+        "Plant",
+        "Batch Management(Plant)",
+        "Batch Management",
+    }
+    required_zplm = {
+        "Material",
+        "Plant",
+        "Plant Type",
+    }
+
+    if (
+        marc_df is None
+        or zplm_marc_df is None
+        or not required_marc.issubset(marc_df.columns)
+        or not required_zplm.issubset(zplm_marc_df.columns)
+    ):
+        return
+
+    # Join MARC + ZPLM MARC to get Plant Type
+    df = marc_df.merge(
+        zplm_marc_df[["Material", "Plant", "Plant Type"]],
+        on=["Material", "Plant"],
+        how="left",
+    )
+
+    for idx, row in df.iterrows():
+        material = str(row.get("Material", "")).strip()
+        plant = str(row.get("Plant", "")).strip()
+        plant_type = str(row.get("Plant Type", "")).strip().upper()
+
+        bmp = _norm_str(row.get("Batch Management(Plant)")).upper()
+        bm  = _norm_str(row.get("Batch Management")).upper()
+
+        erros = []
+
+        if plant_type in {"PP", "COI"}:
+            if bmp != "X":
+                erros.append(
+                    "Mandatory for Plant Type PP/COI (should be 'X')"
+                )
+        else:
+            if bmp == "X":
+                erros.append(
+                    f"Not allowed for Plant Type '{plant_type}'"
+                )
+
+        # Dependency rule
+        if bmp == "X" and bm != "X":
+            erros.append(
+                "Cannot be 'X' when Batch Management is not 'X'"
+            )
+
+        if erros:
+            resultados.append({
+                "Line": idx + 2,
+                "Field": "Batch Management(Plant)",
+                "Error": " | ".join(erros),
+                "Material": material,
+                "Plant": plant,
             })
 
 # =============================================================================
@@ -3366,51 +3749,57 @@ def postprocess_with_views_roles_and_classification(
     # 9) Coverage per View
     # -----------------------------------------------
     field_rules = {
-        'Production Scheduling Profile':     lambda mt, pt: mt in ['FERT', 'HALB'],
-        'Repetitive Manufacturing Profile':  lambda mt, pt: mt in ['FERT', 'HALB'],
-        'Indicator: Repetitive Manufa. Allow': lambda mt, pt: True,
-        'Enterproj Number':                  lambda mt, pt: mt == 'FERT',
-        'Procurement Type':                  lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'] and pt in ['PP', 'MP'],
-        'Account Assignment Group':          lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
-        'Automatic Purchase Order Allowed':  lambda mt, pt: pt == 'PP',
-        'Batch Management Required Ind.':    lambda mt, pt: True,
-        'Source List Required':              lambda mt, pt: pt == 'PP',
-        'Purchasing Group':                  lambda mt, pt: pt == 'PP',
-        'MRP Type':                          lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
-        'Planning Time Fence':               lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
-        'Lot Sizing Procedure':              lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
-        'Per.Lot Sz.Plng Cal.':              lambda mt, pt: mt in ['FERT', 'HALB'],
-        'With Qty Structure':                lambda mt, pt: mt in ['FERT', 'HALB'],
-        'Item Category Group':               lambda mt, pt: True,
-        'General Item Category Group':       lambda mt, pt: True,
-        'Item Category Group (MVKE)':        lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
-        'Loading Group':                     lambda mt, pt: True,
-        'Division':                          lambda mt, pt: True,
-        'Export/Import Group':               lambda mt, pt: True,
-        'Product Hierarchy':                 lambda mt, pt: mt == 'FERT',
-        'Price Control':                     lambda mt, pt: True,
-        'Price Unit':                        lambda mt, pt: True,
-        'Valuation Class':                   lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
-        'Gross Weight':                      lambda mt, pt: pt == 'FP',
-        'Net Weight':                        lambda mt, pt: pt == 'FP',
-        'Planning Calendar':                 lambda mt, pt: True,
-        'Period Type':                       lambda mt, pt: True,
-        'Strategy Group':                    lambda mt, pt: True,
-        'MRP Controller':                    lambda mt, pt: True,
-        'Plant Specific Material Status':    lambda mt, pt: True,
-        'Backflush':                         lambda mt, pt: True,
-        'Product-Related Origin':            lambda mt, pt: True,
-        'Availability Check':                lambda mt, pt: True,
-        'Neg. stocks in plant':              lambda mt, pt: mt in ['ROH', 'HALB'],
-        'Consumption Mode':                  lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
-        'Bwd consumption per.':              lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
-        'Fwd consumption per.':              lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
-        'Profit Center':                     lambda mt, pt: True,
-        'Material Group':                    lambda mt, pt: True,
-        'JIT Delivery Sched.':               lambda mt, pt: pt == 'PP',
-        'Issue Storage Location':            lambda mt, pt: True,
-        'Cntry/Reg of Origin':               lambda mt, pt: pt == 'FP',
-        'LIFO/FIFO-relevant':                lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Production Scheduling Profile':         lambda mt, pt: mt in ['FERT', 'HALB'],
+        'Repetitive Manufacturing Profile':      lambda mt, pt: mt in ['FERT', 'HALB'],
+        'Indicator: Repetitive Manufa. Allow':   lambda mt, pt: True,
+        'Enterproj Number':                      lambda mt, pt: mt == 'FERT',
+        'Procurement Type':                      lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'] and pt in ['PP', 'MP'],
+        'Account Assignment Group':              lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Automatic Purchase Order Allowed':      lambda mt, pt: pt == 'PP',
+        'Batch Management Required Ind.':        lambda mt, pt: pt in ['PP', 'COI'], 
+        'Source List Required':                  lambda mt, pt: pt == 'PP',
+        'Purchasing Group':                      lambda mt, pt: pt == 'PP',
+        'MRP Type':                              lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Planning Time Fence':                   lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Lot Sizing Procedure':                  lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Per.Lot Sz.Plng Cal.':                  lambda mt, pt: mt in ['FERT', 'HALB'],
+        'With Qty Structure':                    lambda mt, pt: mt in ['FERT', 'HALB'],
+        'Item Category Group':                   lambda mt, pt: True,
+        'General Item Category Group':           lambda mt, pt: True,
+        'Item Category Group (MVKE)':            lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Loading Group':                         lambda mt, pt: True,
+        'Division':                              lambda mt, pt: True,
+        'Export/Import Group':                   lambda mt, pt: True,
+        'Product Hierarchy':                     lambda mt, pt: mt == 'FERT',
+        'Price Control':                         lambda mt, pt: True,
+        'Price Unit':                            lambda mt, pt: True,
+        'Valuation Class':                       lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Gross Weight':                          lambda mt, pt: pt == 'FP',
+        'Net Weight':                            lambda mt, pt: pt == 'FP',
+        'Planning Calendar':                     lambda mt, pt: True,
+        'Period Type':                           lambda mt, pt: True,
+        'Strategy Group':                        lambda mt, pt: True,
+        'MRP Controller':                        lambda mt, pt: True,
+        'Plant Specific Material Status':        lambda mt, pt: True,
+        'Backflush':                             lambda mt, pt: True,
+        'Product-Related Origin':                lambda mt, pt: True,
+        'Availability Check':                    lambda mt, pt: True,
+        'Neg. stocks in plant':                  lambda mt, pt: mt in ['ROH', 'HALB'],
+        'Consumption Mode':                      lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Bwd consumption per.':                  lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Fwd consumption per.':                  lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Profit Center':                         lambda mt, pt: True,
+        'Material Group':                        lambda mt, pt: True,
+        'JIT Delivery Sched.':                   lambda mt, pt: pt == 'PP',
+        'Issue Storage Location':                lambda mt, pt: True,
+        'Cntry/Reg of Origin':                   lambda mt, pt: pt == 'FP',
+        'LIFO/FIFO-relevant':                    lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Stock Determination Group':             lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Storage Location for Ext. Procurement': lambda mt, pt: pt == 'PP',
+        'Individual/ Collective Requirements':   lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Packaging Mat. Type':                   lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],   
+        'Production Supervisor':                 lambda mt, pt: mt in ['FERT', 'HALB'],   
+        'Batch Management(Plant)':               lambda mt, pt: pt in ['PP', 'COI'], 
     }
 
     def is_view_required(material_type, plant_type, view_code):
@@ -3499,9 +3888,11 @@ def run_full_validation(
     # ------------------------------------------------------------------
     _cb(5,  "Loading SAPUI5 Export...")
     sap_df = load_xlsx_fast(sap_file, sheet_name="SAPUI5 Export")
+    sap_df = apply_material_type_overrides(sap_df)
 
     _cb(7,  "Loading MARA...")
     mara_df = load_xlsx_fast(mara_file, sheet_name=0)
+    mara_df      = apply_material_type_overrides(mara_df)
 
     _cb(10, "Loading MARC...")
     marc_df = load_xlsx_fast(marc_file, sheet_name=0)
@@ -3518,6 +3909,7 @@ def run_full_validation(
 
     _cb(16, "Preparing ZPLM data...")
     zplm_mara_df = load_xlsx_fast(zplm_mara_file, sheet_name=0) if zplm_mara_file else None
+    zplm_mara_df = apply_material_type_overrides(zplm_mara_df)
 
     _cb(18, "Loading CSR data...")
     csr_item_df = load_xlsx_fast(csr_item_file, sheet_name=0) if csr_item_file else None
@@ -3591,16 +3983,22 @@ def run_full_validation(
         (47, lambda: validar_per_lot_sz_plng_cal(marc_df, resultados, mara_df, matplsta_df)),
         (48, lambda: validar_material_group(sap_df, resultados)),
         (50, lambda: validar_mrp_type(sap_df, resultados, zplm_marc_df, csr_item_df, csr_head_df)),
+        (51, lambda: validar_individual_collective_requirements_marc(marc_df, mara_df, resultados)),
         (52, lambda: validar_net_weight(sap_df, resultados)),
         (54, lambda: validar_period_type(sap_df, resultados)),
+        (55, lambda: validar_storage_location_ext_procurement(marc_df, zplm_marc_df, resultados)),
         (56, lambda: validar_planning_calendar(sap_df, resultados)),
+        (57, lambda: validar_stock_determination_group_marc(marc_df, mara_df, resultados)),
         (58, lambda: validar_planning_time_fence(sap_df, resultados)),
         (60, lambda: validar_price_control(sap_df, resultados)),
+        (61, lambda: validar_batch_management_plant_marc(marc_df, zplm_marc_df, resultados)),
         (62, lambda: validar_price_unit(sap_df, resultados)),
-        (64, lambda: validar_product_hierarchy(sap_df, resultados, mvke_df, mara_df)),
+        (63, lambda: validar_product_hierarchy(sap_df, resultados, mvke_df, mara_df)),
+        (64, lambda: validar_production_supervisor_marc(marc_df, mara_df, resultados)),
         (66, lambda: validar_product_hierarchy_vs_enterproj(mara_df, zplm_mara_df, resultados)),
+        (67, lambda: validar_packaging_material_type_mara(mara_df, resultados)),
         (68, lambda: validar_production_scheduling_profile(sap_df, resultados)),
-        (69, lambda: validar_country_region_origin_fp(marc_df, resultados)),
+        (69, lambda: validar_country_region_origin_fp(marc_df, zplm_marc_df, resultados)),
         (70, lambda: validar_profit_center(sap_df, resultados)),
         (71, lambda: validar_lifo_fifo_relevant_mbew(mbew_df, mara_df, resultados)),
         (72, lambda: validar_purchasing_group(sap_df, resultados)),
