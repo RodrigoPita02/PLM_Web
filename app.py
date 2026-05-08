@@ -12,7 +12,6 @@ from utils.dashboard import (
     render_sap_run_kpis, render_sap_run_charts,
     render_atl_run_kpis, render_atl_run_charts,
     render_progress_kpis, render_progress_charts,
-    render_mrp_run_kpis, render_mrp_run_charts,
     render_evolution_dashboard
 )
 from utils.fast_loader import load_xlsx_fast
@@ -27,8 +26,6 @@ from sap_validation_engine import (
     build_progress_log_payload,
     save_run_log,
     list_run_logs,
-    run_mrp_validation,
-    build_mrp_log_payload,
     run_data_cleanups_validation,
     build_dc_log_payload,
     save_report_to_vault,
@@ -250,7 +247,6 @@ def validate_uploaded_files(persisted: dict, keys_to_check: list[str]) -> dict[s
 # Keys obrigatórias por página
 REQUIRED_KEYS: dict[str, list[str]] = {
     "📦 SAP Material Validation":         ["sap", "mara", "marc", "mvke", "zplm_marc", "zplm_mara", "marm", "mbew"],
-    "🧮 MRP Validation":                  ["mara", "marc"],
     "Automotive + Timing Letter (A & TL)":["auto", "plm", "timing"],
     "📊 SAP Validation Progress": [],   # gerido pelo modo Auto/Manual
     "🧹 Data Cleanups":                   ["mara", "marc", "zplm_marc", "zplm_mara", "mbew", "ekpo", "mard"],
@@ -765,7 +761,6 @@ main_choice = st.sidebar.radio(
         "📈 Evolution Dashboard",
         "📦 SAP Material Validation",
         "🚗 PLM Workflow",
-        "🧮 MRP Validation",
         "📊 SAP Validation Progress",
         "🧹 Data Cleanups",
         "📋 SSA Validation",
@@ -793,10 +788,11 @@ if main_choice == "🚗 PLM Workflow":
 st.sidebar.markdown("---")
 with st.sidebar.expander("ℹ️ About Validation Hub", expanded=False):
     st.markdown("""
-    **Version:** v1.4  
+    **Version:** v1.6  
     **Build:** """ + datetime.now().strftime("%Y-%m-%d") + """
 
     **Recent changes:**
+    - 🔀 Advanced Planning fields merged into SAP Material Validation report
     - 📋 Assignment system — assign fields to owners, track overdue
     - 📊 Assignment Health in Evolution Dashboard
     - ✅ File column validation before running
@@ -804,7 +800,7 @@ with st.sidebar.expander("ℹ️ About Validation Hub", expanded=False):
     - ⬇️ Re-download previous reports from history
     - 🌙 Full dark mode support (CSS variables)
 
-    **Modules:** SAP Validation · PLM Workflow · MRP Validation · Data Cleanups · Progress · Evolution Dashboard
+    **Modules:** SAP Validation (Palmela) · PLM Workflow · Data Cleanups · Progress · Evolution Dashboard
     """)
 
 # ==========================================================
@@ -1427,222 +1423,6 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Change Cockpit":
 
     render_footer(start_time, version="v1.4")
 
-# ==========================================================
-# PAGE 3 — MRP VALIDATION
-# ==========================================================
-elif main_choice == "🧮 MRP Validation":
-
-    st.subheader("🧮 MRP Validation")
-    effective_executor = identity_input("Who performs?", "mrp_exec")
-    save_history = st.checkbox("Save this execution in history", value=True)
-
-    if "mrp_step" not in st.session_state:
-        st.session_state.mrp_step = 1
-
-    render_wizard(st.session_state.mrp_step, WIZARD_STEPS_DEFAULT)
-
-    required_keys = REQUIRED_KEYS["🧮 MRP Validation"]
-
-    if st.session_state.mrp_step == 1:
-        st.markdown("### 📂 Step 1 — Load Files")
-        st.markdown("""
-        <div style="background:var(--app-bg-secondary);border-left:4px solid var(--accent);border-radius:6px;padding:12px 16px;margin-bottom:12px;font-size:0.85rem;color:var(--app-fg)">
-        <strong>📋 What files do you need?</strong><br><br>
-        <table style="border-collapse:collapse;width:100%">
-        <tr><td style="padding:3px 8px">📄 <strong>MARA</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MARA (general material data, required for Material Type)</td></tr>
-        <tr><td style="padding:3px 8px">📄 <strong>MARC</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MARC (contains Advanced Planning, Heuristic, PP Plng Procedure fields)</td></tr>
-        <tr><td style="padding:3px 8px; color:var(--color-ok)">🔓 <strong>ZPLM MARC</strong></td><td style="color:var(--app-fg-muted)">Optional — enables Material Transfer detection for MRP rules</td></tr>
-        </table>
-        </div>
-        """, unsafe_allow_html=True)
-        uploads = st.file_uploader("Drop MARA + MARC + (optional) ZPLM MARC",
-                                   type="xlsx", accept_multiple_files=True, key="mrp_multi_uploader")
-        files = classify_uploaded_files(uploads)
-        if uploads:
-            persist_uploaded_mapping(files, "mrp_files_persisted")
-
-        persisted = st.session_state.get("mrp_files_persisted") or {}
-        show_file_status(required_keys, files, persisted)
-
-        _col_errs_mrp = validate_uploaded_files(persisted, required_keys)
-        if _col_errs_mrp:
-            for _k, _msg in _col_errs_mrp.items():
-                st.warning(f"⚠️ **{LABELS_PT.get(_k, _k)}** — {_msg}")
-
-        disabled = any(k not in persisted for k in required_keys) or bool(_col_errs_mrp)
-        c1, c2 = st.columns(2)
-        with c1:
-            with st.expander("🧹 Clear persistent uploads"):
-                if st.button("Clear MRP uploads", key="mrp_clear"):
-                    st.session_state["mrp_files_persisted"] = {}
-                    st.success("Cleared."); st.rerun()
-        with c2:
-            if st.button("➡️ Continue to Scope", disabled=disabled, key="mrp_next1", width='stretch'):
-                st.session_state.mrp_step = 2; st.rerun()
-
-    elif st.session_state.mrp_step == 2:
-        st.markdown("### 🌍 Step 2 — Choose Scope")
-        st.markdown("""
-        <div style="background:var(--app-bg-secondary);border-left:4px solid var(--color-ok);border-radius:6px;padding:10px 16px;margin-bottom:12px;font-size:0.85rem;color:var(--app-fg)">
-        <strong>ℹ️ What does scope mean?</strong><br>
-        Choose which plant to validate. <strong>All</strong> validates both PT01 and PT02 together.
-        The scope also determines which plant appears in the exported Excel report.
-        </div>
-        """, unsafe_allow_html=True)
-        export_scope = st.radio("Scope:", ["All", "Only PT01", "Only PT02"], horizontal=True)
-        plant_filter_export = {"Only PT01": "PT01", "Only PT02": "PT02"}.get(export_scope)
-        apply_filter_display = st.checkbox("Apply filter to displayed tables", value=False)
-        plant_filter_display = plant_filter_export if apply_filter_display else None
-
-        st.session_state.mrp_export_scope  = export_scope
-        st.session_state.mrp_plant_export  = plant_filter_export
-        st.session_state.mrp_plant_display = plant_filter_display
-
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("⬅️ Back", key="mrp_back2", width='stretch'):
-                st.session_state.mrp_step = 1; st.rerun()
-        with c2:
-            if st.button("➡️ Continue to Validation", key="mrp_next2", width='stretch'):
-                st.session_state.mrp_step = 3; st.rerun()
-
-    elif st.session_state.mrp_step == 3:
-        st.markdown("### ⚙️ Step 3 — Run MRP Validation")
-
-        _persisted_mrp = st.session_state.get("mrp_files_persisted") or {}
-        _scope_mrp     = st.session_state.get("mrp_export_scope", "All")
-        _exec_mrp      = st.session_state.get("executor_name", "—")
-        _has_zplm      = "zplm_marc" in _persisted_mrp
-
-        st.markdown(f"""
-        <div style="background:var(--app-bg-secondary);border:1px solid var(--app-border);border-radius:10px;padding:16px 20px;margin-bottom:16px">
-        <div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--app-fg-muted);margin-bottom:10px">
-            ✅ Ready to validate — confirm before running
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:0.87rem;color:var(--app-fg)">
-            <div><span style="color:var(--app-fg-muted)">Executor</span><br><strong>{_exec_mrp}</strong></div>
-            <div><span style="color:var(--app-fg-muted)">Scope</span><br><strong>{_scope_mrp}</strong></div>
-            <div><span style="color:var(--app-fg-muted)">ZPLM MARC</span><br><strong>{"✅ Loaded — Material Transfer detection enabled" if _has_zplm else "⬜ Not loaded — Transfer detection disabled"}</strong></div>
-        </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if st.button("▶️ Execute MRP Validation", type="primary", key="mrp_run"):
-            files     = rehydrate_persisted_mapping("mrp_files_persisted")
-            mara_file = files.get("mara")
-            marc_file = files.get("marc")
-            zplm_marc = files.get("zplm_marc")
-
-            plant_filter_export  = st.session_state.mrp_plant_export
-            plant_filter_display = st.session_state.mrp_plant_display
-
-            with st.spinner("Validating MRP files..."):
-                excel_display, errors_df, summary_df = run_mrp_validation(
-                    mara_file=mara_file, marc_file=marc_file,
-                    zplm_marc_file=zplm_marc, plant_filter=plant_filter_display,
-                )
-                if plant_filter_export != plant_filter_display:
-                    excel_export, _, _ = run_mrp_validation(
-                        mara_file=mara_file, marc_file=marc_file,
-                        zplm_marc_file=zplm_marc, plant_filter=plant_filter_export,
-                    )
-                else:
-                    excel_export = excel_display
-
-            st.session_state.mrp_errors_df    = errors_df
-            st.session_state.mrp_summary_df   = summary_df
-            st.session_state.mrp_excel_export = excel_export
-
-            if save_history:
-                payload = build_mrp_log_payload(
-                    user=effective_executor, plant_filter=plant_filter_export,
-                    mara_file=mara_file, marc_file=marc_file, zplm_marc_file=zplm_marc,
-                    errors_df=errors_df, summary_df=summary_df,
-                )
-                save_run_log(payload)
-
-            st.session_state.mrp_step = 4; st.rerun()
-
-    elif st.session_state.mrp_step == 4:
-        st.markdown("### 📊 Step 4 — Results")
-
-        errors_df    = st.session_state.mrp_errors_df
-        summary_df   = st.session_state.mrp_summary_df
-        excel_export = st.session_state.mrp_excel_export
-
-        # FIX 4: count fields/materials consistently with Adjusted Summary
-        # (Field Errors only — excludes Missing View errors)
-        _fe_only = (errors_df[errors_df["Error_Type"] == "Field Error"]
-                    if "Error_Type" in errors_df.columns else errors_df)
-        _fe_cnt   = int(_fe_only.shape[0])
-        _f_cnt    = int(_fe_only["Field"].nunique())    if "Field"    in _fe_only.columns else 0
-        _m_cnt    = int(_fe_only["Material"].nunique()) if "Material" in _fe_only.columns else 0
-
-        c = st.columns(3)
-        with c[0]:
-            st.markdown(f'<div class="card"><h4>Field Errors (Actionable)</h4><div class="big">{_fe_cnt:,}</div></div>', unsafe_allow_html=True)
-        with c[1]:
-            st.markdown(f'<div class="card"><h4>Distinct Fields</h4><div class="big">{_f_cnt}</div></div>', unsafe_allow_html=True)
-        with c[2]:
-            st.markdown(f'<div class="card"><h4>Materials with Errors</h4><div class="big">{_m_cnt:,}</div></div>', unsafe_allow_html=True)
-
-        _top_mrp = _fe_only['Field'].value_counts().index[0] if (not _fe_only.empty and 'Field' in _fe_only.columns) else "—"
-        _ic = "var(--app-bg-secondary)" if _fe_cnt > 500 else ("var(--app-bg-secondary)" if _fe_cnt > 100 else "var(--app-bg-secondary)")
-        _ib = "var(--color-error)" if _fe_cnt > 500 else ("var(--color-warn)" if _fe_cnt > 100 else "var(--color-ok)")
-        st.markdown(f"""
-        <div style="background:{_ic};border-left:4px solid {_ib};border-radius:8px;
-                    padding:12px 16px;margin-bottom:16px;font-size:0.9rem;line-height:1.6;color:var(--app-fg)">
-            <strong>📋 MRP Validation Summary</strong><br>
-            Found <strong>{_fe_cnt:,} MRP errors</strong> across <strong>{_m_cnt:,} materials</strong>
-            in <strong>{_f_cnt} distinct fields</strong>.
-            The most affected field is <strong>{_top_mrp}</strong>.
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("## 📈 Dashboard — MRP Validation")
-        render_mrp_run_kpis(errors_df)
-        render_mrp_run_charts(errors_df)
-
-        with st.expander("📋 All Errors", expanded=False):
-            _srch_mrp = st.text_input("🔍 Filter by Material, Field or Error", key="mrp_err_search")
-            _df_mrp   = _coerce_df_for_display(errors_df)
-            if _srch_mrp.strip():
-                _mask_mrp = _df_mrp.apply(
-                    lambda col: col.astype(str).str.contains(_srch_mrp.strip(), case=False, na=False)
-                ).any(axis=1)
-                _df_mrp = _df_mrp[_mask_mrp]
-            st.caption(f"Showing {len(_df_mrp):,} of {len(errors_df):,} rows")
-            st.dataframe(_df_mrp, width='stretch')
-
-        with st.expander("📋 Summary", expanded=False):
-            st.dataframe(_coerce_df_for_display(summary_df), width='stretch')
-
-        render_history_with_download(
-            "mrp", limit=10, label="MRP History",
-            col_map={"When": "timestamp", "Who": "user",
-                     "Plant": "plant_filter", "Errors": "metrics.total_errors"}
-        )
-
-        suffix = st.session_state.mrp_plant_export or "ALL"
-        st.download_button(
-            f"⬇️ Download MRP_Validation_Adjusted_Report_{suffix}.xlsx",
-            data=excel_export.getvalue(),
-            file_name=f"MRP_Validation_Adjusted_Report_{suffix}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("🔄 New Validation", key="mrp_new", width='stretch'):
-                st.session_state.mrp_step = 1; st.rerun()
-        with c2:
-            if st.button("🧹 Clear uploads & start over", key="mrp_clear4", width='stretch'):
-                st.session_state["mrp_files_persisted"] = {}
-                st.session_state.mrp_step = 1; st.rerun()
-
-    render_footer(start_time, version="v1.4")
-
-# ==========================================================
 # PAGE 4 — SAP MATERIAL VALIDATION PROGRESS
 # ==========================================================
 elif main_choice == "📊 SAP Validation Progress":

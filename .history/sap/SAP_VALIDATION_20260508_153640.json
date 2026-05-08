@@ -1,0 +1,40 @@
+{
+  "run_type": "SAP_VALIDATION",
+  "timestamp": "2026-05-08T15:36:40",
+  "user": "RPITA",
+  "plant_filter": "ALL",
+  "metrics": {
+    "total_errors": 111474,
+    "fields_with_error": 29,
+    "materials_with_error": 26256
+  },
+  "files": {
+    "sap": "Item Browse Report.xlsx",
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "mvke": "MVKE.xlsx"
+  },
+  "top_fields": [
+    {
+      "Field": "Stock Determination Group",
+      "Adjusted Nº of Errors": 27037
+    },
+    {
+      "Field": "Heuristic",
+      "Adjusted Nº of Errors": 12686
+    },
+    {
+      "Field": "PP Plng Procedure",
+      "Adjusted Nº of Errors": 12676
+    },
+    {
+      "Field": "Requirement Strategy",
+      "Adjusted Nº of Errors": 12654
+    },
+    {
+      "Field": "Advanced Planning",
+      "Adjusted Nº of Errors": 11797
+    }
+  ],
+  "report_path": "C:\\Users\\RPITA\\OneDrive - Visteon\\Desktop\\Rodrigo\\PLM_Web\\reports\\sap\\2026-05\\20260508_153640_SAP_Validation_ALL.xlsx"
+}
