@@ -57,10 +57,14 @@ def load_xlsx(file, *, sheet_name=None):
     raise ValueError(f"Unsupported file type: {type(file)}")
 
 # =============================================================================
-# MATERIAL TYPE OVERRIDES (business exceptions)
+# RULE-SPECIFIC MATERIAL TYPE OVERRIDES
 # =============================================================================
-MATERIAL_TYPE_OVERRIDES = {
-    "VPRMKF-10849-LB": "FERT",
+RULE_MATERIAL_TYPE_OVERRIDES = {
+    "VPRMKF-10849-LB": {
+        "validar_enterproj_number": "FERT",
+        "validar_material_group": "FERT",
+        "validar_valuation_class": "FERT",
+    }
 }
 
 # =============================================================================
@@ -251,34 +255,19 @@ def build_csr_exempt_set(csr_item_df, csr_head_df) -> set:
     return exempt
 
 
-def apply_material_type_overrides(df: pd.DataFrame) -> pd.DataFrame:
+def get_effective_material_type(material, real_mt, rule_name):
     """
-    Forces Material Type overrides for specific materials.
-    Applies only if columns 'Material' and 'Material Type' exist.
+    Returns the effective Material Type for a given rule,
+    allowing rule-specific overrides.
     """
-    if df is None or df.empty:
-        return df
+    material = (material or "").strip()
+    real_mt = (real_mt or "").strip()
 
-    required_cols = {"Material", "Material Type"}
-    if not required_cols.issubset(df.columns):
-        return df
-
-    df = df.copy()
-    df["Material"] = df["Material"].astype(str).str.strip()
-
-    
-    for material, forced_type in MATERIAL_TYPE_OVERRIDES.items():
-        mask = df["Material"] == material
-        if mask.any():
-            original = df.loc[mask, "Material Type"].iloc[0]
-            if original != forced_type:
-                print(
-                    f"⚠️ Material Type override applied: "
-                    f"{material} [{original} → {forced_type}]"
-                )
-            df.loc[mask, "Material Type"] = forced_type
-
-    return df
+    return (
+        RULE_MATERIAL_TYPE_OVERRIDES
+        .get(material, {})
+        .get(rule_name, real_mt)
+    )
 
 # =============================================================================
 # 3) LOG PAYLOAD BUILDERS
@@ -825,25 +814,37 @@ def validar_material_group(df, resultados):
 
     for idx, row in df.iterrows():
         erros = []
-        mt  = str(row['Material Type']).strip()
-        mg  = str(row['Material Group']).strip()
 
-        if pd.isna(row['Material Group']) or mg == '':
+        material = str(row.get('Material', '')).strip()
+        real_mt  = str(row.get('Material Type', '')).strip()
+
+        # ✅ Material Type efetivo por regra
+        mt = get_effective_material_type(
+            material,
+            real_mt,
+            'validar_material_group',
+        )
+
+        raw_mg = row.get('Material Group')
+        mg = '' if pd.isna(raw_mg) else str(raw_mg).strip()
+
+        if mg == '':
             erros.append('Mandatory field blank')
         else:
-            if mt == 'HALB' and mg in ['L004', 'APPOINT']:
+            if mt == 'HALB' and mg in ('L004', 'APPOINT'):
                 erros.append(f"For HALB, cannot be '{mg}'")
-            elif mt == 'FERT' and mg in ['L003', 'APPOINT']:
+            elif mt == 'FERT' and mg in ('L003', 'APPOINT'):
                 erros.append(f"For FERT, cannot be '{mg}'")
-            elif mt == 'ROH' and mg in ['L003', 'L004']:
+            elif mt == 'ROH' and mg in ('L003', 'L004'):
                 erros.append(f"For ROH, cannot be '{mg}'")
 
         if erros:
             resultados.append({
-                'Line': idx + 2, 'Field': 'Material Group',
+                'Line': idx + 2,
+                'Field': 'Material Group',
                 'Error': ' \n'.join(erros),
-                'Material': str(row.get('Material', '')).strip(),
-                'Plant':    str(row.get('Plant', '')).strip(),
+                'Material': material,
+                'Plant': str(row.get('Plant', '')).strip(),
             })
 
 
@@ -1561,22 +1562,43 @@ def validar_valuation_class(df, resultados):
 
     for idx, row in df.iterrows():
         erros = []
-        mt  = str(row['Material Type']).strip()
-        val = str(row['Valuation Class']).strip()
-        if pd.isna(row['Valuation Class']) or val == '':
+
+        material = str(row.get('Material', '')).strip()
+        real_mt  = str(row.get('Material Type', '')).strip()
+
+        # ✅ Material Type efetivo por regra
+        mt = get_effective_material_type(
+            material,
+            real_mt,
+            'validar_valuation_class',
+        )
+
+        val = normalize_code(row.get('Valuation Class'), as_int=True)
+
+        if val == '':
             erros.append('Mandatory field blank')
         else:
             if val == '3000' and mt != 'ROH':
-                erros.append(f"Value '3000' only allowed for Material Type = ROH (Current: '{mt}')")
+                erros.append(
+                    f"Value '3000' only allowed for Material Type = ROH (Current: '{mt}')"
+                )
             elif val == '7900' and mt != 'HALB':
-                erros.append(f"Value '7900' only allowed for Material Type = HALB (Current: '{mt}')")
+                erros.append(
+                    f"Value '7900' only allowed for Material Type = HALB (Current: '{mt}')"
+                )
             elif val == '7920' and mt != 'FERT':
-                erros.append(f"Value '7920' only allowed for Material Type = FERT (Current: '{mt}')")
+                erros.append(
+                    f"Value '7920' only allowed for Material Type = FERT (Current: '{mt}')"
+                )
+
         if erros:
-            resultados.append({'Line': idx + 2, 'Field': 'Valuation Class',
-                               'Error': ' | '.join(erros),
-                               'Material': str(row.get('Material', '')).strip(),
-                               'Plant':    str(row.get('Plant', '')).strip()})
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'Valuation Class',
+                'Error': ' | '.join(erros),
+                'Material': material,
+                'Plant': str(row.get('Plant', '')).strip(),
+            })
 
 
 def validar_with_qty_structure(df, resultados):
@@ -1852,21 +1874,47 @@ def validar_enterproj_number(df, resultados):
 
     for idx, row in df.iterrows():
         erros = []
-        mt         = str(row['Material Type']).strip()
-        enterproj  = '' if pd.isna(row['Enterproj Number']) else str(row['Enterproj Number']).strip()
-        material   = str(row.get('Material', '')).strip()
+
+        material = str(row.get('Material', '')).strip()
+        real_mt  = str(row.get('Material Type', '')).strip()
+
+        # ✅ Material Type efetivo por regra
+        mt = get_effective_material_type(
+            material,
+            real_mt,
+            'validar_enterproj_number',
+        )
+
+        enterproj = '' if pd.isna(row['Enterproj Number']) else str(row['Enterproj Number']).strip()
 
         if mt == 'FERT':
             if enterproj == '':
-                erros.append("For Material Type 'FERT', the field is required and cannot be empty.")
-        elif mt in ['ROH', 'HALB']:
-            if enterproj != '':
-                display = str(int(float(enterproj))) if enterproj.replace('.', '', 1).isdigit() else enterproj
-                erros.append(f"For Material Type '{mt}', the field must be empty (current: '{display}')")
+                erros.append(
+                    "For Material Type 'FERT', the field is required and cannot be empty."
+                )
 
-        if erros and not any(r['Material'] == material and r['Field'] == 'Enterproj Number' for r in resultados):
-            resultados.append({'Line': idx + 2, 'Field': 'Enterproj Number',
-                               'Error': ' | '.join(erros), 'Material': material, 'Plant': ''})
+        elif mt in ('ROH', 'HALB'):
+            if enterproj != '':
+                display = (
+                    str(int(float(enterproj)))
+                    if enterproj.replace('.', '', 1).isdigit()
+                    else enterproj
+                )
+                erros.append(
+                    f"For Material Type '{mt}', the field must be empty (current: '{display}')"
+                )
+
+        if erros and not any(
+            r['Material'] == material and r['Field'] == 'Enterproj Number'
+            for r in resultados
+        ):
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'Enterproj Number',
+                'Error': ' | '.join(erros),
+                'Material': material,
+                'Plant': '',
+            })
 
 
 def validar_product_hierarchy_vs_enterproj(mara_df, zplm_mara_df, resultados):
@@ -3995,11 +4043,9 @@ def run_full_validation(
     # ------------------------------------------------------------------
     _cb(5,  "Loading SAPUI5 Export...")
     sap_df = load_xlsx_fast(sap_file, sheet_name="SAPUI5 Export")
-    sap_df = apply_material_type_overrides(sap_df)
 
     _cb(7,  "Loading MARA...")
     mara_df = load_xlsx_fast(mara_file, sheet_name=0)
-    mara_df      = apply_material_type_overrides(mara_df)
 
     _cb(10, "Loading MARC...")
     marc_df = load_xlsx_fast(marc_file, sheet_name=0)
@@ -4016,7 +4062,6 @@ def run_full_validation(
 
     _cb(16, "Preparing ZPLM data...")
     zplm_mara_df = load_xlsx_fast(zplm_mara_file, sheet_name=0) if zplm_mara_file else None
-    zplm_mara_df = apply_material_type_overrides(zplm_mara_df)
 
     _cb(18, "Loading CSR data...")
     csr_item_df = load_xlsx_fast(csr_item_file, sheet_name=0) if csr_item_file else None
