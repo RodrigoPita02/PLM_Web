@@ -58,12 +58,15 @@ def load_xlsx(file, *, sheet_name=None):
 
 # =============================================================================
 # RULE-SPECIFIC MATERIAL TYPE OVERRIDES
+# Default = FERT
+# Exceptions = HALB (only for listed rules)
 # =============================================================================
 RULE_MATERIAL_TYPE_OVERRIDES = {
     "VPRMKF-10849-LB": {
-        "validar_enterproj_number": "FERT",
-        "validar_material_group": "FERT",
-        "validar_valuation_class": "FERT",
+        "__default__": "FERT",
+        "validar_enterproj_number": "HALB",
+        "validar_material_group": "HALB",
+        "validar_valuation_class": "HALB",
     }
 }
 
@@ -259,15 +262,28 @@ def get_effective_material_type(material, real_mt, rule_name):
     """
     Returns the effective Material Type for a given rule,
     allowing rule-specific overrides.
+    Priority:
+    1) Rule-specific override
+    2) Material default override (__default__)
+    3) Real Material Type from data
     """
     material = (material or "").strip()
     real_mt = (real_mt or "").strip()
 
-    return (
-        RULE_MATERIAL_TYPE_OVERRIDES
-        .get(material, {})
-        .get(rule_name, real_mt)
-    )
+    rules = RULE_MATERIAL_TYPE_OVERRIDES.get(material)
+    if not rules:
+        return real_mt
+
+    # 1️⃣ Rule-specific override
+    if rule_name in rules:
+        return rules[rule_name]
+
+    # 2️⃣ Default override
+    if "__default__" in rules:
+        return rules["__default__"]
+
+    # 3️⃣ Fallback to real MT
+    return real_mt
 
 # =============================================================================
 # 3) LOG PAYLOAD BUILDERS
@@ -831,10 +847,10 @@ def validar_material_group(df, resultados):
         if mg == '':
             erros.append('Mandatory field blank')
         else:
-            if mt == 'HALB' and mg in ('L004', 'APPOINT'):
-                erros.append(f"For HALB, cannot be '{mg}'")
-            elif mt == 'FERT' and mg in ('L003', 'APPOINT'):
-                erros.append(f"For FERT, cannot be '{mg}'")
+            if mt == 'FERT' and mg == 'L004':
+                erros.append("For FERT, cannot be 'L004'")
+            elif mt == 'HALB' and mg == 'L003':
+                erros.append("For HALB, cannot be 'L003'")
             elif mt == 'ROH' and mg in ('L003', 'L004'):
                 erros.append(f"For ROH, cannot be '{mg}'")
 
@@ -1134,13 +1150,13 @@ def validar_mrp_type(df, resultados, zplm_marc_df=None,
                                    'Error': ' \n'.join(erros), 'Material': material, 'Plant': plant})
             continue
 
-        if psms in (70, 75):
+        if psms in (70, 75, 99):
             if mrp != 'ND':
                 erros.append("Mandatory field blank (MRP Type)" if mrp == '' else
-                             f"For Part Status = {psms}, MRP Type must be 'ND' (Current: '{mrp}')")
+                            f"For Part Status = {psms}, MRP Type must be 'ND' (Current: '{mrp}')")
             if erros:
                 resultados.append({'Line': idx + 2, 'Field': 'MRP Type',
-                                   'Error': ' \n'.join(erros), 'Material': material, 'Plant': plant})
+                                'Error': ' \n'.join(erros), 'Material': material, 'Plant': plant})
             continue
 
         if psms == 65 and mrp == 'ND':
@@ -1677,15 +1693,48 @@ def validar_availability_check(df, resultados):
 
 
 def validar_mrp_controller(df, resultados):
-    """MRP Controller is mandatory."""
+    """MRP Controller is mandatory.
+       Z01 is not allowed when PSMS is different from 00, 10, 70, 75 or 99.
+    """
     if 'MRP Controller' not in df.columns:
         return
+
+    has_psms = 'Plant Specific Material Status' in df.columns
+    allowed_z01_status = {0, 10, 70, 75, 99}
+
+    def parse_status(val):
+        if pd.isna(val) or str(val).strip() == '':
+            return None
+        try:
+            return int(float(str(val).strip()))
+        except Exception:
+            return None
+
     for idx, row in df.iterrows():
-        if pd.isna(row['MRP Controller']) or str(row['MRP Controller']).strip() == '':
-            resultados.append({'Line': idx + 2, 'Field': 'MRP Controller',
-                               'Error': 'Mandatory field blank',
-                               'Material': str(row.get('Material', '')).strip(),
-                               'Plant':    str(row.get('Plant', '')).strip()})
+        erros = []
+
+        mrp_ctrl = '' if pd.isna(row['MRP Controller']) else str(row['MRP Controller']).strip()
+        psms = parse_status(row.get('Plant Specific Material Status')) if has_psms else None
+
+        # Mandatory
+        if mrp_ctrl == '':
+            erros.append('Mandatory field blank')
+
+        # Z01 restriction
+        elif mrp_ctrl == 'Z01' and psms not in allowed_z01_status:
+            erros.append(
+                "MRP Controller 'Z01' not allowed when Material Status "
+                "is different from 00, 10, 70, 75 or 99"
+            )
+
+        if erros:
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'MRP Controller',
+                'Error': ' \n'.join(erros),
+                'Material': str(row.get('Material', '')).strip(),
+                'Plant': str(row.get('Plant', '')).strip(),
+            })
 
 
 def validar_plant_specific_material_status(df, resultados):
@@ -2178,7 +2227,7 @@ def validar_country_region_origin_fp(marc_df, zplm_marc_df, resultados):
     SAP Material Validation:
     MARC - Country/Region of Origin is mandatory for:
     - Plant Type = FP (from ZPLM MARC)
-    - PSMS in {30,40,45,50,55,65}
+    - PSMS in {25,30,35,40,45,50,55,65}
     """
 
     required_marc = {
@@ -2201,7 +2250,8 @@ def validar_country_region_origin_fp(marc_df, zplm_marc_df, resultados):
     ):
         return
 
-    valid_status = {'30', '40', '45', '50', '55', '65'}
+    # ✅ status atualizados
+    valid_status = {'25', '30', '35', '40', '45', '50', '55', '65'}
 
     # Join MARC with ZPLM MARC to get Plant Type
     df = marc_df.merge(
@@ -2224,7 +2274,7 @@ def validar_country_region_origin_fp(marc_df, zplm_marc_df, resultados):
                 'Field': 'Cntry/Reg of Origin',
                 'Error': (
                     'Mandatory for FP materials with '
-                    'PSMS 30/40/45/50/55/65'
+                    'PSMS 25/30/35/40/45/50/55/65'
                 ),
                 'Material': str(row.get('Material', '')).strip(),
                 'Plant': str(row.get('Plant', '')).strip(),
@@ -3576,24 +3626,29 @@ def fill_plant_and_validate_enterproj_from_zplm(errors_df, latest_report,
 
 def validar_neg_stocks_in_plant(marc_df, mara_df):
     """
-    MARC + MARA: Neg. stocks in plant validation for HALB and ROH.
-    Must be marked for:
-      1) PT01 + PSL=P105
-      2) PT02 + PSL=P205 + PSMS not in {25,75}
-      3) PT02 + PSL=P220 + PSMS in {25,75}
-    Must NOT be marked in any other scenario.
-    If the field is blank in a scenario where it must be marked -> specific blank error.
+    MARC + MARA: Neg. stocks in plant validation.
+
+    Rule:
+    - Must be marked ONLY for Material Types: ROH and HALB
+    - Must NOT be marked for any other Material Type
+    - If blank for ROH/HALB -> mandatory blank error
     """
     if marc_df is None or marc_df.empty or mara_df is None or mara_df.empty:
         return []
 
-    needed = {'Material', 'Plant', 'Neg. stocks in plant',
-              'Production Storage Location', 'Plant Specific Material Status'}
-    if not needed.issubset(marc_df.columns) or not {'Material', 'Material Type'}.issubset(mara_df.columns):
+    needed_marc = {'Material', 'Plant', 'Neg. stocks in plant'}
+    needed_mara = {'Material', 'Material Type'}
+
+    if not needed_marc.issubset(marc_df.columns) or not needed_mara.issubset(mara_df.columns):
         return []
 
-    mt_map = dict(zip(mara_df['Material'].astype(str).str.strip(),
-                      mara_df['Material Type'].astype(str).str.strip().upper()))
+    # Map Material -> Material Type
+    mt_map = dict(
+        zip(
+            mara_df['Material'].astype(str).str.strip(),
+            mara_df['Material Type'].astype(str).str.strip().str.upper()
+        )
+    )
 
     def _s(x):
         return '' if pd.isna(x) else str(x).strip()
@@ -3604,49 +3659,45 @@ def validar_neg_stocks_in_plant(marc_df, mara_df):
     def _is_marked(x):
         return _s(x).upper() in {'X', '1', 'YES', 'Y', 'TRUE'}
 
-    def _psms_int(x):
-        sx = _s(x)
-        if sx == '':
-            return None
-        try:
-            return int(float(sx))
-        except Exception:
-            return None
-
     erros = []
+
     for idx, row in marc_df.iterrows():
         material = _s(row.get('Material'))
         plant    = _s(row.get('Plant'))
         mt       = mt_map.get(material, '')
 
-        if mt not in {'HALB', 'ROH'}:
-            continue
+        neg_raw = row.get('Neg. stocks in plant')
+        blank   = _is_blank(neg_raw)
+        marked  = _is_marked(neg_raw)
 
-        neg_raw  = row.get('Neg. stocks in plant')
-        blank    = _is_blank(neg_raw)
-        marked   = _is_marked(neg_raw)
-        psl      = _s(row.get('Production Storage Location'))
-        psms     = _psms_int(row.get('Plant Specific Material Status'))
-
-        must_mark = (
-            (plant == 'PT01' and psl == 'P105') or
-            (plant == 'PT02' and psl == 'P205' and psms not in {25, 75}) or
-            (plant == 'PT02' and psms in {25, 75} and psl == 'P220')
-        )
+        must_mark = mt in {'ROH', 'HALB'}
 
         if must_mark and blank:
-            erros.append({'Line': idx + 2, 'Field': 'Neg. stocks in plant',
-                          'Error': f"Mandatory field blank — must be marked for this combination "
-                                   f"(Plant={plant}, PSL={psl}, PSMS={psms})",
-                          'Material': material, 'Plant': plant})
+            erros.append({
+                'Line': idx + 2,
+                'Field': 'Neg. stocks in plant',
+                'Error': f"Mandatory field blank — must be marked for Material Type {mt}",
+                'Material': material,
+                'Plant': plant
+            })
+
         elif must_mark and not marked:
-            erros.append({'Line': idx + 2, 'Field': 'Neg. stocks in plant',
-                          'Error': f"Must be marked for this combination (Plant={plant}, PSL={psl}, PSMS={psms})",
-                          'Material': material, 'Plant': plant})
+            erros.append({
+                'Line': idx + 2,
+                'Field': 'Neg. stocks in plant',
+                'Error': f"Must be marked for Material Type {mt}",
+                'Material': material,
+                'Plant': plant
+            })
+
         elif not must_mark and marked:
-            erros.append({'Line': idx + 2, 'Field': 'Neg. stocks in plant',
-                          'Error': "Invalid marking: allowed only for PT01+P105, PT02+P205 (PSMS≠25/75), or PT02+P220 (PSMS=25/75)",
-                          'Material': material, 'Plant': plant})
+            erros.append({
+                'Line': idx + 2,
+                'Field': 'Neg. stocks in plant',
+                'Error': "Invalid marking — allowed only for Material Types ROH or HALB",
+                'Material': material,
+                'Plant': plant
+            })
 
     return erros
 
@@ -4191,7 +4242,6 @@ def run_full_validation(
         marc_df=marc_df,
         mara_df=mara_df,
         resultados=resultados,
-        zplm_marc_df=zplm_marc_df,
     )
 
     # ------------------------------------------------------------------
@@ -5089,26 +5139,34 @@ def run_data_cleanups_validation(
 #  run_full_validation so these fields appear in the main SAP report)
 # =============================================================================
 
-def validar_advanced_planning_fields(marc_df, mara_df, resultados,
-                                      zplm_marc_df=None):
+def validar_advanced_planning_fields(
+    marc_df,
+    mara_df,
+    resultados,
+):
     """
-    Validates the four Advanced Planning fields sourced from MARC:
-      - Advanced Planning  : HALB+Transfer / FERT → 'true'
-                             HALB internal / ROH  → 'false'
-      - Heuristic          : HALB+Transfer / FERT → 'SAP_PP_002'
-                             ROH / HALB internal  → must be empty
-      - PP Plng Procedure  : HALB+Transfer / FERT → 4
-                             ROH / HALB internal  → must be empty
-      - Requirement Strategy: HALB+Transfer / FERT → 20
-                             ROH / HALB internal  → must be empty
+    Validates Advanced Planning fields (new rules):
 
-    Silently skips if any of the four columns are absent in marc_df
-    (allows the SAP report to run even when MARC doesn't include them).
-    Applies only to Material Types FERT, HALB, ROH.
+    - Advanced Planning:
+        Must be 'X' for:
+          * PT01 + FERT
+          * PT02 + FERT
+          * PT02 + HALB
+
+    - Product Heuristic:
+        Must NOT be empty for FERT and HALB
+
+    - PP Planning Procedure:
+        Must be '4' for FERT and HALB
+
+    - Proposed Strategy (Requirement Strategy):
+        Must be '20' for FERT and HALB
     """
+
     if marc_df is None or marc_df.empty or mara_df is None or mara_df.empty:
         return
 
+    # Helper to pick first existing column
     def _pick(df, candidates):
         return next((c for c in candidates if c in df.columns), None)
 
@@ -5117,24 +5175,18 @@ def validar_advanced_planning_fields(marc_df, mara_df, resultados,
     col_pp   = _pick(marc_df, ['PP Plng Procedure'])
     col_req  = _pick(marc_df, ['Requirement Strategy'])
 
-    # All four columns must be present — if any is missing, skip silently
+    # If any required column is missing, skip silently
     if any(c is None for c in [col_adv, col_heur, col_pp, col_req]):
         return
 
     if not {'Material', 'Material Type'}.issubset(mara_df.columns):
         return
 
+    # Build material → material type map
     mt_map = dict(zip(
         mara_df['Material'].astype(str).str.strip(),
         mara_df['Material Type'].astype(str).str.strip().str.upper()
     ))
-
-    transfer_map = {}
-    if zplm_marc_df is not None:
-        try:
-            transfer_map = build_material_transfer_map(zplm_marc_df)
-        except Exception:
-            pass
 
     def _s(x):
         return '' if pd.isna(x) else str(x).strip()
@@ -5142,66 +5194,69 @@ def validar_advanced_planning_fields(marc_df, mara_df, resultados,
     for idx, row in marc_df.iterrows():
         material = _s(row.get('Material'))
         plant    = _s(row.get('Plant'))
-        mt       = mt_map.get(material, '').upper()
-        if mt not in {'FERT', 'HALB', 'ROH'}:
+        real_mt  = mt_map.get(material, '').upper()
+
+        # ✅ Apply rule-specific material type override logic
+        mt = get_effective_material_type(
+            material,
+            real_mt,
+            'validar_advanced_planning_fields',
+        )
+
+        if mt not in {'FERT', 'HALB'}:
             continue
 
-        is_transfer = transfer_map.get((material, plant), False)
-        adv  = _s(row.get(col_adv)).lower()
+        adv  = _s(row.get(col_adv)).upper()
         heur = _s(row.get(col_heur))
         pp   = normalize_code(row.get(col_pp), as_int=True)
         req  = normalize_code(row.get(col_req), as_int=True)
 
         # ── Advanced Planning ──────────────────────────────────────────
-        if (mt == 'HALB' and is_transfer) or mt == 'FERT':
-            if adv != 'true':
+        if (
+            (plant == 'PT01' and mt == 'FERT') or
+            (plant == 'PT02' and mt in {'FERT', 'HALB'})
+        ):
+            if adv != 'X':
                 resultados.append({
-                    'Line': idx + 2, 'Field': 'Advanced Planning',
-                    'Error': "Invalid: should be 'true' (HALB with Transfer or FERT)",
-                    'Material': material, 'Plant': plant,
-                })
-        elif (mt == 'HALB' and not is_transfer) or mt == 'ROH':
-            if adv != 'false':
-                resultados.append({
-                    'Line': idx + 2, 'Field': 'Advanced Planning',
-                    'Error': "Invalid: should be 'false' (HALB internal or ROH)",
-                    'Material': material, 'Plant': plant,
+                    'Line': idx + 2,
+                    'Field': 'Advanced Planning',
+                    'Error': (
+                        "Mandatory: must be 'X' for "
+                        "PT01 FERT or PT02 FERT/HALB"
+                    ),
+                    'Material': material,
+                    'Plant': plant,
                 })
 
-        # ── Heuristic / PP Plng Procedure / Requirement Strategy ───────
-        if mt == 'ROH' or (mt == 'HALB' and not is_transfer):
-            # These three fields must be empty
-            for label, val in [
-                ('Heuristic',            heur),
-                ('PP Plng Procedure',    _s(row.get(col_pp))),
-                ('Requirement Strategy', _s(row.get(col_req))),
-            ]:
-                if val != '':
-                    resultados.append({
-                        'Line': idx + 2, 'Field': label,
-                        'Error': "Should be empty (ROH or HALB internal)",
-                        'Material': material, 'Plant': plant,
-                    })
-        else:
-            # FERT or HALB+Transfer: specific values required
-            if heur != 'SAP_PP_002':
-                resultados.append({
-                    'Line': idx + 2, 'Field': 'Heuristic',
-                    'Error': "Invalid: should be 'SAP_PP_002'",
-                    'Material': material, 'Plant': plant,
-                })
-            if pp != '4':
-                resultados.append({
-                    'Line': idx + 2, 'Field': 'PP Plng Procedure',
-                    'Error': "Invalid: should be '4'",
-                    'Material': material, 'Plant': plant,
-                })
-            if req != '20':
-                resultados.append({
-                    'Line': idx + 2, 'Field': 'Requirement Strategy',
-                    'Error': "Invalid: should be '20'",
-                    'Material': material, 'Plant': plant,
-                })
+        # ── Product Heuristic ──────────────────────────────────────────
+        if heur == '':
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'Heuristic',
+                'Error': "Mandatory: cannot be empty for FERT or HALB",
+                'Material': material,
+                'Plant': plant,
+            })
+
+        # ── PP Planning Procedure ──────────────────────────────────────
+        if pp != '4':
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'PP Plng Procedure',
+                'Error': "Invalid value: should be '4'",
+                'Material': material,
+                'Plant': plant,
+            })
+
+        # ── Proposed Strategy (Requirement Strategy) ───────────────────
+        if req != '20':
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'Requirement Strategy',
+                'Error': "Invalid value: should be '20'",
+                'Material': material,
+                'Plant': plant,
+            })
 
 
 # -----------------------------------------------------------------------------
@@ -5240,7 +5295,7 @@ def run_mrp_validation(mara_file, marc_file, zplm_marc_file=None,
         marc_df = marc_df[marc_df['Plant'].astype(str).str.strip().str.upper() == pf].copy()
 
     resultados = []
-    validar_advanced_planning_fields(marc_df, mara_df, resultados, zplm_marc_df)
+    validar_advanced_planning_fields(marc_df, mara_df, resultados)
     errors_df = _coerce_df_for_display(pd.DataFrame(resultados))
 
     rolesviews_dict = load_xlsx_fast(get_rolesviews_bytesio(), sheet_name=None)

@@ -1,0 +1,40 @@
+{
+  "run_type": "SAP_VALIDATION",
+  "timestamp": "2026-05-11T16:22:59",
+  "user": "RPITA",
+  "plant_filter": "ALL",
+  "metrics": {
+    "total_errors": 70581,
+    "fields_with_error": 27,
+    "materials_with_error": 16502
+  },
+  "files": {
+    "sap": "Item Browse Report.xlsx",
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "mvke": "MVKE.xlsx"
+  },
+  "top_fields": [
+    {
+      "Field": "Heuristic",
+      "Adjusted Nº of Errors": 12684
+    },
+    {
+      "Field": "PP Plng Procedure",
+      "Adjusted Nº of Errors": 12675
+    },
+    {
+      "Field": "Requirement Strategy",
+      "Adjusted Nº of Errors": 12652
+    },
+    {
+      "Field": "Advanced Planning",
+      "Adjusted Nº of Errors": 11796
+    },
+    {
+      "Field": "Purchasing Group (DXX)",
+      "Adjusted Nº of Errors": 8075
+    }
+  ],
+  "report_path": "C:\\Users\\RPITA\\OneDrive - Visteon\\Desktop\\Rodrigo\\PLM_Web\\reports\\sap\\2026-05\\20260511_162259_SAP_Validation_ALL.xlsx"
+}
