@@ -1,0 +1,40 @@
+{
+  "run_type": "SAP_VALIDATION",
+  "timestamp": "2026-05-14T13:59:44",
+  "user": "RPITA",
+  "plant_filter": "PT",
+  "metrics": {
+    "total_errors": 85092,
+    "fields_with_error": 34,
+    "materials_with_error": 27844
+  },
+  "files": {
+    "sap": "Item Browse Report.xlsx",
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "mvke": "MVKE.xlsx"
+  },
+  "top_fields": [
+    {
+      "Field": "Stock Determination Group",
+      "Adjusted Nº of Errors": 29772
+    },
+    {
+      "Field": "Production Supervisor",
+      "Adjusted Nº of Errors": 10776
+    },
+    {
+      "Field": "Alternative UoM",
+      "Adjusted Nº of Errors": 8946
+    },
+    {
+      "Field": "Purchasing Group (DXX)",
+      "Adjusted Nº of Errors": 8515
+    },
+    {
+      "Field": "Purchasing Group",
+      "Adjusted Nº of Errors": 6771
+    }
+  ],
+  "report_path": "C:\\Users\\RPITA\\OneDrive - Visteon\\Desktop\\Rodrigo\\PLM_Web\\reports\\sap\\2026-05\\20260514_135944_SAP_Validation_PT.xlsx"
+}

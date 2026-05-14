@@ -1,0 +1,40 @@
+{
+  "run_type": "SAP_VALIDATION",
+  "timestamp": "2026-05-13T09:58:35",
+  "user": "RPITA",
+  "plant_filter": "PT",
+  "metrics": {
+    "total_errors": 30213,
+    "fields_with_error": 28,
+    "materials_with_error": 11100
+  },
+  "files": {
+    "sap": "Item Browse Report.xlsx",
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "mvke": "MVKE.xlsx"
+  },
+  "top_fields": [
+    {
+      "Field": "Purchasing Group (DXX)",
+      "Adjusted Nº of Errors": 8089
+    },
+    {
+      "Field": "Purchasing Group",
+      "Adjusted Nº of Errors": 6446
+    },
+    {
+      "Field": "Advanced Planning",
+      "Adjusted Nº of Errors": 5877
+    },
+    {
+      "Field": "Issue Storage Location",
+      "Adjusted Nº of Errors": 1737
+    },
+    {
+      "Field": "Material Group (APPOINT)",
+      "Adjusted Nº of Errors": 1471
+    }
+  ],
+  "report_path": "C:\\Users\\RPITA\\OneDrive - Visteon\\Desktop\\Rodrigo\\PLM_Web\\reports\\sap\\2026-05\\20260513_095835_SAP_Validation_PT.xlsx"
+}

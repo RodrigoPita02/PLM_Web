@@ -1066,26 +1066,13 @@ def validar_mrp_type(df, resultados, zplm_marc_df=None,
     MRP Type validation with PSMS precedence, FP/MP transfer logic,
     and CSR exemption for FP materials.
 
-    CSR exemption:
-      If (Material, Plant) has an active CSR (status I1/I2/I4 in
-      ZPLM_A_CSR_ITEM, matched via UUID to a Plant in ZPLM_A_CSR_HEAD),
-      MRP = 'ND' is accepted for FP without transfer — no error raised.
-      All other rules apply normally.
-
-    PSMS precedence:
-      10       -> skip entirely
-      25       -> ND mandatory, TF=0/empty, Planning Calendar consistent
-      70/75    -> ND mandatory
-      65       -> ND allowed (if ND, skip base rules)
-
-    Base rules (when no special PSMS):
-      FP, no transfer, no CSR  -> M1, TF > 0
-      FP, no transfer, CSR     -> M1 or ND accepted; TF check skipped when ND
-      FP/MP, with transfer     -> M1, P1 or PD
-      MP, no transfer          -> PD, TF = 0/empty
-      PP + TF > 0              -> P1
-      PP + TF = 0/empty        -> PD
+    EXTRA RULE (ONLY change):
+    - For FP WITHOUT transfer AND with active CSR:
+      If CSR ITEM (ZPLM CSR ITEM) has Material Status = 70 or 99
+      in the SECOND 'Material Status' column (column D),
+      THEN this validation is IGNORED for that material/plant.
     """
+
     needed = {'MRP Type', 'Plant Type', 'Planning Time Fence', 'Plant'}
     if not needed.issubset(df.columns):
         return
@@ -1094,6 +1081,9 @@ def validar_mrp_type(df, resultados, zplm_marc_df=None,
     has_pc   = 'Planning Calendar' in df.columns
     valores_permitidos = {'M1', 'PD', 'P1', 'ND', 'V1'}
 
+    # ------------------------------------------------------------
+    # Transfer map
+    # ------------------------------------------------------------
     transfer_map = {}
     if zplm_marc_df is not None:
         try:
@@ -1101,8 +1091,14 @@ def validar_mrp_type(df, resultados, zplm_marc_df=None,
         except Exception:
             transfer_map = {}
 
+    # ------------------------------------------------------------
+    # Active CSR (I1 / I2 / I4)
+    # ------------------------------------------------------------
     csr_exempt = build_csr_exempt_set(csr_item_df, csr_head_df)
 
+    # ------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------
     def parse_tf(val):
         if pd.isna(val) or str(val).strip() == '':
             return None
@@ -1119,53 +1115,102 @@ def validar_mrp_type(df, resultados, zplm_marc_df=None,
         except Exception:
             return None
 
+    # ------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------
     for idx, row in df.iterrows():
         erros = []
-        mrp   = '' if pd.isna(row['MRP Type'])    else str(row['MRP Type']).strip().upper()
-        pt    = '' if pd.isna(row['Plant Type'])   else str(row['Plant Type']).strip().upper()
-        plant = '' if pd.isna(row['Plant'])        else str(row['Plant']).strip()
+
+        mrp   = '' if pd.isna(row['MRP Type']) else str(row['MRP Type']).strip().upper()
+        pt    = '' if pd.isna(row['Plant Type']) else str(row['Plant Type']).strip().upper()
+        plant = '' if pd.isna(row['Plant']) else str(row['Plant']).strip()
         tf_raw = row.get('Planning Time Fence', None)
         tf_val = parse_tf(tf_raw)
-        psms   = parse_status(row.get('Plant Specific Material Status', None)) if has_psms else None
+        psms   = parse_status(row.get('Plant Specific Material Status')) if has_psms else None
         pc     = '' if (not has_pc or pd.isna(row.get('Planning Calendar'))) else str(row['Planning Calendar']).strip().upper()
-        material    = str(row.get('Material', '')).strip()
+        material = str(row.get('Material', '')).strip()
+
         is_transfer = transfer_map.get((material, plant), False)
         has_csr     = (material, plant) in csr_exempt
 
+        # --------------------------------------------------------
+        # ✅ NEW: ignore validation for FP without transfer
+        # ✅ when CSR ITEM Material Status (column D) is 70 or 99
+        # --------------------------------------------------------
+        if pt == 'FP' and not is_transfer and has_csr:
+            if csr_item_df is not None and not csr_item_df.empty:
+                try:
+                    csr_rows = csr_item_df[
+                        (csr_item_df['Material'].astype(str).str.strip() == material) &
+                        (csr_item_df['Plant'].astype(str).str.strip() == plant)
+                    ]
+                    if not csr_rows.empty:
+                        # coluna D = índice 3 (segunda "Material Status")
+                        csr_status_d = parse_status(csr_rows.iloc[0, 3])
+                        if csr_status_d in {70, 99}:
+                            continue  # 🔥 IGNORA TODA a validação
+                except Exception:
+                    pass
+
+        # --------------------------------------------------------
+        # PSMS precedence (INALTERADO)
+        # --------------------------------------------------------
         if psms == 10:
             continue
 
         if psms == 25:
             if mrp != 'ND':
-                erros.append("Mandatory field blank (MRP Type)" if mrp == '' else
-                             f"For Part Status = 25, MRP Type must be 'ND' (Current: '{mrp}')")
+                erros.append(
+                    "Mandatory field blank (MRP Type)" if mrp == '' else
+                    f"For Part Status = 25, MRP Type must be 'ND' (Current: '{mrp}')"
+                )
             if tf_val == 'INVALID':
                 erros.append("Planning Time Fence invalid for Part Status = 25 (must be 0 or empty)")
             elif tf_val not in (None, 0):
-                erros.append(f"For Part Status = 25, Planning Time Fence must be 0 or empty (Current: '{tf_raw}')")
+                erros.append(
+                    f"For Part Status = 25, Planning Time Fence must be 0 or empty (Current: '{tf_raw}')"
+                )
             if has_pc:
                 if plant == 'PT01' and pc != 'PT1':
-                    erros.append(f"For Part Status = 25 & PT01, Planning Calendar must be 'PT1' (Current: '{pc}')")
+                    erros.append(
+                        f"For Part Status = 25 & PT01, Planning Calendar must be 'PT1' (Current: '{pc}')"
+                    )
                 elif plant == 'PT02' and pc != 'PT2':
-                    erros.append(f"For Part Status = 25 & PT02, Planning Calendar must be 'PT2' (Current: '{pc}')")
+                    erros.append(
+                        f"For Part Status = 25 & PT02, Planning Calendar must be 'PT2' (Current: '{pc}')"
+                    )
             if erros:
-                resultados.append({'Line': idx + 2, 'Field': 'MRP Type',
-                                   'Error': ' \n'.join(erros), 'Material': material, 'Plant': plant})
+                resultados.append({
+                    'Line': idx + 2,
+                    'Field': 'MRP Type',
+                    'Error': ' \n'.join(erros),
+                    'Material': material,
+                    'Plant': plant
+                })
             continue
 
         if psms in (70, 75, 99):
             if mrp != 'ND':
-                erros.append("Mandatory field blank (MRP Type)" if mrp == '' else
-                            f"For Part Status = {psms}, MRP Type must be 'ND' (Current: '{mrp}')")
+                erros.append(
+                    "Mandatory field blank (MRP Type)" if mrp == '' else
+                    f"For Part Status = {psms}, MRP Type must be 'ND' (Current: '{mrp}')"
+                )
             if erros:
-                resultados.append({'Line': idx + 2, 'Field': 'MRP Type',
-                                'Error': ' \n'.join(erros), 'Material': material, 'Plant': plant})
+                resultados.append({
+                    'Line': idx + 2,
+                    'Field': 'MRP Type',
+                    'Error': ' \n'.join(erros),
+                    'Material': material,
+                    'Plant': plant
+                })
             continue
 
         if psms == 65 and mrp == 'ND':
             continue
 
-        # Base rules
+        # --------------------------------------------------------
+        # Base rules (INALTERADO)
+        # --------------------------------------------------------
         if mrp == '':
             erros.append("Mandatory field blank (MRP Type)")
         elif mrp not in valores_permitidos:
@@ -1179,39 +1224,49 @@ def validar_mrp_type(df, resultados, zplm_marc_df=None,
 
             if pt == 'FP' and not is_transfer:
                 if has_csr and mrp == 'ND':
-                    pass  # ND accepted — active CSR exemption, TF check also skipped
+                    pass
                 else:
-                    # FIX: MRP and TF checks are now cleanly separated under the same else branch.
-                    # Previously, the TF check used `not (has_csr and mrp == 'ND')` which was True
-                    # for any ND without CSR, causing a redundant TF error on top of the MRP error.
                     if mrp != 'M1':
-                        erros.append(
-                            f"For FP, MRP must be 'M1' (Current: '{mrp}')"
-                            + (" — note: ND would be accepted if an active CSR "
-                               "(status I1/I2/I4) exists for this material/plant"
-                               if mrp == 'ND' else "")
-                        )
+                        erros.append(f"For FP, MRP must be 'M1' (Current: '{mrp}')")
                     if not has_tf:
-                        erros.append(f"For FP, Time Fence must be > 0 (Current: '{tf_raw}')")
+                        erros.append(
+                            f"For FP, Time Fence must be > 0 (Current: '{tf_raw}')"
+                        )
 
             elif pt in {'FP', 'MP'} and is_transfer:
                 if mrp not in {'M1', 'P1', 'PD'}:
-                    erros.append(f"For {pt} with transfer, allowed MRP Types: M1, P1, PD (Current: '{mrp}')")
+                    erros.append(
+                        f"For {pt} with transfer, allowed MRP Types: M1, P1, PD (Current: '{mrp}')"
+                    )
+
             elif pt == 'MP' and not is_transfer:
                 if mrp != 'PD':
-                    erros.append(f"For MP without transfer, MRP must be 'PD' (Current: '{mrp}')")
+                    erros.append(
+                        f"For MP without transfer, MRP must be 'PD' (Current: '{mrp}')"
+                    )
                 if not no_tf:
-                    erros.append(f"For MP without transfer, Time Fence must be 0 or empty (Current: '{tf_raw}')")
+                    erros.append(
+                        f"For MP without transfer, Time Fence must be 0 or empty (Current: '{tf_raw}')"
+                    )
+
             elif pt == 'PP':
                 if has_tf and mrp != 'P1':
-                    erros.append(f"For PP with Time Fence > 0, MRP must be 'P1' (Current: '{mrp}')")
+                    erros.append(
+                        f"For PP with Time Fence > 0, MRP must be 'P1' (Current: '{mrp}')"
+                    )
                 elif no_tf and mrp != 'PD':
-                    erros.append(f"For PP with Time Fence = 0/empty, MRP must be 'PD' (Current: '{mrp}')")
+                    erros.append(
+                        f"For PP with Time Fence = 0/empty, MRP must be 'PD' (Current: '{mrp}')"
+                    )
 
         if erros:
-            resultados.append({'Line': idx + 2, 'Field': 'MRP Type',
-                               'Error': ' \n'.join(erros), 'Material': material, 'Plant': plant})
-
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'MRP Type',
+                'Error': ' \n'.join(erros),
+                'Material': material,
+                'Plant': plant
+            })
 
 def validar_price_control(df, resultados):
     """Price Control must always be 'S'."""
@@ -2355,6 +2410,9 @@ def validar_storage_location_ext_procurement(marc_df, zplm_marc_df, mara_df, res
     Storage Location for Ext. Procurement must be filled when:
     - Plant Type = PP
     - ONLY for Material Types: FERT, HALB, ROH
+
+    Additional rule:
+    - Specific SLoc values required per Plant + Material Type
     """
 
     required_marc = {
@@ -2392,18 +2450,30 @@ def validar_storage_location_ext_procurement(marc_df, zplm_marc_df, mara_df, res
         how="left",
     )
 
+    # ✅ mapping objetivo
+    expected_map = {
+        ("PT01", "ROH"): "P100",
+        ("PT01", "HALB"): "P115",
+        ("PT01", "FERT"): "P120",
+        ("PT02", "ROH"): "P200",
+        ("PT02", "HALB"): "P215",
+        ("PT02", "FERT"): "P220",
+    }
+
     for idx, row in df.iterrows():
+        material = str(row.get("Material", "")).strip()
+        plant = str(row.get("Plant", "")).strip()
+        plant_type = str(row.get("Plant Type", "")).strip().upper()
         mt = str(row.get("Material Type", "")).strip().upper()
+        sloc_ext = str(row.get("Storage Location for Ext. Procurement", "")).strip()
 
         # ✅ Só FERT / HALB / ROH
         if mt not in {"FERT", "HALB", "ROH"}:
             continue
 
-        material = str(row.get("Material", "")).strip()
-        plant = str(row.get("Plant", "")).strip()
-        plant_type = str(row.get("Plant Type", "")).strip().upper()
-        sloc_ext = str(row.get("Storage Location for Ext. Procurement", "")).strip()
-
+        # --------------------------------------------------------
+        # 1️⃣ Campo obrigatório para PP
+        # --------------------------------------------------------
         if plant_type == "PP" and sloc_ext == "":
             resultados.append({
                 "Line": idx + 2,
@@ -2412,6 +2482,23 @@ def validar_storage_location_ext_procurement(marc_df, zplm_marc_df, mara_df, res
                 "Material": material,
                 "Plant": plant,
             })
+            continue  # 🔴 não vale a pena validar valor
+
+        # --------------------------------------------------------
+        # 2️⃣ Validação de valor esperado (PT01 / PT02)
+        # --------------------------------------------------------
+        expected = expected_map.get((plant, mt))
+
+        if expected and sloc_ext != "":
+            if sloc_ext != expected:
+                resultados.append({
+                    "Line": idx + 2,
+                    "Field": "Storage Location for Ext. Procurement",
+                    "Error": f"Invalid value: '{sloc_ext}' (expected '{expected}' for {plant} / {mt})",
+                    "Material": material,
+                    "Plant": plant,
+                })
+
 
 def validar_individual_collective_requirements_marc(marc_df, mara_df, resultados):
     """
@@ -2882,6 +2969,90 @@ def validar_safety_time_marc(marc_df, mara_df, resultados):
                 "Line": idx + 2,
                 "Field": "Safety Time",
                 "Error": f"Invalid value: '{val}' (must be 2 when not 0/empty)",
+                "Material": material,
+                "Plant": plant,
+            })
+
+def validar_material_price_determination_control(mbew_df, mara_df, resultados):
+    """
+    MBEW:
+    Material Price Determination: Control must be '3' for:
+    - FERT
+    - HALB
+    - ROH
+    Validation per (Material, Valuation Area / Plant).
+    """
+
+    required_mbew = {
+        "Material",
+        "Valuation Area",
+        "Material Price Determination: Control",
+    }
+    required_mara = {
+        "Material",
+        "Material Type",
+    }
+
+    if (
+        mbew_df is None
+        or mara_df is None
+        or mbew_df.empty
+        or mara_df.empty
+        or not required_mbew.issubset(mbew_df.columns)
+        or not required_mara.issubset(mara_df.columns)
+    ):
+        return
+
+    # ✅ Join para obter Material Type
+    df = mbew_df.merge(
+        mara_df[["Material", "Material Type"]],
+        on="Material",
+        how="left",
+    )
+
+    def parse_val(x):
+        if pd.isna(x) or str(x).strip() == "":
+            return None
+        try:
+            return int(float(str(x).strip()))
+        except Exception:
+            return "INVALID"
+
+    for idx, row in df.iterrows():
+        material = str(row.get("Material", "")).strip()
+        plant    = str(row.get("Valuation Area", "")).strip()  # 👈 equivalente ao Plant
+        mt       = str(row.get("Material Type", "")).strip().upper()
+
+        # ✅ Só FERT / HALB / ROH
+        if mt not in {"FERT", "HALB", "ROH"}:
+            continue
+
+        raw_val = row.get("Material Price Determination: Control")
+        val     = parse_val(raw_val)
+
+        if val is None:
+            resultados.append({
+                "Line": idx + 2,
+                "Field": "Material Price Determination: Control",
+                "Error": "Mandatory field blank (should be '3')",
+                "Material": material,
+                "Plant": plant,
+            })
+
+        elif val == "INVALID":
+            resultados.append({
+                "Line": idx + 2,
+                "Field": "Material Price Determination: Control",
+                "Error": f"Invalid value: '{raw_val}' (should be '3')",
+                "Material": material,
+                "Plant": plant,
+            })
+
+        elif val != 3:
+            resultados.append({
+                "Line": idx + 2,
+                "Field": "Material Price Determination: Control",
+                "Error": f"Invalid value: '{val}' (should be '3')",
                 "Material": material,
                 "Plant": plant,
             })
@@ -4218,7 +4389,7 @@ def postprocess_with_views_roles_and_classification(
         'Advanced Planning':                     lambda mt, pt: True,
         'Heuristic':                             lambda mt, pt: True,
         'PP Plng Procedure':                     lambda mt, pt: True,
-        'Requirement Strategy':                  lambda mt, pt: True,
+        'Proposed Strategy':                     lambda mt, pt: True,
         'Version Indicator':                     lambda mt, pt: pt in ['FP', 'MP'],
         'Costing Lot Size':                      lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
         'Safety Time':                           lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
@@ -4458,6 +4629,7 @@ def run_full_validation(
         marc_df=marc_df,
         mara_df=mara_df,
         resultados=resultados,
+        matplsta_df=matplsta_df,
     )
 
     # ------------------------------------------------------------------
@@ -5359,30 +5531,12 @@ def validar_advanced_planning_fields(
     marc_df,
     mara_df,
     resultados,
+    matplsta_df=None
 ):
-    """
-    Validates Advanced Planning fields (new rules):
-
-    - Advanced Planning:
-        Must be 'X' for:
-          * PT01 + FERT
-          * PT02 + FERT
-          * PT02 + HALB
-
-    - Product Heuristic:
-        Must NOT be empty for FERT and HALB
-
-    - PP Planning Procedure:
-        Must be '4' for FERT and HALB
-
-    - Proposed Strategy (Requirement Strategy):
-        Must be '20' for FERT and HALB
-    """
 
     if marc_df is None or marc_df.empty or mara_df is None or mara_df.empty:
         return
 
-    # Helper to pick first existing column
     def _pick(df, candidates):
         return next((c for c in candidates if c in df.columns), None)
 
@@ -5391,89 +5545,153 @@ def validar_advanced_planning_fields(
     col_pp   = _pick(marc_df, ['PP Plng Procedure'])
     col_req  = _pick(marc_df, ['Requirement Strategy'])
 
-    # If any required column is missing, skip silently
     if any(c is None for c in [col_adv, col_heur, col_pp, col_req]):
         return
 
     if not {'Material', 'Material Type'}.issubset(mara_df.columns):
         return
 
-    # Build material → material type map
     mt_map = dict(zip(
         mara_df['Material'].astype(str).str.strip(),
         mara_df['Material Type'].astype(str).str.strip().str.upper()
     ))
 
+    matplsta_map = {}
+
+    if matplsta_df is not None and not matplsta_df.empty:
+        matplsta_df = matplsta_df.copy()
+        matplsta_df.columns = matplsta_df.columns.astype(str).str.strip()
+
+        if {'Product Number', 'Location', 'Planning Status'}.issubset(matplsta_df.columns):
+            for _, r in matplsta_df.iterrows():
+                matplsta_map[(
+                    str(r['Product Number']).strip(),
+                    str(r['Location']).strip()
+                )] = str(r['Planning Status']).strip()
+
     def _s(x):
         return '' if pd.isna(x) else str(x).strip()
+
+    def is_true(x):
+        return _s(x).upper() in {'TRUE', 'X', '1'}
+
+    def is_false(x):
+        return _s(x).upper() in {'FALSE', '', '0'}
 
     for idx, row in marc_df.iterrows():
         material = _s(row.get('Material'))
         plant    = _s(row.get('Plant'))
         real_mt  = mt_map.get(material, '').upper()
 
-        # ✅ Apply rule-specific material type override logic
         mt = get_effective_material_type(
             material,
             real_mt,
             'validar_advanced_planning_fields',
         )
 
-        if mt not in {'FERT', 'HALB'}:
+        if mt not in {'FERT', 'HALB', 'ROH'}:
             continue
 
-        adv  = _s(row.get(col_adv)).upper()
-        heur = _s(row.get(col_heur))
-        pp   = normalize_code(row.get(col_pp), as_int=True)
-        req  = normalize_code(row.get(col_req), as_int=True)
+        adv_raw = row.get(col_adv)
+        heur    = _s(row.get(col_heur))
+        pp      = normalize_code(row.get(col_pp), as_int=True)
+        req     = normalize_code(row.get(col_req), as_int=True)
 
-        # ── Advanced Planning ──────────────────────────────────────────
-        if (
-            (plant == 'PT01' and mt == 'FERT') or
-            (plant == 'PT02' and mt in {'FERT', 'HALB'})
-        ):
-            if adv != 'X':
+        planning_status = matplsta_map.get((material, plant))
+
+        # --------------------------------------------------------
+        # ✅ STATUS 1 RESTRICTIONS
+        # --------------------------------------------------------
+        if planning_status == '1':
+            if (mt in {'ROH', 'HALB'} and plant == 'PT01') or \
+               (mt == 'ROH' and plant == 'PT02'):
                 resultados.append({
                     'Line': idx + 2,
                     'Field': 'Advanced Planning',
-                    'Error': (
-                        "Mandatory: must be 'X' for "
-                        "PT01 FERT or PT02 FERT/HALB"
-                    ),
+                    'Error': "Planning Status 1 not allowed",
                     'Material': material,
                     'Plant': plant,
                 })
+                continue
 
-        # ── Product Heuristic ──────────────────────────────────────────
-        if heur == '':
+        # --------------------------------------------------------
+        # ✅ STATUS 9 RULES
+        # --------------------------------------------------------
+
+        # ✅ ROH → IGNORE
+        if mt == 'ROH' and planning_status == '9':
+            continue
+
+        # ✅ HALB PT01 → IGNORE only if AP TRUE
+        if mt == 'HALB' and plant == 'PT01' and planning_status == '9' and is_true(adv_raw):
+            continue
+
+        # ❌ FERT + status 9 → error
+        # ❌ HALB PT02 + status 9 → error
+        # ❌ HALB PT01 without AP TRUE → error
+        if mt in {'FERT', 'HALB'} and planning_status == '9':
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'Advanced Planning',
+                'Error': "Planning Status 9 not allowed",
+                'Material': material,
+                'Plant': plant,
+            })
+            continue
+
+        # --------------------------------------------------------
+        # ✅ ADVANCED PLANNING obrigatório
+        # --------------------------------------------------------
+        is_required_adv = (
+            (plant == 'PT01' and mt == 'FERT') or
+            (plant == 'PT02' and mt in {'FERT', 'HALB'})
+        )
+
+        if is_required_adv and not is_true(adv_raw):
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'Advanced Planning',
+                'Error': "Mandatory: must be TRUE/X",
+                'Material': material,
+                'Plant': plant,
+            })
+            continue
+
+        # --------------------------------------------------------
+        # ✅ AP OFF
+        # --------------------------------------------------------
+        if is_false(adv_raw):
+            continue
+
+        # --------------------------------------------------------
+        # Dependent fields
+        # --------------------------------------------------------
+        if mt in {'FERT', 'HALB'} and heur == '':
             resultados.append({
                 'Line': idx + 2,
                 'Field': 'Heuristic',
-                'Error': "Mandatory: cannot be empty for FERT or HALB",
+                'Error': "Mandatory",
                 'Material': material,
                 'Plant': plant,
             })
 
-        # ── PP Planning Procedure ──────────────────────────────────────
-        if pp != '4':
+        if mt in {'FERT', 'HALB'} and pp != '4':
             resultados.append({
                 'Line': idx + 2,
                 'Field': 'PP Plng Procedure',
-                'Error': "Invalid value: should be '4'",
+                'Error': "Should be '4'",
                 'Material': material,
                 'Plant': plant,
             })
 
-        # ── Proposed Strategy (Requirement Strategy) ───────────────────
-        if req != '20':
+        if mt in {'FERT', 'HALB'} and req != '20':
             resultados.append({
                 'Line': idx + 2,
-                'Field': 'Requirement Strategy',
-                'Error': "Invalid value: should be '20'",
+                'Field': 'Proposed Strategy',
+                'Error': "Should be '20'",
                 'Material': material,
                 'Plant': plant,
             })
-
 
 # -----------------------------------------------------------------------------
 # run_mrp_validation — kept for backward compatibility only.

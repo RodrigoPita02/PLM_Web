@@ -39,6 +39,7 @@ from sap_validation_engine import (
     save_open_assignments,
     build_assignments_sheet,
 )
+from tn_validation_engine import run_tn_validation
 
 # ==========================================================
 # CONFIGURAÇÃO INICIAL
@@ -893,20 +894,48 @@ elif main_choice == "📦 SAP Material Validation":
         st.markdown("""
         <div style="background:var(--app-bg-secondary);border-left:4px solid var(--color-ok);border-radius:6px;padding:10px 16px;margin-bottom:12px;font-size:0.85rem;color:var(--app-fg)">
         <strong>ℹ️ What does scope mean?</strong><br>
-        <strong>Scope of download</strong> controls which plant's data appears in the exported Excel report.<br>
-        <strong>Apply filter to displayed tables</strong> also filters the results shown here in the app — leave unchecked to see all plants in the UI while exporting only the chosen plant.
+        <strong>Site</strong> controls which factory is validated — Palmela (PT01/PT02), Tunisia (TN01/TN02), or both.<br>
+        <strong>Plant filter</strong> further restricts within the site — select a specific plant or keep All to include both plants of the chosen site.<br>
+        <strong>Apply filter to displayed tables</strong> also filters the results shown here in the app — leave unchecked to see all plants in the UI while exporting only the chosen scope.
         </div>
         """, unsafe_allow_html=True)
 
-        export_scope = st.radio("Scope of download:", ["All", "Only PT01", "Only PT02"], horizontal=True)
-        plant_filter_export = {"Only PT01": "PT01", "Only PT02": "PT02"}.get(export_scope)
+        # Site selector — on_change resets the plant scope to avoid stale values
+        def _on_site_change():
+            if "sap_export_scope" in st.session_state:
+                del st.session_state["sap_export_scope"]
 
-        apply_filter_display = st.checkbox("Apply filter to displayed tables", value=False)
+        site_scope = st.radio(
+            "Site:",
+            ["Palmela (PT01 / PT02)", "Tunisia (TN01 / TN02)", "All Sites"],
+            horizontal=True,
+            key="sap_site_scope",
+            on_change=_on_site_change,
+        )
+
+        # Plant filter within selected site
+        if site_scope == "Palmela (PT01 / PT02)":
+            plant_options = ["All Palmela plants", "Only PT01", "Only PT02"]
+        elif site_scope == "Tunisia (TN01 / TN02)":
+            plant_options = ["All Tunisia plants", "Only TN01", "Only TN02"]
+        else:
+            plant_options = ["All plants", "Only PT01", "Only PT02", "Only TN01", "Only TN02"]
+
+        export_scope = st.radio("Plant scope for download:", plant_options, horizontal=True, key="sap_export_scope")
+
+        _plant_map = {
+            "Only PT01": "PT01", "Only PT02": "PT02",
+            "Only TN01": "TN01", "Only TN02": "TN02",
+        }
+        plant_filter_export = _plant_map.get(export_scope)
+
+        apply_filter_display = st.checkbox("Apply filter to displayed tables", value=False, key="sap_apply_filter_display")
         plant_filter_display = plant_filter_export if apply_filter_display else None
 
-        st.session_state.sap_export_scope    = export_scope
-        st.session_state.sap_plant_export    = plant_filter_export
-        st.session_state.sap_plant_display   = plant_filter_display
+        # Only store derived (non-widget) values — sap_site_scope and sap_export_scope
+        # are already managed by Streamlit via their widget keys.
+        st.session_state.sap_plant_export  = plant_filter_export
+        st.session_state.sap_plant_display = plant_filter_display
 
         c1, c2 = st.columns(2)
         with c1:
@@ -925,22 +954,32 @@ elif main_choice == "📦 SAP Material Validation":
         # Confirmation summary
         _persisted3 = st.session_state.get("sap_files_persisted") or {}
         _scope3     = st.session_state.get("sap_export_scope", "All")
+        _site3      = st.session_state.get("sap_site_scope", "Palmela (PT01 / PT02)")
         _exec3      = st.session_state.get("executor_name", "—")
         _n_files    = len(_persisted3)
         _optional3  = [k for k in ["csr_item","csr_head","matplsta"] if k in _persisted3]
+
+        # Determine which engine will run
+        _is_tn = "Tunisia" in _site3
+        _is_both = "All Sites" in _site3
+        _engine_label = "Tunisia Engine (TN01/TN02)" if _is_tn else ("Both Engines (PT + TN)" if _is_both else "Palmela Engine (PT01/PT02)")
 
         st.markdown(f"""
         <div style="background:var(--app-bg-secondary);border:1px solid var(--app-border);border-radius:10px;padding:16px 20px;margin-bottom:16px">
         <div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--app-fg-muted);margin-bottom:10px">
             ✅ Ready to validate — confirm before running
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:0.87rem;color:var(--app-fg)">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;font-size:0.87rem;color:var(--app-fg)">
             <div><span style="color:var(--app-fg-muted)">Executor</span><br><strong>{_exec3}</strong></div>
-            <div><span style="color:var(--app-fg-muted)">Scope</span><br><strong>{_scope3}</strong></div>
-            <div><span style="color:var(--app-fg-muted)">Files loaded</span><br><strong>{_n_files} required{"  +  " + str(len(_optional3)) + " optional" if _optional3 else ""}</strong></div>
+            <div><span style="color:var(--app-fg-muted)">Site</span><br><strong>{_site3}</strong></div>
+            <div><span style="color:var(--app-fg-muted)">Plant Scope</span><br><strong>{_scope3}</strong></div>
+            <div><span style="color:var(--app-fg-muted)">Engine</span><br><strong>{_engine_label}</strong></div>
         </div>
-        {"<div style='margin-top:10px;font-size:0.8rem;color:var(--color-ok)'>🔓 CSR exemption rules <strong>enabled</strong> — active CSRs will exempt FP materials from MRP = ND errors.</div>" if _optional3 else "<div style='margin-top:10px;font-size:0.8rem;color:var(--app-fg-muted)'>🔓 CSR files not uploaded — CSR exemption rules disabled.</div>"}
+        <div style="margin-top:8px;font-size:0.8rem;color:var(--app-fg-muted)">Files loaded: <strong>{_n_files} required{"  +  " + str(len(_optional3)) + " optional" if _optional3 else ""}</strong></div>
+        {"<div style='margin-top:6px;font-size:0.8rem;color:var(--color-ok)'>🔓 CSR exemption rules <strong>enabled</strong> — active CSRs will exempt FP materials from MRP = ND errors.</div>" if _optional3 else "<div style='margin-top:6px;font-size:0.8rem;color:var(--app-fg-muted)'>🔓 CSR files not uploaded — CSR exemption rules disabled.</div>"}
         {"<div style='margin-top:4px;font-size:0.8rem;color:var(--color-ok)'>🔓 MATPLSTA loaded — ROH Planning Status = 9 exemption <strong>enabled</strong>.</div>" if "matplsta" in _persisted3 else "<div style='margin-top:4px;font-size:0.8rem;color:var(--app-fg-muted)'>🔓 MATPLSTA not uploaded — all ROH with Per.Lot Sz.Plng Cal. filled will be flagged.</div>"}
+        {"<div style='margin-top:6px;font-size:0.8rem;color:var(--accent)'>⚠️ Tunisia validation does NOT use the SAPUI5 Export — field-level data sourced from MARC/MARA/MVKE tables directly.</div>" if _is_tn else ""}
+        {"<div style='margin-top:6px;font-size:0.8rem;color:var(--accent)'>⚠️ Both Sites mode runs Palmela engine (PT01/PT02 from SAPUI5 Export) + Tunisia engine (TN01/TN02 from MARC/MARA) and merges results.</div>" if _is_both else ""}
         </div>
         """, unsafe_allow_html=True)
 
@@ -960,80 +999,150 @@ elif main_choice == "📦 SAP Material Validation":
 
             plant_filter_export  = st.session_state.sap_plant_export
             plant_filter_display = st.session_state.sap_plant_display
+            site_scope           = st.session_state.get("sap_site_scope", "Palmela (PT01 / PT02)")
 
-            ok_sheet, sheets = has_sheet(sap_file, "SAPUI5 Export")
-            if not ok_sheet:
-                st.error(f"Sheet 'SAPUI5 Export' not found. Available: {sheets}")
-                st.stop()
+            _is_tn   = "Tunisia" in site_scope
+            _is_both = "All Sites" in site_scope
 
             _pb_slot = st.empty()
             progress_bar = _pb_slot.progress(0, text="Initializing validation...")
 
             def update_progress(percent: int, message: str = ""):
-                progress_bar.progress(percent, text=message)
+                progress_bar.progress(min(percent, 100), text=message)
 
             with st.spinner("Validating materials..."):
-                excel_display, errors_df, summary_df = run_full_validation(
-                    sap_file=sap_file, mara_file=mara_file, marc_file=marc_file,
-                    mvke_file=mvke_file,
-                    zplm_marc_file=zplm_marc, zplm_mara_file=zplm_mara,
-                    marm_file=marm_file,
-                    previous_report=None,
-                    plant_filter=plant_filter_display,
-                    progress_callback=update_progress,
-                    csr_item_file=csr_item, csr_head_file=csr_head,
-                    matplsta_file=matplsta, mbew_file=mbew_file,
-                )
 
-                try:
-                    st.session_state["sap_view_missing_df"] = pd.read_excel(excel_display, sheet_name="View is Missing")
-                except Exception:
-                    st.session_state["sap_view_missing_df"] = pd.DataFrame()
-
-                # FIX 1: Avoid running the full engine twice.
-                # When the export scope is different from the display scope,
-                # we only need to re-run the styling step on the already-computed
-                # errors_df filtered to the export scope — not re-run all validations.
-                # The engine already supports plant_filter on _style_sap_report.
-                if plant_filter_export != plant_filter_display:
-                    from sap_validation_engine import _style_sap_report
-                    from sap_validation_engine import postprocess_with_views_roles_and_classification
-                    from rolesviews_data import get_rolesviews_bytesio
-                    from utils.fast_loader import load_xlsx_fast as _lxf
-                    import io as _io
-                    # Re-filter errors to export scope and rebuild Excel
-                    _rv = _lxf(get_rolesviews_bytesio(), sheet_name=None)
-                    _roles = _rv.get("Roles"); _views = _rv.get("Views")
-                    _mara_df = _lxf(mara_file, sheet_name=0)
-                    _marc_df = _lxf(marc_file, sheet_name=0)
-                    (_edf, _, _vmout, _cdf, _covdf, _vtabs) =                         postprocess_with_views_roles_and_classification(
-                            errors_df, _mara_df, _marc_df, _roles, _views,
-                            plant_filter=plant_filter_export)
-                    _vis_df = pd.concat(
-                        [df for df in _vtabs.values() if df is not None and not df.empty],
-                        ignore_index=True
-                    ) if _vtabs else pd.DataFrame()
-                    _buf = _io.BytesIO()
-                    with pd.ExcelWriter(_buf, engine="openpyxl") as _w:
-                        pd.DataFrame().to_excel(_w, sheet_name="Executive Summary", index=False)
-                        _cdf.to_excel(_w, sheet_name="Adjusted Summary", index=False, startrow=1)
-                        _vmout.to_excel(_w, sheet_name="Field With Error", index=False)
-                        _edf.to_excel(_w, sheet_name="All Errors", index=False)
-                        _vis_df.to_excel(_w, sheet_name="View is Missing", index=False)
-                        for _vc, _vdf in _vtabs.items():
-                            _vdf.to_excel(_w, sheet_name=f"Missing_{_vc}"[:31], index=False)
-                        _lxf(sap_file, sheet_name="SAPUI5 Export").to_excel(
-                            _w, sheet_name="Original Data", index=False)
-                    _buf.seek(0)
-                    excel_export = _style_sap_report(
-                        _buf, errors_df=_edf, views_missing_output_df=_vmout,
-                        contagem_final_df=_cdf, coverage_df=_covdf,
-                        view_tabs_dict=_vtabs, sap_df=None,
-                        plant_filter=plant_filter_export)
-                else:
+                # ── TUNISIA ONLY ───────────────────────────────────────────────
+                if _is_tn:
+                    excel_display, errors_df, summary_df = run_tn_validation(
+                        mara_file=mara_file, marc_file=marc_file, mvke_file=mvke_file,
+                        marm_file=marm_file, mbew_file=mbew_file,
+                        zplm_marc_file=zplm_marc, zplm_mara_file=zplm_mara,
+                        previous_report=None,
+                        plant_filter=plant_filter_display,
+                        progress_callback=update_progress,
+                        csr_item_file=csr_item, csr_head_file=csr_head,
+                        matplsta_file=matplsta,
+                    )
                     excel_export = excel_display
 
-            suffix = plant_filter_export or "ALL"
+                # ── BOTH SITES: Palmela + Tunisia, merged ──────────────────────
+                elif _is_both:
+                    update_progress(2, "Running Palmela engine...")
+
+                    if sap_file is None:
+                        st.error("⚠️ SAPUI5 Export is required for Palmela validation in All Sites mode.")
+                        st.stop()
+                    ok_sheet, sheets = has_sheet(sap_file, "SAPUI5 Export")
+                    if not ok_sheet:
+                        st.error(f"Sheet 'SAPUI5 Export' not found. Available: {sheets}")
+                        st.stop()
+
+                    _pt_filter = plant_filter_export if plant_filter_export in ("PT01", "PT02") else None
+                    excel_pt, errors_pt, _ = run_full_validation(
+                        sap_file=sap_file, mara_file=mara_file, marc_file=marc_file,
+                        mvke_file=mvke_file,
+                        zplm_marc_file=zplm_marc, zplm_mara_file=zplm_mara,
+                        marm_file=marm_file, previous_report=None,
+                        plant_filter=_pt_filter,
+                        progress_callback=lambda p, m: update_progress(int(p * 0.45), m),
+                        csr_item_file=csr_item, csr_head_file=csr_head,
+                        matplsta_file=matplsta, mbew_file=mbew_file,
+                    )
+
+                    update_progress(50, "Running Tunisia engine...")
+                    _tn_filter = plant_filter_export if plant_filter_export in ("TN01", "TN02") else None
+                    excel_tn, errors_tn, _ = run_tn_validation(
+                        mara_file=mara_file, marc_file=marc_file, mvke_file=mvke_file,
+                        marm_file=marm_file, mbew_file=mbew_file,
+                        zplm_marc_file=zplm_marc, zplm_mara_file=zplm_mara,
+                        previous_report=None, plant_filter=_tn_filter,
+                        progress_callback=lambda p, m: update_progress(50 + int(p * 0.45), m),
+                        csr_item_file=csr_item, csr_head_file=csr_head,
+                        matplsta_file=matplsta,
+                    )
+
+                    update_progress(96, "Merging results...")
+                    errors_df = pd.concat(
+                        [df for df in [errors_pt, errors_tn] if df is not None and not df.empty],
+                        ignore_index=True
+                    )
+                    summary_df = (
+                        errors_df["Field"].value_counts().rename_axis("Field").reset_index(name="Adjusted Nº of Errors")
+                        if "Field" in errors_df.columns and not errors_df.empty
+                        else pd.DataFrame({"Field": [], "Adjusted Nº of Errors": []})
+                    )
+                    # Palmela Excel is the main export; TN Excel stored for optional download
+                    excel_display = excel_pt
+                    excel_export  = excel_pt
+                    st.session_state["tn_excel_export"] = excel_tn
+
+                # ── PALMELA ONLY (default) ─────────────────────────────────────
+                else:
+                    ok_sheet, sheets = has_sheet(sap_file, "SAPUI5 Export")
+                    if not ok_sheet:
+                        st.error(f"Sheet 'SAPUI5 Export' not found. Available: {sheets}")
+                        st.stop()
+
+                    excel_display, errors_df, summary_df = run_full_validation(
+                        sap_file=sap_file, mara_file=mara_file, marc_file=marc_file,
+                        mvke_file=mvke_file,
+                        zplm_marc_file=zplm_marc, zplm_mara_file=zplm_mara,
+                        marm_file=marm_file,
+                        previous_report=None,
+                        plant_filter=plant_filter_display,
+                        progress_callback=update_progress,
+                        csr_item_file=csr_item, csr_head_file=csr_head,
+                        matplsta_file=matplsta, mbew_file=mbew_file,
+                    )
+
+                    try:
+                        st.session_state["sap_view_missing_df"] = pd.read_excel(excel_display, sheet_name="View is Missing")
+                    except Exception:
+                        st.session_state["sap_view_missing_df"] = pd.DataFrame()
+
+                    # Avoid re-running the engine when export scope differs from display scope
+                    if plant_filter_export != plant_filter_display:
+                        from sap_validation_engine import _style_sap_report
+                        from sap_validation_engine import postprocess_with_views_roles_and_classification
+                        from rolesviews_data import get_rolesviews_bytesio
+                        from utils.fast_loader import load_xlsx_fast as _lxf
+                        import io as _io
+                        _rv = _lxf(get_rolesviews_bytesio(), sheet_name=None)
+                        _roles = _rv.get("Roles"); _views = _rv.get("Views")
+                        _mara_df = _lxf(mara_file, sheet_name=0)
+                        _marc_df = _lxf(marc_file, sheet_name=0)
+                        (_edf, _, _vmout, _cdf, _covdf, _vtabs) = \
+                            postprocess_with_views_roles_and_classification(
+                                errors_df, _mara_df, _marc_df, _roles, _views,
+                                plant_filter=plant_filter_export)
+                        _vis_df = pd.concat(
+                            [df for df in _vtabs.values() if df is not None and not df.empty],
+                            ignore_index=True
+                        ) if _vtabs else pd.DataFrame()
+                        _buf = _io.BytesIO()
+                        with pd.ExcelWriter(_buf, engine="openpyxl") as _w:
+                            pd.DataFrame().to_excel(_w, sheet_name="Executive Summary", index=False)
+                            _cdf.to_excel(_w, sheet_name="Adjusted Summary", index=False, startrow=1)
+                            _vmout.to_excel(_w, sheet_name="Field With Error", index=False)
+                            _edf.to_excel(_w, sheet_name="All Errors", index=False)
+                            _vis_df.to_excel(_w, sheet_name="View is Missing", index=False)
+                            for _vc, _vdf in _vtabs.items():
+                                _vdf.to_excel(_w, sheet_name=f"Missing_{_vc}"[:31], index=False)
+                            _lxf(sap_file, sheet_name="SAPUI5 Export").to_excel(
+                                _w, sheet_name="Original Data", index=False)
+                        _buf.seek(0)
+                        excel_export = _style_sap_report(
+                            _buf, errors_df=_edf, views_missing_output_df=_vmout,
+                            contagem_final_df=_cdf, coverage_df=_covdf,
+                            view_tabs_dict=_vtabs, sap_df=None,
+                            plant_filter=plant_filter_export)
+                    else:
+                        excel_export = excel_display
+
+            # Build suffix for filename
+            _site_tag = "TN" if _is_tn else ("ALL_SITES" if _is_both else "PT")
+            suffix = plant_filter_export or _site_tag
             report_path = save_report_to_vault(excel_export, report_type="sap", plant_suffix=suffix)
             st.session_state.sap_report_path  = report_path
             st.session_state.sap_errors_df    = errors_df
@@ -1042,14 +1151,14 @@ elif main_choice == "📦 SAP Material Validation":
 
             if save_history:
                 payload = build_sap_log_payload(
-                    user=effective_executor, plant_filter=plant_filter_export,
+                    user=effective_executor, plant_filter=plant_filter_export or suffix,
                     sap_file=sap_file, mara_file=mara_file, marc_file=marc_file,
                     mvke_file=mvke_file, errors_df=errors_df, summary_df=summary_df,
                     report_path=report_path,
                 )
                 save_run_log(payload)
 
-            _pb_slot.empty()  # clear progress bar before navigating
+            _pb_slot.empty()
             st.session_state.sap_step = 4
             st.rerun()
 
@@ -1108,6 +1217,17 @@ elif main_choice == "📦 SAP Material Validation":
         st.download_button("⬇️ Download Excel", data=excel_export.getvalue(),
                            file_name=download_name,
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        # In All Sites mode, also offer Tunisia-specific Excel download
+        _tn_excel = st.session_state.get("tn_excel_export")
+        if _tn_excel is not None:
+            st.download_button(
+                "⬇️ Download Tunisia Excel (TN01/TN02 detail)",
+                data=_tn_excel.getvalue(),
+                file_name="SAP_Validation_Tunisia_Report.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="tn_download_btn",
+            )
 
         # ── Assignment panel ──────────────────────────────────────────────
         render_assignment_panel(errors_df)
