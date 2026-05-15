@@ -4014,10 +4014,12 @@ def validar_neg_stocks_in_plant(marc_df, mara_df):
     MARC + MARA: Neg. stocks in plant validation.
 
     Rule:
-    - Must be marked ONLY for Material Types: ROH and HALB
-    - Must NOT be marked for any other Material Type
-    - If blank for ROH/HALB -> mandatory blank error
+    - Validate ONLY for: FERT, HALB, ROH
+    - Must be marked ONLY for: ROH and HALB
+    - Must NOT be marked for FERT
+    - If blank for ROH/HALB → mandatory error
     """
+
     if marc_df is None or marc_df.empty or mara_df is None or mara_df.empty:
         return []
 
@@ -4027,7 +4029,7 @@ def validar_neg_stocks_in_plant(marc_df, mara_df):
     if not needed_marc.issubset(marc_df.columns) or not needed_mara.issubset(mara_df.columns):
         return []
 
-    # Map Material -> Material Type
+    # Map Material → Material Type
     mt_map = dict(
         zip(
             mara_df['Material'].astype(str).str.strip(),
@@ -4051,12 +4053,19 @@ def validar_neg_stocks_in_plant(marc_df, mara_df):
         plant    = _s(row.get('Plant'))
         mt       = mt_map.get(material, '')
 
+        # ✅ NOVO: filtrar apenas tipos relevantes
+        if mt not in {'FERT', 'HALB', 'ROH'}:
+            continue
+
         neg_raw = row.get('Neg. stocks in plant')
         blank   = _is_blank(neg_raw)
         marked  = _is_marked(neg_raw)
 
         must_mark = mt in {'ROH', 'HALB'}
 
+        # -----------------------------
+        # ROH / HALB → obrigatório marcado
+        # -----------------------------
         if must_mark and blank:
             erros.append({
                 'Line': idx + 2,
@@ -4075,11 +4084,14 @@ def validar_neg_stocks_in_plant(marc_df, mara_df):
                 'Plant': plant
             })
 
-        elif not must_mark and marked:
+        # -----------------------------
+        # FERT → NÃO pode estar marcado
+        # -----------------------------
+        elif mt == 'FERT' and marked:
             erros.append({
                 'Line': idx + 2,
                 'Field': 'Neg. stocks in plant',
-                'Error': "Invalid marking — allowed only for Material Types ROH or HALB",
+                'Error': "Invalid marking — not allowed for Material Type FERT",
                 'Material': material,
                 'Plant': plant
             })

@@ -830,7 +830,14 @@ elif main_choice == "📦 SAP Material Validation":
     persisted_now = st.session_state.get("sap_files_persisted") or {}
 
     # Guard: se ficheiros em falta volta ao passo 1
-    if st.session_state.sap_step > 1 and any(k not in persisted_now for k in required_keys):
+    # Para Tunisia e All Sites, o SAPUI5 Export ("sap") não é obrigatório
+    _current_site = st.session_state.get(
+        "sap_selected_site_scope",
+        st.session_state.get("sap_site_scope", "Palmela (PT01 / PT02)")
+    )
+    _is_tn_site = "Tunisia" in _current_site
+    _effective_required = [k for k in required_keys if not (_is_tn_site and k == "sap")]
+    if st.session_state.sap_step > 2 and any(k not in persisted_now for k in _effective_required):
         st.session_state.sap_step = 1
         st.rerun()
 
@@ -869,13 +876,20 @@ elif main_choice == "📦 SAP Material Validation":
         show_file_status(required_keys, files, persisted,
                          optional_keys=["csr_item", "csr_head", "matplsta"])
 
+        if "sap" not in persisted:
+            st.info(
+                "ℹ️ SAPUI5 Export is optional for Tunisia-only validation. "
+                "If you choose Palmela or All Sites in the next step, the SAPUI5 Export will be required."
+            )
+
         # Quick column validation
         _col_errs_sap = validate_uploaded_files(persisted, required_keys)
         if _col_errs_sap:
             for _k, _msg in _col_errs_sap.items():
                 st.warning(f"⚠️ **{LABELS_PT.get(_k, _k)}** — {_msg}")
 
-        disabled = any(k not in persisted for k in required_keys) or bool(_col_errs_sap)
+        required_for_scope_selection = [k for k in required_keys if k != "sap"]
+        disabled = any(k not in persisted for k in required_for_scope_selection) or bool(_col_errs_sap)
         c1, c2 = st.columns(2)
         with c1:
             with st.expander("🧹 Clear uploaded files"):
@@ -900,7 +914,7 @@ elif main_choice == "📦 SAP Material Validation":
         </div>
         """, unsafe_allow_html=True)
 
-        # Site selector — on_change resets the plant scope to avoid stale values
+        # Site selector — on_change resets plant scope to avoid stale values
         def _on_site_change():
             if "sap_export_scope" in st.session_state:
                 del st.session_state["sap_export_scope"]
@@ -943,7 +957,15 @@ elif main_choice == "📦 SAP Material Validation":
                 st.session_state.sap_step = 1
                 st.rerun()
         with c2:
-            if st.button("➡️ Continue to Validation", key="sap_next2", width='stretch'):
+            disabled_next2 = False
+            if site_scope in ("Palmela (PT01 / PT02)", "All Sites") and "sap" not in persisted_now:
+                disabled_next2 = True
+                st.warning("⚠️ SAPUI5 Export is required for Palmela and All Sites mode.")
+            if st.button("➡️ Continue to Validation", key="sap_next2", disabled=disabled_next2, width='stretch'):
+                st.session_state["sap_selected_site_scope"]   = site_scope
+                st.session_state["sap_selected_export_scope"] = export_scope
+                st.session_state["sap_selected_plant_filter_export"] = plant_filter_export
+                st.session_state["sap_selected_plant_filter_display"] = plant_filter_display
                 st.session_state.sap_step = 3
                 st.rerun()
 
@@ -953,14 +975,20 @@ elif main_choice == "📦 SAP Material Validation":
 
         # Confirmation summary
         _persisted3 = st.session_state.get("sap_files_persisted") or {}
-        _scope3     = st.session_state.get("sap_export_scope", "All")
-        _site3      = st.session_state.get("sap_site_scope", "Palmela (PT01 / PT02)")
+        _scope3     = st.session_state.get(
+            "sap_selected_export_scope",
+            st.session_state.get("sap_export_scope", "All")
+        )
+        _site3      = st.session_state.get(
+            "sap_selected_site_scope",
+            st.session_state.get("sap_site_scope", "Palmela (PT01 / PT02)")
+        )
         _exec3      = st.session_state.get("executor_name", "—")
         _n_files    = len(_persisted3)
         _optional3  = [k for k in ["csr_item","csr_head","matplsta"] if k in _persisted3]
 
         # Determine which engine will run
-        _is_tn = "Tunisia" in _site3
+        _is_tn   = "Tunisia" in _site3
         _is_both = "All Sites" in _site3
         _engine_label = "Tunisia Engine (TN01/TN02)" if _is_tn else ("Both Engines (PT + TN)" if _is_both else "Palmela Engine (PT01/PT02)")
 
@@ -997,12 +1025,21 @@ elif main_choice == "📦 SAP Material Validation":
             csr_head  = files.get("csr_head")
             matplsta  = files.get("matplsta")
 
-            plant_filter_export  = st.session_state.sap_plant_export
-            plant_filter_display = st.session_state.sap_plant_display
-            site_scope           = st.session_state.get("sap_site_scope", "Palmela (PT01 / PT02)")
+            plant_filter_export = st.session_state.get(
+                "sap_selected_plant_filter_export",
+                st.session_state.get("sap_plant_export")
+            )
+            plant_filter_display = st.session_state.get(
+                "sap_selected_plant_filter_display",
+                st.session_state.get("sap_plant_display")
+            )
+            site_scope = st.session_state.get(
+                "sap_selected_site_scope",
+                st.session_state.get("sap_site_scope", "Palmela (PT01 / PT02)")
+            )
 
-            _is_tn   = "Tunisia" in site_scope
-            _is_both = "All Sites" in site_scope
+            run_palmela = site_scope in ("Palmela (PT01 / PT02)", "All Sites")
+            run_tn = site_scope in ("Tunisia (TN01 / TN02)", "All Sites")
 
             _pb_slot = st.empty()
             progress_bar = _pb_slot.progress(0, text="Initializing validation...")
@@ -1013,7 +1050,7 @@ elif main_choice == "📦 SAP Material Validation":
             with st.spinner("Validating materials..."):
 
                 # ── TUNISIA ONLY ───────────────────────────────────────────────
-                if _is_tn:
+                if run_tn and not run_palmela:
                     excel_display, errors_df, summary_df = run_tn_validation(
                         mara_file=mara_file, marc_file=marc_file, mvke_file=mvke_file,
                         marm_file=marm_file, mbew_file=mbew_file,
@@ -1027,7 +1064,7 @@ elif main_choice == "📦 SAP Material Validation":
                     excel_export = excel_display
 
                 # ── BOTH SITES: Palmela + Tunisia, merged ──────────────────────
-                elif _is_both:
+                elif run_tn and run_palmela:
                     update_progress(2, "Running Palmela engine...")
 
                     if sap_file is None:
@@ -1214,15 +1251,18 @@ elif main_choice == "📦 SAP Material Validation":
         render_sap_run_charts(errors_df)
 
         download_name = os.path.basename(report_path) if report_path else "SAP_Validation_Adjusted_Report_ALL.xlsx"
-        st.download_button("⬇️ Download Excel", data=excel_export.getvalue(),
+
+        _tn_excel   = st.session_state.get("tn_excel_export")
+        _is_both_dl = _tn_excel is not None
+
+        _pt_label = "⬇️ Download Palmela Report (PT01/PT02)" if _is_both_dl else "⬇️ Download Excel"
+        st.download_button(_pt_label, data=excel_export.getvalue(),
                            file_name=download_name,
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        # In All Sites mode, also offer Tunisia-specific Excel download
-        _tn_excel = st.session_state.get("tn_excel_export")
-        if _tn_excel is not None:
+        if _is_both_dl:
             st.download_button(
-                "⬇️ Download Tunisia Excel (TN01/TN02 detail)",
+                "⬇️ Download Tunisia Report (TN01/TN02)",
                 data=_tn_excel.getvalue(),
                 file_name="SAP_Validation_Tunisia_Report.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1466,7 +1506,7 @@ elif main_choice == "🚗 PLM Workflow" and sub_choice == "Automotive + Timing L
         render_history_with_download(
             "atl", limit=10, label="ATL History",
             col_map={"When": "timestamp", "Who": "user",
-                     "Scope": "plant_scope", "PT01": "metrics.PT01_rows", "PT02": "metrics.PT02_rows"}
+                     "PT01": "metrics.PT01_rows", "PT02": "metrics.PT02_rows"}
         )
 
         c1, c2 = st.columns(2)
