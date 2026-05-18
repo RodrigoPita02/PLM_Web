@@ -398,33 +398,52 @@ def validar_procurement_type(df, resultados):
 
 
 def validar_automatic_purchase_order(df, resultados):
-    """PP -> 'Yes' (1); all other Plant Types -> 'No' (0)."""
+    """PP -> 'X' (Yes); others -> blank (''), SAP checkbox logic."""
+
     if 'Plant Type' not in df.columns or 'Automatic Purchase Order Allowed' not in df.columns:
         print("⚠️ Columns 'Plant Type' or 'Automatic Purchase Order Allowed' not found.")
         return
 
     for idx, row in df.iterrows():
         erros = []
-        plant_type = str(row['Plant Type']).strip()
-        auto_order = str(row['Automatic Purchase Order Allowed']).strip()
 
-        if pd.isna(row['Automatic Purchase Order Allowed']) or auto_order == '':
-            erros.append('Mandatory field blank')
+        plant_type = str(row.get('Plant Type', '')).strip().upper()
+        raw_val = row.get('Automatic Purchase Order Allowed')
+
+        val = str(raw_val).strip().upper() if pd.notna(raw_val) else ''
+
+        # ✅ Normalizar checkbox
+        if val in {'X', '1', 'YES'}:
+            val_norm = 'X'
         else:
-            if plant_type == 'PP' and auto_order != '1':
-                erros.append(f"For Plant Type 'PP', should be 'Yes' (Current: '{auto_order}')")
-            elif plant_type != 'PP' and auto_order != '0':
-                erros.append(f"For Plant Type '{plant_type}', should be 'No' (Current: '{auto_order}')")
+            val_norm = ''
+
+        # ✅ Regra
+        if val_norm == '':
+            # só é obrigatório para PP
+            if plant_type == 'PP':
+                erros.append('Mandatory field blank')
+
+        else:
+            if plant_type == 'PP':
+                if val_norm != 'X':
+                    erros.append(
+                        f"For Plant Type 'PP', should be 'X' (current: '{val}')"
+                    )
+            else:
+                if val_norm != '':
+                    erros.append(
+                        f"For Plant Type '{plant_type}', should be blank (current: '{val}')"
+                    )
 
         if erros:
             resultados.append({
-                'Line':     idx + 2,
-                'Field':    'Automatic Purchase Order Allowed',
-                'Error':    ' | '.join(erros),
+                'Line': idx + 2,
+                'Field': 'Automatic Purchase Order Allowed',
+                'Error': ' | '.join(erros),
                 'Material': str(row.get('Material', '')).strip(),
-                'Plant':    str(row.get('Plant', '')).strip(),
+                'Plant': str(row.get('Plant', '')).strip(),
             })
-
 
 def validar_batch_management(df, resultados):
     """PP / COI -> 'Yes' (1); all other Plant Types -> 'No' (0)."""
@@ -1674,26 +1693,39 @@ def validar_valuation_class(df, resultados):
                 'Plant': str(row.get('Plant', '')).strip(),
             })
 
-
 def validar_with_qty_structure(df, resultados):
-    """With Qty Structure must always be '1' (Yes)."""
+    """With Qty Structure must always be 'X' (SAP checkbox logic)."""
+
     if 'With Qty Structure' not in df.columns:
         print("⚠️ Column 'With Qty Structure' not found.")
         return
 
     for idx, row in df.iterrows():
         erros = []
-        val = str(row['With Qty Structure']).strip()
-        if pd.isna(row['With Qty Structure']) or val == '':
-            erros.append('Mandatory field blank')
-        elif val != '1':
-            erros.append(f"Invalid value: '{val}' (should be 'Yes')")
-        if erros:
-            resultados.append({'Line': idx + 2, 'Field': 'With Qty Structure',
-                               'Error': ' | '.join(erros),
-                               'Material': str(row.get('Material', '')).strip(),
-                               'Plant':    str(row.get('Plant', '')).strip()})
 
+        raw_val = row.get('With Qty Structure')
+        val = str(raw_val).strip().upper() if pd.notna(raw_val) else ''
+
+        # ✅ Normalizar checkbox
+        if val in {'X', '1', 'YES'}:
+            val_norm = 'X'
+        else:
+            val_norm = ''
+
+        # ✅ Regra
+        if val_norm == '':
+            erros.append('Mandatory field blank')
+        elif val_norm != 'X':
+            erros.append(f"Invalid value: '{val}' (should be 'X')")
+
+        if erros:
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'With Qty Structure',
+                'Error': ' | '.join(erros),
+                'Material': str(row.get('Material', '')).strip(),
+                'Plant': str(row.get('Plant', '')).strip()
+            })
 
 def validar_backflush(df, resultados):
     """Backflush is mandatory."""
@@ -2666,7 +2698,6 @@ def validar_batch_management_plant_marc(marc_df, zplm_marc_df, mara_df, resultad
         "Material",
         "Plant",
         "Batch Management(Plant)",
-        "Batch Management",
     }
     required_zplm = {
         "Material",
@@ -2676,6 +2707,7 @@ def validar_batch_management_plant_marc(marc_df, zplm_marc_df, mara_df, resultad
     required_mara = {
         "Material",
         "Material Type",
+        "Batch Management",
     }
 
     if (

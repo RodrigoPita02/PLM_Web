@@ -72,6 +72,7 @@ from sap_validation_engine import (
     validar_lifo_fifo_relevant_mbew,
     validar_stock_determination_group_marc,
     validar_packaging_material_type_mara,
+    validar_batch_management,
     validar_batch_management_plant_marc,
     validar_version_indicator_marc,
     validar_country_region_origin_fp,
@@ -211,7 +212,7 @@ def build_sap_like_df(marc_df, mara_df, zplm_marc_df):
         'Division', 'Export/Import Group', 'General Item Category Group',
         'Gross Weight', 'Net Weight', 'Unit of Weight (ISO Format)',
         'Material Group', 'Product Hierarchy', 'Packaging Mat. Type',
-        'Old material number',
+        'Old material number', 'Batch Management',
     ] if c in mara.columns]
 
     # ------------------------------------------------------------
@@ -402,29 +403,47 @@ def tn_validar_procurement_type(df, mara_df, resultados):
 
 
 def tn_validar_automatic_purchase_order(df, resultados):
-    """PP or FP -> Yes (1); others -> No (0)."""
+    """PP or FP -> 'X'; others -> empty (''), SAP checkbox logic."""
+    
     col = 'Automatic Purchase Order Allowed'
+    
     if col not in df.columns or 'Plant Type' not in df.columns:
         return
+
     for idx, row in df.iterrows():
         erros = []
+        
         plant = _norm_str(row.get('Plant')).upper()
         ptype = _norm_str(row.get('Plant Type')).upper()
-        val   = _norm_str(row.get(col))
+        val   = _norm_str(row.get(col)).upper()
         mat   = _norm_str(row.get('Material'))
-        if val == '':
-            erros.append('Mandatory field blank')
-        else:
-            if ptype in {'PP', 'FP'}:
-                if val != '1':
-                    erros.append(f"For Plant Type '{ptype}' in TN01/TN02, should be 'Yes' (current: '{val}')")
-            else:
-                if val != '0':
-                    erros.append(f"For Plant Type '{ptype}', should be 'No' (current: '{val}')")
-        if erros:
-            resultados.append({'Line': idx + 2, 'Field': col,
-                               'Error': ' | '.join(erros), 'Material': mat, 'Plant': plant})
 
+        # ✅ Normalizar valores possíveis
+        if val in {'X', 'YES', '1'}:
+            val_norm = 'X'
+        else:
+            val_norm = ''
+
+        # ✅ Regra principal
+        if ptype in {'PP', 'FP'}:
+            if val_norm != 'X':
+                erros.append(
+                    f"For Plant Type '{ptype}', should be 'X' (current: '{val}')"
+                )
+        else:
+            if val_norm != '':
+                erros.append(
+                    f"For Plant Type '{ptype}', should be blank (current: '{val}')"
+                )
+
+        if erros:
+            resultados.append({
+                'Line': idx + 2,
+                'Field': col,
+                'Error': ' | '.join(erros),
+                'Material': mat,
+                'Plant': plant
+            })
 
 def tn_validar_consumption_mode(df, mara_df, resultados):
     """FERT -> 0 or empty. TN02 HALB -> 0 or empty. Others -> 2."""
@@ -803,45 +822,87 @@ def tn_validar_purchasing_group(df, resultados):
 
 
 def tn_validar_repetitive_manufacturing(df, mara_df, resultados):
-    """TN02: must be BLANK. TN01: Palmela rules."""
+    """TN02: must be BLANK. TN01: SAP checkbox logic (X / '')."""
+
     col = 'Indicator: Repetitive Manufa. Allow'
     needed = {'Material Type', col, 'Plant Type'}
+
     if not needed.issubset(df.columns):
         return
+
     mt_map = _mt_map_from_mara(mara_df)
+
     for idx, row in df.iterrows():
         erros = []
+
         plant = _norm_str(row.get('Plant')).upper()
         mat   = _norm_str(row.get('Material'))
         mt    = mt_map.get(mat, _norm_str(row.get('Material Type', ''))).upper()
         pt    = _norm_str(row.get('Plant Type')).upper()
-        val   = _norm_str(row.get(col))
-        if plant == 'TN02':
-            if val not in ('', '0') and not pd.isna(row.get(col)):
-                erros.append(f"Must be blank or empty for TN02 (current: '{val}')")
-        else:
-            if val == '':
-                erros.append('Mandatory field blank')
-            else:
-                if mt == 'ROH':
-                    if pt in ('MP', 'FP') and val != '1':
-                        erros.append(f"For ROH with Plant Type '{pt}', should be 'Yes' (current: '{val}')")
-                    elif pt not in ('MP', 'FP', '') and val != '0':
-                        erros.append(f"For ROH with Plant Type '{pt}', should be 'No' (current: '{val}')")
-                elif mt == 'HALB':
-                    if pt == 'PP' and val == '1':
-                        erros.append("For HALB with Plant Type 'PP', shouldn't be 'Yes'")
-                    elif pt not in ('PP', '') and val != '1':
-                        erros.append(f"For HALB with Plant Type '{pt}', should be 'Yes' (current: '{val}')")
-                elif mt == 'FERT':
-                    if pt == 'PP' and val == '1':
-                        erros.append("For FERT with Plant Type 'PP', shouldn't be 'Yes'")
-                    elif pt not in ('PP', '') and val != '1':
-                        erros.append(f"For FERT with Plant Type '{pt}', should be 'Yes' (current: '{val}')")
-        if erros:
-            resultados.append({'Line': idx + 2, 'Field': col,
-                               'Error': ' \n '.join(erros), 'Material': mat, 'Plant': plant})
 
+        val_raw = row.get(col)
+        val = str(val_raw).strip().upper() if pd.notna(val_raw) else ''
+
+        # ✅ Normalização checkbox
+        if val in {'X', '1', 'YES'}:
+            val_norm = 'X'
+        else:
+            val_norm = ''
+
+        # 🔴 TN02 rule
+        if plant == 'TN02':
+            if val_norm != '':
+                erros.append(
+                    f"Must be blank for TN02 (current: '{val}')"
+                )
+
+        # 🟡 TN01 / default logic
+        else:
+            # ROH
+            if mt == 'ROH':
+                if pt in ('MP', 'FP'):
+                    if val_norm != 'X':
+                        erros.append(
+                            f"For ROH with Plant Type '{pt}', should be 'X' (current: '{val}')"
+                        )
+                elif pt != '':
+                    if val_norm != '':
+                        erros.append(
+                            f"For ROH with Plant Type '{pt}', should be blank (current: '{val}')"
+                        )
+            # HALB
+            elif mt == 'HALB':
+                if pt == 'PP':
+                    if val_norm == 'X':
+                        erros.append(
+                            "For HALB with Plant Type 'PP', shouldn't be 'X'"
+                        )
+                elif pt != '':
+                    if val_norm != 'X':
+                        erros.append(
+                            f"For HALB with Plant Type '{pt}', should be 'X' (current: '{val}')"
+                        )
+            # FERT
+            elif mt == 'FERT':
+                if pt == 'PP':
+                    if val_norm == 'X':
+                        erros.append(
+                            "For FERT with Plant Type 'PP', shouldn't be 'X'"
+                        )
+                elif pt != '':
+                    if val_norm != 'X':
+                        erros.append(
+                            f"For FERT with Plant Type '{pt}', should be 'X' (current: '{val}')"
+                        )
+
+        if erros:
+            resultados.append({
+                'Line': idx + 2,
+                'Field': col,
+                'Error': ' | '.join(erros),
+                'Material': mat,
+                'Plant': plant
+            })
 
 def tn_validar_repetitive_manufacturing_profile(df, mara_df, resultados):
     """TN02: must be BLANK. TN01: FERT/HALB -> 'Z002'; ROH must not be 'Z002'."""
@@ -1200,6 +1261,17 @@ def run_tn_validation(
     csr_item_file=None,
     csr_head_file=None,
     matplsta_file=None,
+    # Optional pre-loaded DataFrames — if provided, skips file loading for those
+    _mara_df=None,
+    _marc_df=None,
+    _mvke_df=None,
+    _marm_df=None,
+    _mbew_df=None,
+    _zplm_marc_df=None,
+    _zplm_mara_df=None,
+    _csr_item_df=None,
+    _csr_head_df=None,
+    _matplsta_df=None,
 ):
     """
     Runs the complete Tunisia validation pipeline.
@@ -1209,23 +1281,23 @@ def run_tn_validation(
         if progress_callback:
             progress_callback(min(pct, 100), msg)
 
-    # ── 1. Load files ─────────────────────────────────────────────────────────
+    # ── 1. Load files (skip if pre-loaded DataFrames provided) ───────────────
     _cb(3,  "Loading MARA...")
-    mara_df = load_xlsx_fast(mara_file, sheet_name=0)
+    mara_df = _mara_df if _mara_df is not None else load_xlsx_fast(mara_file, sheet_name=0)
     _cb(6,  "Loading MARC...")
-    marc_df = load_xlsx_fast(marc_file, sheet_name=0)
+    marc_df = _marc_df if _marc_df is not None else load_xlsx_fast(marc_file, sheet_name=0)
     _cb(9,  "Loading MVKE...")
-    mvke_df = load_xlsx_fast(mvke_file, sheet_name=0)
+    mvke_df = _mvke_df if _mvke_df is not None else load_xlsx_fast(mvke_file, sheet_name=0)
     _cb(11, "Loading ZPLM MARC...")
-    zplm_marc_df = load_xlsx_fast(zplm_marc_file, sheet_name=0) if zplm_marc_file else None
+    zplm_marc_df = _zplm_marc_df if _zplm_marc_df is not None else (load_xlsx_fast(zplm_marc_file, sheet_name=0) if zplm_marc_file else None)
     _cb(13, "Loading ZPLM MARA...")
-    zplm_mara_df = load_xlsx_fast(zplm_mara_file, sheet_name=0) if zplm_mara_file else None
+    zplm_mara_df = _zplm_mara_df if _zplm_mara_df is not None else (load_xlsx_fast(zplm_mara_file, sheet_name=0) if zplm_mara_file else None)
     _cb(15, "Loading optional files...")
-    csr_item_df = load_xlsx_fast(csr_item_file, sheet_name=0) if csr_item_file else None
-    csr_head_df = load_xlsx_fast(csr_head_file, sheet_name=0) if csr_head_file else None
-    matplsta_df = load_xlsx_fast(matplsta_file, sheet_name=0) if matplsta_file else None
-    marm_df     = load_xlsx_fast(marm_file, sheet_name=0) if marm_file else None
-    mbew_df     = load_xlsx_fast(mbew_file, sheet_name=0) if mbew_file else None
+    csr_item_df = _csr_item_df if _csr_item_df is not None else (load_xlsx_fast(csr_item_file, sheet_name=0) if csr_item_file else None)
+    csr_head_df = _csr_head_df if _csr_head_df is not None else (load_xlsx_fast(csr_head_file, sheet_name=0) if csr_head_file else None)
+    matplsta_df = _matplsta_df if _matplsta_df is not None else (load_xlsx_fast(matplsta_file, sheet_name=0) if matplsta_file else None)
+    marm_df     = _marm_df if _marm_df is not None else (load_xlsx_fast(marm_file, sheet_name=0) if marm_file else None)
+    mbew_df     = _mbew_df if _mbew_df is not None else (load_xlsx_fast(mbew_file, sheet_name=0) if mbew_file else None)
 
     if mara_df is None:
         raise ValueError("MARA.xlsx not loaded.")
@@ -1355,6 +1427,7 @@ def run_tn_validation(
     validar_division(sap_like_df, resultados)
     validar_export_import_group(sap_like_df, resultados)
     validar_general_item_category_group(sap_like_df, resultados)
+    validar_batch_management(sap_like_df, resultados)  # uses Batch Management Required Ind. from MARA
 
     _cb(25, "Validating Gross/Net Weight...")
     validar_gross_weight(sap_like_df, resultados)

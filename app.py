@@ -1087,32 +1087,166 @@ elif main_choice == "📦 SAP Material Validation":
                         matplsta_file=matplsta, mbew_file=mbew_file,
                     )
 
-                    update_progress(50, "Running Tunisia engine...")
+                    # Re-use files already parsed by Palmela engine via cache
+                    update_progress(50, "Running Tunisia engine (reusing loaded files)...")
+                    from utils.fast_loader import load_xlsx_fast as _lxf2
+                    _shared = dict(
+                        _mara_df      = _lxf2(mara_file,  sheet_name=0),
+                        _marc_df      = _lxf2(marc_file,  sheet_name=0),
+                        _mvke_df      = _lxf2(mvke_file,  sheet_name=0),
+                        _zplm_marc_df = _lxf2(zplm_marc,  sheet_name=0) if zplm_marc  else None,
+                        _zplm_mara_df = _lxf2(zplm_mara,  sheet_name=0) if zplm_mara  else None,
+                        _marm_df      = _lxf2(marm_file,  sheet_name=0) if marm_file  else None,
+                        _mbew_df      = _lxf2(mbew_file,  sheet_name=0) if mbew_file  else None,
+                        _csr_item_df  = _lxf2(csr_item,   sheet_name=0) if csr_item   else None,
+                        _csr_head_df  = _lxf2(csr_head,   sheet_name=0) if csr_head   else None,
+                        _matplsta_df  = _lxf2(matplsta,   sheet_name=0) if matplsta   else None,
+                    )
+
                     _tn_filter = plant_filter_export if plant_filter_export in ("TN01", "TN02") else None
                     excel_tn, errors_tn, _ = run_tn_validation(
-                        mara_file=mara_file, marc_file=marc_file, mvke_file=mvke_file,
-                        marm_file=marm_file, mbew_file=mbew_file,
-                        zplm_marc_file=zplm_marc, zplm_mara_file=zplm_mara,
+                        mara_file=None, marc_file=None, mvke_file=None,
                         previous_report=None, plant_filter=_tn_filter,
                         progress_callback=lambda p, m: update_progress(50 + int(p * 0.45), m),
-                        csr_item_file=csr_item, csr_head_file=csr_head,
-                        matplsta_file=matplsta,
+                        **_shared,
                     )
 
                     update_progress(96, "Merging results...")
+
+                    errors_pt_clean = errors_pt if errors_pt is not None else pd.DataFrame()
+                    errors_tn_clean = errors_tn if errors_tn is not None else pd.DataFrame()
+
                     errors_df = pd.concat(
-                        [df for df in [errors_pt, errors_tn] if df is not None and not df.empty],
+                        [df for df in [errors_pt_clean, errors_tn_clean] if not df.empty],
                         ignore_index=True
                     )
+
+                    # Deduplicate: drop exact duplicates (Material+Plant+Field+Error).
+                    # For plant-agnostic errors (Plant=''), if same Material+Field+Error
+                    # exists with a specific plant, drop the plant-less duplicate.
+                    if not errors_df.empty and 'Field' in errors_df.columns:
+
+                        _key = ['Material', 'Field', 'Error']
+
+                        if 'Plant' in errors_df.columns:
+                            errors_df['Plant'] = errors_df['Plant'].fillna('').astype(str).str.strip()
+
+                            # 1. remover duplicados exatos
+                            errors_df = errors_df.drop_duplicates(subset=_key + ['Plant']).reset_index(drop=True)
+
+                            # 2. separar
+                            _with_plant    = errors_df[errors_df['Plant'] != '']
+                            _without_plant = errors_df[errors_df['Plant'] == '']
+
+                            # 3. dedupe global (PT+TN duplicados)
+                            if not _without_plant.empty:
+                                _without_plant = _without_plant.drop_duplicates(subset=_key)
+
+                            # 4. remover global se existir versão com plant
+                            if not _with_plant.empty and not _without_plant.empty:
+                                _without_plant = _without_plant[
+                                    ~_without_plant.set_index(_key).index.isin(
+                                        _with_plant.set_index(_key).index
+                                    )
+                                ]
+
+                            # 5. juntar
+                            errors_df = pd.concat([_with_plant, _without_plant], ignore_index=True)
+
+                    # Load RolesViews + combined MARC/MARA for postprocessing
+                    from rolesviews_data import get_rolesviews_bytesio
+                    from utils.fast_loader import load_xlsx_fast as _lxf3
+                    from sap_validation_engine import (
+                        ensure_basic_data_k,
+                        postprocess_with_views_roles_and_classification as _postprocess,
+                        _style_sap_report as _style,
+                    )
+                    _rv = _lxf3(get_rolesviews_bytesio(), sheet_name=None)
+                    _roles_df_m = _rv.get("Roles")
+                    _views_df_m = _rv.get("Views")
+
+                    # Build combined MARC — must apply ensure_basic_data_k so that
+                    # Maintenance status contains 'K' for all rows, otherwise all
+                    # materials appear as "Missing view K - Basic Data"
+                    _marc_pt_df = _lxf3(marc_file, sheet_name=0) if marc_file else pd.DataFrame()
+                    _marc_tn_df = _shared.get('_marc_df')
+                    if _marc_tn_df is None:
+                        _marc_tn_df = pd.DataFrame()
+                    _marc_combined = pd.concat(
+                        [df for df in [_marc_pt_df, _marc_tn_df] if not df.empty],
+                        ignore_index=True
+                    )
+                    _marc_combined = ensure_basic_data_k(_marc_combined)
+
+                    _mara_df_m = _shared.get('_mara_df')
+                    if _mara_df_m is None:
+                        _mara_df_m = _lxf3(mara_file, sheet_name=0)
+
+                    # Run postprocess on merged errors — builds contagem_final_df and
+                    # coverage_df with all columns (View, Role, View_Description, etc.)
+                    (
+                        errors_df, _, views_missing_output_df,
+                        contagem_final_df, coverage_df, view_tabs_dict
+                    ) = _postprocess(
+                        errors_df, _mara_df_m, _marc_combined,
+                        _roles_df_m, _views_df_m, plant_filter=None
+                    )
+
                     summary_df = (
                         errors_df["Field"].value_counts().rename_axis("Field").reset_index(name="Adjusted Nº of Errors")
                         if "Field" in errors_df.columns and not errors_df.empty
                         else pd.DataFrame({"Field": [], "Adjusted Nº of Errors": []})
                     )
-                    # Palmela Excel is the main export; TN Excel stored for optional download
-                    excel_display = excel_pt
-                    excel_export  = excel_pt
-                    st.session_state["tn_excel_export"] = excel_tn
+
+                    # Build merged Excel with pandas + _style_sap_report
+                    import io as _io
+                    _file_bytes = _io.BytesIO()
+
+                    if not contagem_final_df.empty and 'Adjusted Nº of Errors' in contagem_final_df.columns:
+                        contagem_final_df = contagem_final_df.sort_values(
+                            'Adjusted Nº of Errors', ascending=False
+                        ).reset_index(drop=True)
+
+                    def _cat_missing_m(vtabs):
+                        cols = ['Material', 'Plant', 'Missing_View', 'View_Description', 'Fields_Expected']
+                        frames = [dfv[cols] for dfv in vtabs.values() if dfv is not None and not dfv.empty]
+                        if not frames:
+                            return pd.DataFrame(columns=cols)
+                        return pd.concat(frames, ignore_index=True).drop_duplicates()
+
+                    view_is_missing_df = _cat_missing_m(view_tabs_dict)
+
+                    with pd.ExcelWriter(_file_bytes, engine='openpyxl') as _writer:
+                        pd.DataFrame().to_excel(_writer, sheet_name='Executive Summary', index=False)
+                        _base_row = 1
+                        if not contagem_final_df.empty:
+                            contagem_final_df.to_excel(_writer, sheet_name='Adjusted Summary',
+                                                        index=False, startrow=1)
+                            _base_row = len(contagem_final_df) + 5
+                        if not coverage_df.empty:
+                            coverage_df.to_excel(_writer, sheet_name='Adjusted Summary',
+                                                  index=False, startrow=_base_row)
+                        views_missing_output_df.to_excel(_writer, sheet_name='Field With Error', index=False)
+                        errors_df.to_excel(_writer, sheet_name='All Errors', index=False)
+                        view_is_missing_df.to_excel(_writer, sheet_name='View is Missing', index=False)
+                        for _vc, _vdf in view_tabs_dict.items():
+                            _vdf.to_excel(_writer, sheet_name=f'Missing_{_vc}'[:31], index=False)
+
+                    _file_bytes.seek(0)
+                    _file_bytes = _style(
+                        _file_bytes,
+                        errors_df=errors_df,
+                        views_missing_output_df=views_missing_output_df,
+                        contagem_final_df=contagem_final_df,
+                        coverage_df=coverage_df,
+                        view_tabs_dict=view_tabs_dict,
+                        sap_df=None,
+                        plant_filter=None,
+                    )
+
+                    excel_display = _file_bytes
+                    excel_export  = _file_bytes
+                    st.session_state.pop("tn_excel_export", None)
 
                 # ── PALMELA ONLY (default) ─────────────────────────────────────
                 else:
@@ -1251,23 +1385,9 @@ elif main_choice == "📦 SAP Material Validation":
         render_sap_run_charts(errors_df)
 
         download_name = os.path.basename(report_path) if report_path else "SAP_Validation_Adjusted_Report_ALL.xlsx"
-
-        _tn_excel   = st.session_state.get("tn_excel_export")
-        _is_both_dl = _tn_excel is not None
-
-        _pt_label = "⬇️ Download Palmela Report (PT01/PT02)" if _is_both_dl else "⬇️ Download Excel"
-        st.download_button(_pt_label, data=excel_export.getvalue(),
+        st.download_button("⬇️ Download Excel", data=excel_export.getvalue(),
                            file_name=download_name,
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-        if _is_both_dl:
-            st.download_button(
-                "⬇️ Download Tunisia Report (TN01/TN02)",
-                data=_tn_excel.getvalue(),
-                file_name="SAP_Validation_Tunisia_Report.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="tn_download_btn",
-            )
 
         # ── Assignment panel ──────────────────────────────────────────────
         render_assignment_panel(errors_df)
