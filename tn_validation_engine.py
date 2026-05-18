@@ -227,8 +227,9 @@ def build_sap_like_df(marc_df, mara_df, zplm_marc_df):
     if zplm_marc_df is not None and not zplm_marc_df.empty:
         zplm = zplm_marc_df.copy()
         zplm.columns = [str(c).strip() for c in zplm.columns]
+
         zplm_rename_map = {
-            'material plant type': 'Plant Type',
+            'Material Plant Type': 'Plant Type',
             'enterproj number': 'Enterproj Number',
             'material transfer': 'Material Transfer',
             'eop date': 'EOP Date',
@@ -252,8 +253,52 @@ def build_sap_like_df(marc_df, mara_df, zplm_marc_df):
             if col not in df.columns:
                 df[col] = ''
 
+    # ------------------------------------------------------------
+    # ✅ NORMALIZAR PLANT TYPE
+    # ------------------------------------------------------------
     if 'Plant Type' in df.columns:
-        df['Plant Type'] = df['Plant Type'].fillna('')
+        df['Plant Type'] = df['Plant Type'].fillna('').astype(str).str.strip().str.upper()
+
+    # ------------------------------------------------------------
+    # ✅ BATCH MANAGEMENT (CRÍTICO)
+    # ------------------------------------------------------------
+
+    # 📌 Global (MARA)
+    df['Batch Management'] = df.get('Batch Management', '')
+
+    # 📌 Plant-level (MARC)
+    batch_plant_candidates = [
+        'Batch Management(Plant)',
+        'Batch Management (Plant)',
+        'Batch Mgmt Plant'
+    ]
+
+    batch_plant_col = next(
+        (col for col in df.columns if col in batch_plant_candidates),
+        None
+    )
+
+    if batch_plant_col:
+        df['Batch Management(Plant)'] = df[batch_plant_col]
+    else:
+        df['Batch Management(Plant)'] = ''
+
+    # 📌 SAPUI5 compatibility (para validar_batch_management)
+    df['Batch Management Required Ind.'] = df['Batch Management(Plant)']
+
+    # ------------------------------------------------------------
+    # ✅ GARANTIR COLUNAS CRÍTICAS
+    # ------------------------------------------------------------
+    required_cols = [
+        'Plant Type',
+        'Batch Management Required Ind.',
+        'MRP Type',
+        'Availability Check'
+    ]
+
+    for col in required_cols:
+        if col not in df.columns:
+            df[col] = ''
 
     return df
 
@@ -1599,6 +1644,29 @@ def run_tn_validation(
     _cb(78, "Building errors DataFrame...")
     errors_df = _coerce_df_for_display(pd.DataFrame(resultados))
 
+    
+    # ------------------------------------------------------------
+    # ✅ DETETAR ERROS NÃO MAPEADOS NO ROLES
+    # ------------------------------------------------------------
+    roles_bytes = get_rolesviews_bytesio()
+    roles_dict = load_xlsx_fast(roles_bytes, sheet_name=None)
+    roles_df = roles_dict.get("Roles", None)
+
+    if roles_df is not None and not roles_df.empty:
+        errors_df['Field_clean'] = errors_df['Field'].astype(str).str.strip()
+        roles_set = set(roles_df['Field'].astype(str).str.strip())
+
+        missing_role_df = errors_df[~errors_df['Field_clean'].isin(roles_set)].copy()
+
+        # DEBUG terminal
+        if not missing_role_df.empty:
+            print("\n--- ⚠️ ERROS NÃO MAPEADOS NO ROLES ---\n")
+            for f in sorted(missing_role_df['Field_clean'].unique()):
+                print(f)
+            print("\n--------------------------------------\n")
+    else:
+        missing_role_df = pd.DataFrame()
+
     if previous_report and zplm_marc_file and zplm_mara_file:
         errors_df = fill_plant_and_validate_enterproj_from_zplm(
             errors_df, latest_report=previous_report,
@@ -1639,20 +1707,47 @@ def run_tn_validation(
     view_is_missing_df = _cat_missing(view_tabs_dict)
 
     with pd.ExcelWriter(file_bytes, engine='openpyxl') as writer:
+
         pd.DataFrame().to_excel(writer, sheet_name='Executive Summary', index=False)
+
         base_row = 1
         if not contagem_final_df.empty:
-            contagem_final_df.to_excel(writer, sheet_name='Adjusted Summary',
-                                        index=False, startrow=1)
+            contagem_final_df.to_excel(
+                writer,
+                sheet_name='Adjusted Summary',
+                index=False,
+                startrow=1
+            )
             base_row = len(contagem_final_df) + 5
+
         if not coverage_df.empty:
-            coverage_df.to_excel(writer, sheet_name='Adjusted Summary',
-                                  index=False, startrow=base_row)
+            coverage_df.to_excel(
+                writer,
+                sheet_name='Adjusted Summary',
+                index=False,
+                startrow=base_row
+            )
+
         views_missing_output_df.to_excel(writer, sheet_name='Field With Error', index=False)
         errors_df.to_excel(writer, sheet_name='All Errors', index=False)
         view_is_missing_df.to_excel(writer, sheet_name='View is Missing', index=False)
+
+        # ------------------------------------------------------------
+        # ✅ NOVA SHEET → ERROS NÃO MAPEADOS
+        # ------------------------------------------------------------
+        if 'missing_role_df' in locals() and not missing_role_df.empty:
+            missing_role_df[['Field', 'Material', 'Plant', 'Error']].to_excel(
+                writer,
+                sheet_name='Missing Role Mapping',
+                index=False
+            )
+
+        # ------------------------------------------------------------
+        # ✅ VIEWS MISSING (já existente)
+        # ------------------------------------------------------------
         for view_code, df_view in view_tabs_dict.items():
             df_view.to_excel(writer, sheet_name=f'Missing_{view_code}'[:31], index=False)
+
         marc_tn.to_excel(writer, sheet_name='Original Data (MARC)', index=False)
 
     file_bytes.seek(0)
