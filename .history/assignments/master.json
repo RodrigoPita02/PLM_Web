@@ -1,5 +1,21 @@
 {
-  "field_assignments": {},
+  "field_assignments": {
+    "Advanced Planning": {
+      "owner": "João Santos",
+      "team": "DTS : New Model/ECN Analyst | OTC : Customer Service",
+      "since": "2026-05-25"
+    },
+    "PP Plng Procedure": {
+      "owner": "João Santos",
+      "team": "DTS : New Model/ECN Analyst | OTC : Customer Service",
+      "since": "2026-05-25"
+    },
+    "Per.Lot Sz.Plng Cal.": {
+      "owner": "João Santos",
+      "team": "DTS : New Model/ECN Analyst | PTP : Release & Follow Up Analyst | OTC : Customer Service",
+      "since": "2026-05-25"
+    }
+  },
   "plant_overrides": {},
   "_saved_at": "2026-03-20T13:18:31"
 }

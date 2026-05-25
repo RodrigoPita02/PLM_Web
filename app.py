@@ -37,7 +37,9 @@ from sap_validation_engine import (
     list_all_assignments,
     merge_assignments,
     save_open_assignments,
+    track_error_count,
     build_assignments_sheet,
+    build_owner_dashboard_df,
 )
 from tn_validation_engine import run_tn_validation
 
@@ -549,9 +551,8 @@ def render_history_with_download(run_type: str, limit: int = 10,
 def render_assignment_panel(errors_df: pd.DataFrame) -> None:
     """
     Renders the 📋 Assign & Track panel in SAP Step 4.
-    Shows all distinct fields with errors, their current owner,
-    and allows inline editing — with changes saved immediately to master.json.
     """
+
     if errors_df is None or errors_df.empty:
         return
 
@@ -565,47 +566,83 @@ def render_assignment_panel(errors_df: pd.DataFrame) -> None:
         unsafe_allow_html=True,
     )
 
-    # Build summary: distinct (Field, Plant) combinations with error counts
-    _fe = errors_df[errors_df.get("Error_Type", pd.Series("Field Error", index=errors_df.index)) == "Field Error"]         if "Error_Type" in errors_df.columns else errors_df
+    # ─────────────────────────────────────────────
+    # FILTER FIELD ERRORS
+    # ─────────────────────────────────────────────
+    _fe = errors_df[
+        errors_df.get("Error_Type", pd.Series("Field Error", index=errors_df.index)) == "Field Error"
+    ] if "Error_Type" in errors_df.columns else errors_df
 
     if _fe.empty:
         st.info("No field errors to assign.")
         return
 
-    # Group by Field (global) — plant overrides handled via expander
     field_counts = (
         _fe.groupby("Field")
-           .agg(Errors=("Field","count"),
-                Plants=("Plant", lambda x: ", ".join(sorted(x.astype(str).str.strip().unique()))))
+           .agg(
+                Errors=("Field", "count"),
+                Plants=("Plant", lambda x: ", ".join(sorted(x.astype(str).str.strip().unique())))
+           )
            .reset_index()
            .sort_values("Errors", ascending=False)
-    ) if "Field" in _fe.columns else pd.DataFrame()
+    )
 
     if field_counts.empty:
         return
 
-    # Header row
+    # ─────────────────────────────────────────────
+    # HEADER
+    # ─────────────────────────────────────────────
     hcols = st.columns([4, 2, 3, 2, 1])
     for col, label in zip(hcols, ["Field", "Errors", "Owner", "Team", "Action"]):
-        col.markdown(f"<div style='font-size:0.75rem;font-weight:700;text-transform:uppercase;"
-                     f"letter-spacing:.06em;color:var(--app-fg-muted)'>{label}</div>",
-                     unsafe_allow_html=True)
+        col.markdown(
+            f"<div style='font-size:0.75rem;font-weight:700;text-transform:uppercase;"
+            f"letter-spacing:.06em;color:var(--app-fg-muted)'>{label}</div>",
+            unsafe_allow_html=True,
+        )
 
     st.markdown("<hr style='margin:4px 0 8px 0;border-color:var(--app-border)'>",
                 unsafe_allow_html=True)
 
-    # Load master once — avoid repeated disk reads inside the loop
-    from sap_validation_engine import _load_master
+    # ─────────────────────────────────────────────
+    # LOAD MASTER + ROLES (✅ PATCH AQUI)
+    # ─────────────────────────────────────────────
+    from sap_validation_engine import _load_master, _build_field_to_role_map
+    from rolesviews_data import get_rolesviews_bytesio
+    from utils.fast_loader import load_xlsx_fast
+
     _master_cache = _load_master()
 
+    try:
+        _rv = load_xlsx_fast(get_rolesviews_bytesio(), sheet_name=None)
+        _roles_df = _rv.get("Roles")
+        _role_map = _build_field_to_role_map(_roles_df)
+    except Exception:
+        _role_map = {}
+
+    # ─────────────────────────────────────────────
+    # LOOP CAMPOS
+    # ─────────────────────────────────────────────
     for _, row in field_counts.iterrows():
         field  = row["Field"]
         n_errs = row["Errors"]
         plants = row.get("Plants", "")
 
         current_owner = get_owner(field, master=_master_cache)
+
+        # ✅ TEAM LOGIC (FINAL)
         _fd = _master_cache.get("field_assignments", {}).get(field, {})
-        current_team = _fd.get("team", "") if isinstance(_fd, dict) else ""
+        assigned_team = (_fd.get("team", "") if isinstance(_fd, dict) else "") or ""
+        assigned_team = assigned_team.strip()
+
+        role_team = (_role_map.get(field, "") or "").strip()
+
+        if assigned_team:
+            current_team = assigned_team
+        elif role_team:
+            current_team = role_team
+        else:
+            current_team = ""
 
         edit_key = f"asgn_edit_{field}"
         if edit_key not in st.session_state:
@@ -617,139 +654,91 @@ def render_assignment_panel(errors_df: pd.DataFrame) -> None:
             st.markdown(f"**{field}**<br>"
                         f"<span style='font-size:0.75rem;color:var(--app-fg-muted)'>{plants}</span>",
                         unsafe_allow_html=True)
+
         with cols[1]:
-            _badge_color = "var(--color-error)" if n_errs > 50 else                            "var(--color-warn)"  if n_errs > 10 else "var(--app-fg-muted)"
-            st.markdown(f"<span style='font-weight:700;color:{_badge_color}'>{n_errs:,}</span>",
+            color = "var(--color-error)" if n_errs > 50 else \
+                    "var(--color-warn)" if n_errs > 10 else \
+                    "var(--app-fg-muted)"
+            st.markdown(f"<span style='font-weight:700;color:{color}'>{n_errs:,}</span>",
                         unsafe_allow_html=True)
+
         with cols[2]:
             if st.session_state[edit_key]:
-                new_owner = st.text_input("Owner", value=current_owner,
-                                          key=f"inp_owner_{field}", label_visibility="collapsed",
-                                          placeholder="Name or CDS ID…")
+                st.text_input(
+                    "Owner",
+                    value=current_owner,
+                    key=f"inp_owner_{field}",
+                    label_visibility="collapsed"
+                )
             else:
-                if current_owner:
-                    st.markdown(f"👤 **{current_owner}**", unsafe_allow_html=True)
-                else:
-                    st.markdown("<span style='color:var(--app-fg-muted);font-style:italic'>"
-                                "Unassigned</span>", unsafe_allow_html=True)
+                st.markdown(f"👤 **{current_owner}**" if current_owner else "*Unassigned*")
+
         with cols[3]:
             if st.session_state[edit_key]:
-                new_team = st.text_input("Team", value=current_team,
-                                         key=f"inp_team_{field}", label_visibility="collapsed",
-                                         placeholder="Team (optional)…")
+                st.text_input(
+                    "Team",
+                    value=current_team,
+                    key=f"inp_team_{field}",
+                    label_visibility="collapsed"
+                )
             else:
-                if current_team:
-                    st.markdown(f"<span style='font-size:0.8rem;color:var(--app-fg-muted)'>"
-                                f"{current_team}</span>", unsafe_allow_html=True)
+                st.markdown(current_team if current_team else "-")
 
         with cols[4]:
             if st.session_state[edit_key]:
-                if st.button("💾", key=f"save_{field}",
-                             help=f"Save assignment for {field}"):
-                    _owner_val = st.session_state.get(f"inp_owner_{field}", "").strip()
-                    _team_val  = st.session_state.get(f"inp_team_{field}",  "").strip()
-                    set_owner(field, _owner_val, team=_team_val)
+                if st.button("💾", key=f"save_{field}"):
+                    set_owner(
+                        field,
+                        st.session_state.get(f"inp_owner_{field}", ""),
+                        team=st.session_state.get(f"inp_team_{field}", "")
+                    )
                     st.session_state[edit_key] = False
                     st.rerun()
             else:
-                if st.button("✏️", key=f"edit_{field}",
-                             help=f"Edit assignment for {field}"):
+                if st.button("✏️", key=f"edit_{field}"):
                     st.session_state[edit_key] = True
                     st.rerun()
 
         st.markdown("<hr style='margin:4px 0;border-color:var(--app-border)'>",
                     unsafe_allow_html=True)
 
-    # ── Bulk assign by plant override ─────────────────────────────────────
-    with st.expander("🏭 Plant-level overrides (assign a field differently per plant)", expanded=False):
-        st.caption("Use this when PT01 and PT02 have different responsible people for the same field.")
-        _ov_field  = st.selectbox("Field", options=sorted(field_counts["Field"].tolist()),
-                                  key="ov_field")
-        _ov_plant  = st.selectbox("Plant", options=["PT01", "PT02"], key="ov_plant")
-        _ov_owner  = st.text_input("Owner for this plant", key="ov_owner",
-                                   placeholder="Name or CDS ID…")
-        _ov_team   = st.text_input("Team (optional)", key="ov_team")
-        if st.button("💾 Save plant override", key="ov_save"):
-            if _ov_owner.strip():
-                set_owner(_ov_field, _ov_owner.strip(),
-                          plant=_ov_plant, team=_ov_team.strip())
-                st.success(f"✅ Saved: {_ov_field} / {_ov_plant} → {_ov_owner.strip()}")
-                st.rerun()
-            else:
-                st.warning("Please enter an owner name.")
-
-    # ── View all current assignments + export ─────────────────────────────
+    # ─────────────────────────────────────────────
+    # EXPORT (✅ PATCH AQUI)
+    # ─────────────────────────────────────────────
     with st.expander("📜 All current assignments", expanded=False):
+
         _all_asgn = list_all_assignments()
-        if _all_asgn.empty:
-            st.caption("No assignments saved yet.")
-        else:
-            st.dataframe(_all_asgn, width='stretch')
+        st.dataframe(_all_asgn, width='stretch')
 
-            # Export: per-owner summary
-            _exp_cols = st.columns([2, 1])
-            with _exp_cols[0]:
-                # Allow removing an assignment
-                _rm_cols = st.columns(3)
-                with _rm_cols[0]:
-                    _rm_field = st.selectbox("Remove assignment for field",
-                                             options=["—"] + sorted(_all_asgn["Field"].unique().tolist()),
-                                             key="rm_field")
-                with _rm_cols[1]:
-                    _rm_plant = st.selectbox("Plant (leave blank for default)",
-                                             options=["(default)", "PT01", "PT02"],
-                                             key="rm_plant")
-                with _rm_cols[2]:
-                    st.markdown("<div style='margin-top:22px'>", unsafe_allow_html=True)
-                    if st.button("🗑️ Remove", key="rm_confirm"):
-                        if _rm_field != "—":
-                            _plant_arg = "" if _rm_plant == "(default)" else _rm_plant
-                            remove_owner(_rm_field, plant=_plant_arg)
-                            st.success(f"Removed assignment for {_rm_field}" +
-                                       (f" / {_rm_plant}" if _plant_arg else ""))
-                            st.rerun()
-                    st.markdown("</div>", unsafe_allow_html=True)
+        try:
+            from rolesviews_data import get_rolesviews_bytesio
+            from utils.fast_loader import load_xlsx_fast
 
-            with _exp_cols[1]:
-                st.markdown("<div style='margin-top:4px'>", unsafe_allow_html=True)
-                # Build per-owner summary Excel
-                try:
-                    _enriched_exp = merge_assignments(errors_df) if errors_df is not None else pd.DataFrame()
-                    if not _enriched_exp.empty and "Owner" in _enriched_exp.columns:
-                        # Summary by owner
-                        _owner_summary = (
-                            _enriched_exp[_enriched_exp["Owner"] != ""]
-                            .groupby(["Owner", "Team"])
-                            .agg(
-                                Fields=("Field", lambda x: ", ".join(sorted(x.unique()))),
-                                Total_Errors=("Field", "count"),
-                                Overdue=("Status", lambda x: (x == "Overdue").sum()),
-                                Avg_Days_Open=("Days_Open", "mean"),
-                            )
-                            .round(1)
-                            .reset_index()
-                            .sort_values("Total_Errors", ascending=False)
-                        )
-                        # Full assignments sheet
-                        _asgn_sheet = build_assignments_sheet(_enriched_exp)
-                        _exp_buf = io.BytesIO()
-                        with pd.ExcelWriter(_exp_buf, engine="openpyxl") as _ew:
-                            _owner_summary.to_excel(_ew, sheet_name="By Owner", index=False)
-                            _asgn_sheet.to_excel(_ew, sheet_name="All Assignments", index=False)
-                            _all_asgn.to_excel(_ew, sheet_name="Field Owners", index=False)
-                        _exp_buf.seek(0)
-                        st.download_button(
-                            "⬇️ Export Assignments",
-                            data=_exp_buf.getvalue(),
-                            file_name=f"Assignments_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key="dl_assignments_export",
-                            help="Download per-owner summary + full assignment list",
-                        )
-                except Exception:
-                    st.caption("Export unavailable")
-                st.markdown("</div>", unsafe_allow_html=True)
+            _rv = load_xlsx_fast(get_rolesviews_bytesio(), sheet_name=None)
+            _roles_df = _rv.get("Roles")
 
+            # ✅ IMPORTANTE: usar roles_df
+            _enriched_exp = merge_assignments(errors_df, roles_df=_roles_df)
+
+            if not _enriched_exp.empty:
+                track_error_count(_enriched_exp)
+
+            _asgn_sheet = build_assignments_sheet(_enriched_exp)
+
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as ew:
+                _asgn_sheet.to_excel(ew, sheet_name="Assignments", index=False)
+
+            buf.seek(0)
+
+            st.download_button(
+                "⬇️ Export Assignments",
+                data=buf.getvalue(),
+                file_name="assignments.xlsx"
+            )
+
+        except Exception:
+            st.caption("Export unavailable")
 
 # ==========================================================
 # SIDEBAR MENU
@@ -1341,6 +1330,11 @@ elif main_choice == "📦 SAP Material Validation":
         summary_df   = st.session_state.sap_summary_df
         excel_export = st.session_state.sap_excel_export
         report_path  = st.session_state.sap_report_path
+        
+        # 2. dashboard owners ✅ (o que adicionaste)
+        _enriched = merge_assignments(errors_df)
+        save_open_assignments(_enriched)
+        track_error_count(_enriched)
 
         # FIX 4: count fields/materials consistently with Adjusted Summary
         # (Field Errors only — excludes Missing View errors)
@@ -1383,6 +1377,16 @@ elif main_choice == "📦 SAP Material Validation":
         st.markdown("## 📈 Dashboard — SAP Material Validation")
         render_sap_run_kpis(errors_df)
         render_sap_run_charts(errors_df)
+
+        owners_df = build_owner_dashboard_df(_enriched)
+        
+        st.markdown("## 👥 Owner Dashboard")
+
+        if owners_df.empty:
+            st.info("No owners yet")
+        else:
+            st.dataframe(owners_df, width="stretch")
+
 
         download_name = os.path.basename(report_path) if report_path else "SAP_Validation_Adjusted_Report_ALL.xlsx"
         st.download_button("⬇️ Download Excel", data=excel_export.getvalue(),

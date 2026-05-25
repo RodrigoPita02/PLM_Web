@@ -1525,51 +1525,92 @@ def validar_repetitive_manufacturing(df, resultados):
 
 
 def validar_repetitive_manufacturing_profile(df, resultados):
-    """FERT and HALB -> 'Z002'; ROH -> must NOT be 'Z002'."""
-    if 'Material Type' not in df.columns or 'Repetitive Manufacturing Profile' not in df.columns:
-        print("⚠️ Columns 'Material Type' or 'Repetitive Manufacturing Profile' not found.")
+    """FERT and HALB -> 'Z002'; ROH -> must NOT be 'Z002' (except MP/FP plants)."""
+
+    required_cols = {'Material Type', 'Repetitive Manufacturing Profile'}
+    if not required_cols.issubset(df.columns):
+        print("⚠️ Required columns not found.")
         return
 
     for idx, row in df.iterrows():
         erros = []
+
         mt  = str(row['Material Type']).strip()
         val = str(row['Repetitive Manufacturing Profile']).strip()
+
+        # 👇 NOVO: Plant Type
+        plant_type = str(row.get('Plant Type', '')).strip().upper()
+
+        # --------------------------------------------------------
+        # ✅ FERT / HALB
+        # --------------------------------------------------------
         if mt in ['FERT', 'HALB']:
             if pd.isna(row['Repetitive Manufacturing Profile']) or val == '':
                 erros.append("Mandatory field blank For Material Type FERT or HALB")
             elif val != 'Z002':
                 erros.append(f"Invalid value: '{val}' (should be 'Z002' For FERT or HALB)")
-        if mt == 'ROH' and val == 'Z002':
-            erros.append("Material Type ROH cannot have value 'Z002'")
+
+        # --------------------------------------------------------
+        # ✅ ROH (EXCEPTION MP/FP)
+        # --------------------------------------------------------
+        if mt == 'ROH':
+            if val == 'Z002' and plant_type not in {'MP', 'FP'}:
+                erros.append("Material Type ROH cannot have value 'Z002'")
+
+        # --------------------------------------------------------
         if erros:
-            resultados.append({'Line': idx + 2, 'Field': 'Repetitive Manufacturing Profile',
-                               'Error': ' | '.join(erros),
-                               'Material': str(row.get('Material', '')).strip(),
-                               'Plant':    str(row.get('Plant', '')).strip()})
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'Repetitive Manufacturing Profile',
+                'Error': ' | '.join(erros),
+                'Material': str(row.get('Material', '')).strip(),
+                'Plant':    str(row.get('Plant', '')).strip()
+            })
 
 
-def validar_source_list_required(df, resultados):
-    """PP -> 'Yes' (1); all other Plant Types -> 'No' (0)."""
-    if 'Plant Type' not in df.columns or 'Source List Required' not in df.columns:
-        print("⚠️ Columns 'Plant Type' or 'Source List Required' not found.")
+def validar_source_list_required_marc(marc_df, mara_df, resultados):
+    """
+    For materials FERT, HALB, ROH:
+    MARC['Source list'] must NOT be 'X'
+    """
+
+    if marc_df is None or mara_df is None:
+        print("⚠️ MARC or MARA not provided.")
         return
 
-    for idx, row in df.iterrows():
-        erros = []
-        pt  = str(row['Plant Type']).strip()
-        val = str(row['Source List Required']).strip()
-        if pd.isna(row['Source List Required']) or val == '':
-            erros.append('Mandatory field blank')
-        else:
-            if pt == 'PP' and val != '1':
-                erros.append(f"For Plant Type PP, should be 'Yes' (Current: '{val}')")
-            elif pt != 'PP' and val != '0':
-                erros.append(f"For Plant Type {pt}, should be 'No' (Current: '{val}')")
-        if erros:
-            resultados.append({'Line': idx + 2, 'Field': 'Source List Required',
-                               'Error': ' | '.join(erros),
-                               'Material': str(row.get('Material', '')).strip(),
-                               'Plant':    str(row.get('Plant', '')).strip()})
+    if 'Material' not in marc_df.columns or 'Source list' not in marc_df.columns:
+        print("⚠️ Columns 'Material' or 'Source list' not found in MARC.")
+        return
+
+    if 'Material' not in mara_df.columns or 'Material Type' not in mara_df.columns:
+        print("⚠️ Columns 'Material' or 'Material Type' not found in MARA.")
+        return
+
+    # Map Material → Material Type
+    mt_map = dict(zip(
+        mara_df['Material'].astype(str).str.strip(),
+        mara_df['Material Type'].astype(str).str.strip().str.upper()
+    ))
+
+    for idx, row in marc_df.iterrows():
+        material = str(row.get('Material', '')).strip()
+        plant = str(row.get('Plant', '')).strip()
+        val = str(row.get('Source list', '')).strip().upper()
+
+        mt = mt_map.get(material, '')
+
+        # Only validate FERT / HALB / ROH
+        if mt not in {'FERT', 'HALB', 'ROH'}:
+            continue
+
+        if val == 'X':
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'Source list',
+                'Error': "Must NOT be 'X' for FERT/HALB/ROH",
+                'Material': material,
+                'Plant': plant
+            })
 
 
 def validar_storage_location(df, resultados):
@@ -4639,7 +4680,7 @@ def run_full_validation(
         (72, lambda: validar_purchasing_group(sap_df, resultados)),
         (74, lambda: validar_repetitive_manufacturing(sap_df, resultados)),
         (76, lambda: validar_repetitive_manufacturing_profile(sap_df, resultados)),
-        (78, lambda: validar_source_list_required(sap_df, resultados)),
+        (78, lambda: validar_source_list_required_marc(marc_df, mara_df, resultados)),
         (80, lambda: validar_storage_location(sap_df, resultados)),
         (82, lambda: validar_valuation_class(sap_df, resultados)),
         (84, lambda: validar_with_qty_structure(sap_df, resultados)),
@@ -4750,7 +4791,7 @@ def run_full_validation(
 
         # Assignments sheet — enriched with owner/status from master.json
         try:
-            _enriched = merge_assignments(errors_df)
+            _enriched = merge_assignments(errors_df, roles_df=roles_df)
             _asgn_df  = build_assignments_sheet(_enriched)
             _asgn_df.to_excel(writer, sheet_name="Assignments", index=False)
             save_open_assignments(_enriched)
@@ -7105,61 +7146,122 @@ def _save_master(master: dict) -> None:
         pass
 
 
+def _get_assignment_info(field: str, plant: str = "", master: dict | None = None) -> dict:
+    """Returns the resolved assignment info for a field/plant combination."""
+    if master is None:
+        master = _load_master()
+    field = (field or "").strip()
+    plant = (plant or "").strip().upper()
+
+    if not field:
+        return {"owner": "", "team": "", "level": "Unassigned", "plant": ""}
+
+    override = master.get("plant_overrides", {}).get(plant, {}).get(field)
+    if isinstance(override, dict) and override.get("owner"):
+        return {
+            "owner": override["owner"],
+            "team": override.get("team", ""),
+            "level": "Plant Override",
+            "plant": plant,
+        }
+
+    default = master.get("field_assignments", {}).get(field)
+    if isinstance(default, dict) and default.get("owner"):
+        return {
+            "owner": default["owner"],
+            "team": default.get("team", ""),
+            "level": "Default",
+            "plant": "",
+        }
+
+    return {"owner": "", "team": "", "level": "Unassigned", "plant": ""}
+
+
 def get_owner(field: str, plant: str = "", master: dict | None = None) -> str:
     """
     Returns the owner for a (field, plant) combination.
     Plant-level override takes priority over field-level default.
     Returns "" if not assigned.
     """
-    if master is None:
-        master = _load_master()
-    plant = (plant or "").strip().upper()
-    # Plant override
-    override = master.get("plant_overrides", {}).get(plant, {}).get(field, {})
-    if isinstance(override, dict) and override.get("owner"):
-        return override["owner"]
-    # Field default
-    default = master.get("field_assignments", {}).get(field, {})
-    if isinstance(default, dict):
-        return default.get("owner", "")
-    return ""
+    return _get_assignment_info(field, plant, master=master)["owner"]
 
 
 def set_owner(field: str, owner: str, *,
               plant: str = "",
               team: str = "",
               master: dict | None = None) -> dict:
-    """
-    Set (or update) the owner for a field.
-    If plant is given, sets a plant-level override; otherwise sets the field default.
-    Returns the updated master dict.
-    """
+
     if master is None:
         master = _load_master()
+
+    field = (field or "").strip()
     plant = (plant or "").strip().upper()
     owner = (owner or "").strip()
     now   = datetime.now().strftime("%Y-%m-%d")
 
+    if not field:
+        raise ValueError("Field name is required to set an assignment.")
+
+    # ✅ FIX: reload after remove
+    if not owner:
+        remove_owner(field, plant=plant)
+        return _load_master()
+
     if plant:
-        master.setdefault("plant_overrides", {}).setdefault(plant, {})[field] = {
-            "owner": owner, "team": team, "since": now
+        prev = master.setdefault("plant_overrides", {}).setdefault(plant, {}).get(field, {})
+
+        # ✅ PATCH
+        if team is not None:
+            team_val = team
+        else:
+            team_val = prev.get("team", "")
+
+        master["plant_overrides"][plant][field] = {
+            "owner": owner,
+            "team": team_val,
+            "since": now
         }
+
     else:
-        master.setdefault("field_assignments", {})[field] = {
-            "owner": owner, "team": team, "since": now
+        prev = master.setdefault("field_assignments", {}).get(field, {})
+
+        # ✅ PATCH
+        if team is not None:
+            team_val = team
+        else:
+            team_val = prev.get("team", "")
+
+        master["field_assignments"][field] = {
+            "owner": owner,
+            "team": team_val,
+            "since": now
         }
+
     _save_master(master)
     return master
 
 
 def remove_owner(field: str, *, plant: str = "") -> None:
-    """Remove an assignment (field default or plant override)."""
     master = _load_master()
-    plant  = (plant or "").strip().upper()
+    field = (field or "").strip()
+    plant = (plant or "").strip().upper()
+
+    # ✅ FIX: proteção
+    if not field:
+        return
+
     if plant:
-        master.get("plant_overrides", {}).get(plant, {}).pop(field, None)
+        plant_dict = master.get("plant_overrides", {}).get(plant, {})
+        if isinstance(plant_dict, dict):
+            plant_dict.pop(field, None)
+            if not plant_dict:
+                master.get("plant_overrides", {}).pop(plant, None)
     else:
         master.get("field_assignments", {}).pop(field, None)
+
+    if not master.get("plant_overrides"):
+        master["plant_overrides"] = {}
+
     _save_master(master)
 
 
@@ -7192,38 +7294,60 @@ def list_all_assignments() -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["Field", "Plant", "Owner", "Team", "Since", "Level"])
 
 
+def _build_field_to_role_map(roles_df: pd.DataFrame | None) -> dict:
+    """
+    Builds Field -> Role mapping from Roles DataFrame.
+    Returns dict: {field_name: role_name}
+    """
+    if roles_df is None or roles_df.empty:
+        return {}
+    
+    field_to_role = {}
+    if 'Field' in roles_df.columns and 'Role' in roles_df.columns:
+        roles_copy = roles_df.copy()
+        roles_copy['Field'] = roles_copy['Field'].astype(str).str.strip()
+        roles_copy['Role'] = roles_copy['Role'].astype(str).str.strip()
+        # If multiple roles per field, take the first one
+        field_to_role = roles_copy.drop_duplicates(subset=['Field']).set_index('Field')['Role'].to_dict()
+    
+    return field_to_role
+
+
 def merge_assignments(errors_df: pd.DataFrame,
-                      run_date: str | None = None) -> pd.DataFrame:
+                      run_date: str | None = None,
+                      roles_df: pd.DataFrame | None = None) -> pd.DataFrame:
     """
     Enriches errors_df with assignment data from master.json.
-
-    Adds columns:
-      Owner         — person responsible for this field
-      Team          — team of the owner
-      Status        — "New" | "Open" | "Overdue" (no due date = "New")
-      Days_Open     — days since first seen (from previous_assignments if available)
-      Due_Date      — ISO date string or ""
-      Notes         — free-text notes (blank by default)
-
-    The function also reads previous assignment rows from the
-    .history/assignments/open_items.json file (written by
-    save_open_assignments) to carry forward Days_Open and Due_Date.
     """
+
     if errors_df is None or errors_df.empty:
         return errors_df
+
+    # ✅ AUTO-LOAD ROLES (PATCH)
+    if roles_df is None:
+        try:
+            from rolesviews_data import get_rolesviews_bytesio
+            from utils.fast_loader import load_xlsx_fast
+
+            _rv = load_xlsx_fast(get_rolesviews_bytesio(), sheet_name=None)
+            roles_df = _rv.get("Roles")
+        except Exception:
+            roles_df = None
 
     master    = _load_master()
     today_str = run_date or datetime.now().strftime("%Y-%m-%d")
     today     = datetime.strptime(today_str, "%Y-%m-%d")
 
-    # Load previously open items for carry-forward
+    field_to_role = _build_field_to_role_map(roles_df)
+
+    # Load history
     open_path = os.path.join(".history", "assignments", "open_items.json")
     open_map: dict[tuple, dict] = {}
+
     if os.path.exists(open_path):
         try:
             with open(open_path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
-            # key: "Material||Plant||Field" → dict with due_date, notes, first_seen
             for k, v in raw.items():
                 parts = k.split("||")
                 if len(parts) == 3:
@@ -7233,27 +7357,35 @@ def merge_assignments(errors_df: pd.DataFrame,
 
     df = errors_df.copy()
 
-    owners, teams, statuses, days_open_list, due_dates, notes_list = [], [], [], [], [], []
+    owners, teams, statuses, days_open_list, notes_list, levels = [], [], [], [], [], []
 
     for _, row in df.iterrows():
-        field    = str(row.get("Field",    "")).strip()
-        plant    = str(row.get("Plant",    "")).strip().upper()
+        field    = str(row.get("Field", "")).strip()
+        plant    = str(row.get("Plant", "")).strip().upper()
         material = str(row.get("Material", "")).strip()
 
-        owner = get_owner(field, plant, master=master)
-        team  = ""
-        if owner:
-            # Get team from master
-            override = master.get("plant_overrides", {}).get(plant, {}).get(field, {})
-            default  = master.get("field_assignments", {}).get(field, {})
-            team = (override if isinstance(override, dict) and override.get("owner") == owner
-                    else default).get("team", "")
+        assignment = _get_assignment_info(field, plant, master=master)
 
-        # Carry-forward from previous open items
+        owner = assignment["owner"]
+        team  = assignment["team"]
+        level = assignment["level"]
+
+        # ✅ FINAL TEAM LOGIC
+        assignment_team = (team or "").strip()
+        role_team       = (field_to_role.get(field, "") or "").strip()
+
+        if assignment_team:
+            final_team = assignment_team
+        elif role_team:
+            final_team = role_team
+        else:
+            final_team = ""
+
+        # Carry forward
         item_key = (material, plant, field)
         prev     = open_map.get(item_key, {})
-        due_str  = prev.get("due_date", "")
-        notes    = prev.get("notes", "")
+
+        notes = prev.get("notes", "")
         first_seen_str = prev.get("first_seen", today_str)
 
         try:
@@ -7262,30 +7394,29 @@ def merge_assignments(errors_df: pd.DataFrame,
         except Exception:
             d_open = 0
 
-        # Status
+        OVERDUE_DAYS = 7
+
         if not owner:
             status = "Unassigned"
-        elif due_str:
-            try:
-                due_dt = datetime.strptime(due_str, "%Y-%m-%d")
-                status = "Overdue" if today > due_dt else "Open"
-            except Exception:
-                status = "Open"
+        elif d_open == 0:
+            status = "New"
+        elif d_open > OVERDUE_DAYS:
+            status = "Overdue"
         else:
-            status = "New" if d_open == 0 else "Open"
+            status = "Open"
 
         owners.append(owner)
-        teams.append(team)
+        teams.append(final_team)
         statuses.append(status)
         days_open_list.append(d_open)
-        due_dates.append(due_str)
         notes_list.append(notes)
+        levels.append(level)
 
     df["Owner"]     = owners
     df["Team"]      = teams
+    df["Level"]     = levels
     df["Status"]    = statuses
     df["Days_Open"] = days_open_list
-    df["Due_Date"]  = due_dates
     df["Notes"]     = notes_list
 
     return df
@@ -7298,6 +7429,7 @@ def save_open_assignments(enriched_df: pd.DataFrame) -> None:
 
     Only saves rows that have an Owner (assigned items).
     Preserves first_seen date from existing entries.
+    Saves: owner, team, status, days_open, notes, first_seen, last_seen
     """
     open_path = os.path.join(".history", "assignments", "open_items.json")
     os.makedirs(os.path.dirname(open_path), exist_ok=True)
@@ -7327,7 +7459,6 @@ def save_open_assignments(enriched_df: pd.DataFrame) -> None:
         updated[key] = {
             "owner":      owner,
             "team":       str(row.get("Team",     "")).strip(),
-            "due_date":   str(row.get("Due_Date",  "")).strip(),
             "notes":      str(row.get("Notes",     "")).strip(),
             "status":     str(row.get("Status",    "")).strip(),
             "days_open":  int(row.get("Days_Open", 0)),
@@ -7348,11 +7479,11 @@ def build_assignments_sheet(enriched_df: pd.DataFrame) -> pd.DataFrame:
     """
     Builds the Assignments sheet DataFrame for Excel export.
     Columns: Material | Plant | Field | Error | Owner | Team |
-             Status | Days_Open | Due_Date | Notes
+             Level | Status | Days_Open | Notes
     Sorted: Overdue first, then Open, then New, then Unassigned.
     """
     cols = ["Material", "Plant", "Field", "Error",
-            "Owner", "Team", "Status", "Days_Open", "Due_Date", "Notes"]
+            "Owner", "Team", "Level", "Status", "Days_Open", "Notes"]
 
     present = [c for c in cols if c in enriched_df.columns]
     df = enriched_df[present].copy()
@@ -7372,16 +7503,16 @@ def build_assignments_sheet(enriched_df: pd.DataFrame) -> pd.DataFrame:
 def style_assignments_sheet(ws, df: pd.DataFrame) -> None:
     """
     Applies colour-coding to the Assignments sheet in an openpyxl workbook.
-    Overdue = red, Open = orange, New = blue, Unassigned = grey.
+    Open = orange, New = blue, Unassigned = grey.
     """
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 
     STATUS_FILLS = {
-        "Overdue":    PatternFill(start_color="FFD7D7", fill_type="solid"),
-        "Open":       PatternFill(start_color="FFE5B4", fill_type="solid"),
-        "New":        PatternFill(start_color="DBEAFE", fill_type="solid"),
-        "Unassigned": PatternFill(start_color="F3F4F6", fill_type="solid"),
+        "Overdue":    PatternFill(start_color="FECACA", fill_type="solid"),  # 🔴
+        "Open":       PatternFill(start_color="FFE5B4", fill_type="solid"),  # 🟠
+        "New":        PatternFill(start_color="DBEAFE", fill_type="solid"),  # 🔵
+        "Unassigned": PatternFill(start_color="F3F4F6", fill_type="solid"),  # ⚪
     }
     header_fill  = PatternFill(start_color="1F4E79", fill_type="solid")
     header_font  = Font(bold=True, color="FFFFFF")
@@ -7421,6 +7552,444 @@ def style_assignments_sheet(ws, df: pd.DataFrame) -> None:
         ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 3, 50)
 
 
+# =============================================================================
+# ERROR HISTORY & TREND TRACKING
+# =============================================================================
+
+_ERROR_HISTORY_PATH = os.path.join(".history", "assignments", "error_history.json")
+
+
+def _load_error_history() -> dict:
+    """Load error history file. Returns empty dict if missing."""
+    if not os.path.exists(_ERROR_HISTORY_PATH):
+        return {}
+    try:
+        with open(_ERROR_HISTORY_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_error_history(history: dict) -> None:
+    """Persist error history file atomically."""
+    os.makedirs(os.path.dirname(_ERROR_HISTORY_PATH), exist_ok=True)
+    tmp = _ERROR_HISTORY_PATH + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, _ERROR_HISTORY_PATH)
+    except Exception:
+        pass
+
+
+def track_error_count(errors_df: pd.DataFrame, run_date: str | None = None) -> None:
+    """
+    Records error count for each (Material, Plant, Field) combination.
+    Determines status: "appeared" | "improving" | "stable" | "worsening" | "resolved" | "recurring"
+    
+    Should be called at end of validation run, BEFORE save_open_assignments().
+    
+    Args:
+        errors_df: Enriched errors DataFrame with Material, Plant, Field columns
+        run_date: ISO date string; defaults to today
+    """
+    if errors_df is None or errors_df.empty:
+        return
+    
+    today_str = run_date or datetime.now().strftime("%Y-%m-%d")
+    history = _load_error_history()
+    
+    # Count errors per (Material, Plant, Field)
+    error_counts = {}
+    for _, row in errors_df.iterrows():
+        material = str(row.get("Material", "")).strip()
+        plant = str(row.get("Plant", "")).strip().upper()
+        field = str(row.get("Field", "")).strip()
+        key = f"{material}||{plant}||{field}"
+        error_counts[key] = error_counts.get(key, 0) + 1
+    
+    # Update history
+    for key, current_count in error_counts.items():
+        if key not in history:
+            history[key] = {"runs": []}
+        
+        runs = history[key]["runs"]
+        
+        # Determine status
+        if not runs:
+            status = "appeared"
+        else:
+            last_run = runs[-1]
+            prev_count = last_run.get("error_count", 0)
+            
+            if prev_count == 0:
+                status = "recurring"
+            elif current_count < prev_count:
+                status = "improving"
+            elif current_count > prev_count:
+                status = "worsening"
+            else:
+                status = "stable"
+        
+        # Add run record (avoid duplicates on same date)
+        if not runs or runs[-1].get("date") != today_str:
+            runs.append({
+                "date": today_str,
+                "error_count": current_count,
+                "status": status
+            })
+    
+    # Remove keys that no longer have errors (they were resolved)
+    for key in list(history.keys()):
+        if key not in error_counts:
+            # This field had errors before, but doesn't now
+            runs = history[key]["runs"]
+            if runs and runs[-1].get("error_count", 0) > 0:
+                # Last run had errors; this run has none
+                if not runs or runs[-1].get("date") != today_str:
+                    runs.append({
+                        "date": today_str,
+                        "error_count": 0,
+                        "status": "resolved"
+                    })
+    
+    _save_error_history(history)
+
+
+def get_error_trend(material: str, plant: str, field: str) -> dict:
+    """
+    Returns trend analysis for a specific (Material, Plant, Field).
+    
+    Returns dict with:
+    - first_seen: ISO date of first error
+    - last_seen: ISO date of last event
+    - current_count: Current error count (0 if resolved)
+    - peak_count: Highest count ever recorded
+    - status: Current status (appeared/improving/stable/worsening/resolved/recurring)
+    - trend: "improving" | "worsening" | "stable" | "volatile"
+    - resolution_rate: Percentage solved from peak
+    - history: List of all runs
+    """
+    history = _load_error_history()
+    key = f"{material}||{plant}||{field}"
+    
+    if key not in history:
+        return {
+            "material": material,
+            "plant": plant,
+            "field": field,
+            "first_seen": None,
+            "last_seen": None,
+            "current_count": 0,
+            "peak_count": 0,
+            "status": "never_tracked",
+            "trend": "n/a",
+            "resolution_rate": "0%",
+            "history": []
+        }
+    
+    runs = history[key]["runs"]
+    if not runs:
+        return {
+            "material": material,
+            "plant": plant,
+            "field": field,
+            "first_seen": None,
+            "last_seen": None,
+            "current_count": 0,
+            "peak_count": 0,
+            "status": "never_tracked",
+            "trend": "n/a",
+            "resolution_rate": "0%",
+            "history": []
+        }
+    
+    # Calculate metrics
+    first_seen = runs[0]["date"]
+    last_seen = runs[-1]["date"]
+    current_count = runs[-1]["error_count"]
+    peak_count = max(r["error_count"] for r in runs)
+    status = runs[-1]["status"]
+    
+    # Determine trend
+    if len(runs) < 2:
+        trend = "stable"
+    else:
+        recent = runs[-3:] if len(runs) >= 3 else runs
+        counts = [r["error_count"] for r in recent]
+        if counts[-1] < counts[0]:
+            trend = "improving"
+        elif counts[-1] > counts[0]:
+            trend = "worsening"
+        else:
+            trend = "stable"
+        
+        # Check for volatile (up/down/up or similar)
+        if len(counts) >= 3:
+            diffs = [counts[i+1] - counts[i] for i in range(len(counts)-1)]
+            if any(d > 0 for d in diffs) and any(d < 0 for d in diffs):
+                trend = "volatile"
+    
+    # Resolution rate
+    if peak_count > 0:
+        resolution_rate = f"{int(100 * (peak_count - current_count) / peak_count)}%"
+    else:
+        resolution_rate = "0%"
+    
+    return {
+        "material": material,
+        "plant": plant,
+        "field": field,
+        "first_seen": first_seen,
+        "last_seen": last_seen,
+        "current_count": current_count,
+        "peak_count": peak_count,
+        "status": status,
+        "trend": trend,
+        "resolution_rate": resolution_rate,
+        "history": runs
+    }
+
+
+def get_owner_metrics(owner: str) -> dict:
+    """
+    Returns aggregated metrics for all fields assigned to an owner.
+    """
+
+    if not owner or not owner.strip():
+        return {}
+
+    master = _load_master()
+    history = _load_error_history()
+
+    # ─────────────────────────────────────────────
+    # FIND ALL ASSIGNED FIELDS
+    # ─────────────────────────────────────────────
+    assigned_fields = set()
+
+    for field, info in master.get("field_assignments", {}).items():
+        if info.get("owner") == owner:
+            assigned_fields.add((field, ""))
+
+    for plant, fields in master.get("plant_overrides", {}).items():
+        for field, info in fields.items():
+            if info.get("owner") == owner:
+                assigned_fields.add((field, plant))
+
+    # ─────────────────────────────────────────────
+    # METRICS
+    # ─────────────────────────────────────────────
+    by_field = []
+    total_active = 0
+
+    improving = worsening = stable = resolved = recurring = 0
+
+    # ✅ PATCH — evitar duplicação
+    seen_keys = set()
+
+    for field, plant in assigned_fields:
+
+        for key, hist_data in history.items():
+
+            if key in seen_keys:
+                continue
+
+            parts = key.split("||")
+            if len(parts) != 3:
+                continue
+
+            hist_material, hist_plant, hist_field = parts
+
+            # Match field e plant
+            if hist_field != field:
+                continue
+
+            if plant and hist_plant != plant:
+                continue
+
+            runs = hist_data.get("runs", [])
+            if not runs:
+                continue
+
+            seen_keys.add(key)
+
+            last_run = runs[-1]
+            current_count = int(last_run.get("error_count", 0))
+            status = last_run.get("status", "")
+
+            # ✅ agregação
+            total_active += current_count
+
+            if status == "improving":
+                improving += 1
+            elif status == "worsening":
+                worsening += 1
+            elif status == "stable":
+                stable += 1
+            elif status == "resolved":
+                resolved += 1
+            elif status == "recurring":
+                recurring += 1
+
+            by_field.append({
+                "field": hist_field,
+                "material": hist_material,
+                "plant": hist_plant,
+                "current_count": current_count,
+                "peak_count": max(r.get("error_count", 0) for r in runs),
+                "status": status,
+                "first_seen": runs[0].get("date") if runs else None,
+                "last_seen": runs[-1].get("date") if runs else None,
+            })
+
+    # ─────────────────────────────────────────────
+    # OUTPUT
+    # ─────────────────────────────────────────────
+    return {
+        "owner": owner,
+        "total_active_errors": total_active,
+        "fields_count": len(assigned_fields),
+        "improving": improving,
+        "worsening": worsening,
+        "stable": stable,
+        "resolved": resolved,
+        "recurring": recurring,
+        "by_field": sorted(by_field, key=lambda x: -x["current_count"])
+    }
+
+def get_error_summary_df(run_date: str | None = None) -> pd.DataFrame:
+    """
+    Returns a summary DataFrame of all tracked errors with trend info.
+    Useful for dashboards.
+    
+    Columns: Material | Plant | Field | Current | Peak | Status | Trend | 
+             First_Seen | Last_Seen | Days_Today
+    """
+    history = _load_error_history()
+    today_str = run_date or datetime.now().strftime("%Y-%m-%d")
+    today = datetime.strptime(today_str, "%Y-%m-%d")
+    
+    rows = []
+    for key, hist_data in history.items():
+        parts = key.split("||")
+        if len(parts) == 3:
+            material, plant, field = parts
+            runs = hist_data.get("runs", [])
+            if runs:
+                last_run = runs[-1]
+                first_run = runs[0]
+                peak_count = max(r["error_count"] for r in runs)
+                
+                try:
+                    days_active = (today - datetime.strptime(first_run["date"], "%Y-%m-%d")).days
+                except Exception:
+                    days_active = 0
+                
+                # Determine trend
+                if len(runs) < 2:
+                    trend = "stable"
+                else:
+                    recent = runs[-3:] if len(runs) >= 3 else runs
+                    counts = [r["error_count"] for r in recent]
+                    if counts[-1] < counts[0]:
+                        trend = "improving"
+                    elif counts[-1] > counts[0]:
+                        trend = "worsening"
+                    else:
+                        trend = "stable"
+                
+                rows.append({
+                    "Material": material,
+                    "Plant": plant,
+                    "Field": field,
+                    "Current_Count": last_run["error_count"],
+                    "Peak_Count": peak_count,
+                    "Status": last_run["status"],
+                    "Trend": trend,
+                    "First_Seen": first_run["date"],
+                    "Last_Seen": last_run["date"],
+                    "Days_Active": days_active
+                })
+    
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+def build_owner_dashboard_df(enriched_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Builds a dashboard-ready DataFrame with aggregated metrics per owner.
+    
+    Requires enriched_df from merge_assignments().
+    
+    Output columns:
+    Owner | Active_Errors | Fields | Improving | Worsening | Stable |
+    Overdue | Priority | Score
+    """
+
+    if enriched_df is None or enriched_df.empty:
+        return pd.DataFrame()
+
+    if "Owner" not in enriched_df.columns:
+        return pd.DataFrame()
+
+    owners = sorted([o for o in enriched_df["Owner"].dropna().unique() if str(o).strip()])
+
+    rows = []
+
+    for owner in owners:
+
+        # 👉 usa a tua função robusta
+        metrics = get_owner_metrics(owner)
+
+        if not metrics:
+            continue
+
+        total = metrics.get("total_active_errors", 0)
+        improving = metrics.get("improving", 0)
+        worsening = metrics.get("worsening", 0)
+        stable = metrics.get("stable", 0)
+
+        # ✅ OVERDUE EXTRAÍDO DO DF (mais preciso)
+        owner_df = enriched_df[enriched_df["Owner"] == owner]
+        overdue = int((owner_df["Status"] == "Overdue").sum()) if "Status" in owner_df.columns else 0
+
+        fields = metrics.get("fields_count", 0)
+
+        # ✅ SCORING (simples e eficaz)
+        score = (
+            total
+            + (worsening * 20)
+            + (overdue * 30)
+            - (improving * 10)
+        )
+
+        # ✅ PRIORIDADE
+        if overdue > 5 or (worsening >= 3 and total > 100):
+            priority = "🔴 High"
+        elif overdue > 0 or total > 50:
+            priority = "🟠 Medium"
+        else:
+            priority = "🟢 Low"
+
+        rows.append({
+            "Owner": owner,
+            "Active_Errors": total,
+            "Fields": fields,
+            "Improving": improving,
+            "Worsening": worsening,
+            "Stable": stable,
+            "Overdue": overdue,
+            "Score": score,
+            "Priority": priority,
+        })
+
+    df = pd.DataFrame(rows)
+
+    if df.empty:
+        return df
+
+    # ✅ ordenação (mais crítico primeiro)
+    df = df.sort_values(["Score", "Active_Errors"], ascending=[False, False])
+
+    return df.reset_index(drop=True)
 
 # =============================================================================
 # SSA VALIDATION ENGINE

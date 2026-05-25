@@ -99,6 +99,9 @@ from sap_validation_engine import (
     validar_item_category_group,
     validar_enterproj_number,
     validar_purchasing_group_dxx,
+    merge_assignments,
+    build_assignments_sheet,
+    save_open_assignments,
     # New functions added to Palmela engine
     validar_costing_lot_size,
     validar_safety_time_marc,
@@ -329,6 +332,33 @@ def _pt_map_from_zplm(zplm_marc_df):
         for _, r in z.iterrows()
     }
 
+def _filter_valid_material_types(df, mara_df):
+    """
+    Keep only materials with Material Type in {'FERT', 'HALB', 'ROH'}.
+    Uses MARA as source of truth.
+    """
+    if df is None or df.empty:
+        return df
+
+    VALID_MT = {'FERT', 'HALB', 'ROH'}
+
+    mt_map = dict(zip(
+        mara_df['Material'].astype(str).str.strip(),
+        mara_df['Material Type'].astype(str).str.strip().str.upper()
+    ))
+
+    df = df.copy()
+    df['_MT'] = df['Material'].astype(str).str.strip().map(mt_map)
+
+    # fallback (defensivo)
+    if 'Material Type' in df.columns:
+        df['_MT'] = df['_MT'].fillna(
+            df['Material Type'].astype(str).str.strip().str.upper()
+        )
+
+    df = df[df['_MT'].isin(VALID_MT)]
+
+    return df.drop(columns=['_MT'], errors='ignore')
 
 # =============================================================================
 # STEP 2 — TN-specific replacement functions
@@ -1283,7 +1313,7 @@ def tn_validar_advanced_planning_fields(marc_df, mara_df, resultados):
                                'Error': "Invalid value: should be '4'",
                                'Material': mat, 'Plant': plant})
         if req != '20':
-            resultados.append({'Line': idx + 2, 'Field': 'Requirement Strategy',
+            resultados.append({'Line': idx + 2, 'Field': 'Proposed Strategy',
                                'Error': "Invalid value: should be '20'",
                                'Material': mat, 'Plant': plant})
 
@@ -1435,15 +1465,33 @@ def run_tn_validation(
 
         return out
 
-    mara_df = _filter_to_tn_materials(mara_df)
-    marm_df = _filter_to_tn_materials(marm_df)
-    mbew_df = _filter_to_tn_materials(mbew_df)
+    # mara_df is material-level (no Plant column) — do NOT filter by tn_materials.
+    # Filtering it would exclude materials that exist in MARA but have no TN marc
+    # entry yet, causing MARA-based validations to silently miss them.
+    # Plant-level tables are filtered normally.
+    marm_df      = _filter_to_tn_materials(marm_df)
+    mbew_df      = _filter_to_tn_materials(mbew_df)
     zplm_mara_df = _filter_to_tn_materials(zplm_mara_df)
-    mvke_df = _filter_to_tn_materials(mvke_df)
+    mvke_df      = _filter_to_tn_materials(mvke_df)
 
     # ── 3. Build sap_like_df ──────────────────────────────────────────────────
     _cb(18, "Building SAP-like dataframe from MARC + MARA + ZPLM MARC...")
     sap_like_df = build_sap_like_df(marc_tn, mara_df, zplm_marc_tn)
+
+    # ✅ GLOBAL FILTER — ONLY FERT / HALB / ROH
+    sap_like_df = _filter_valid_material_types(sap_like_df, mara_df)
+
+    # aplicar também às tabelas usadas em validações diretas
+    marc_tn = _filter_valid_material_types(marc_tn, mara_df)
+
+    if mvke_df is not None:
+        mvke_df = _filter_valid_material_types(mvke_df, mara_df)
+
+    if marm_df is not None:
+        marm_df = _filter_valid_material_types(marm_df, mara_df)
+
+    if mbew_df is not None:
+        mbew_df = _filter_valid_material_types(mbew_df, mara_df)
 
     if mbew_df is not None and not mbew_df.empty:
         mbew_cols = [c for c in [
@@ -1747,6 +1795,17 @@ def run_tn_validation(
         # ------------------------------------------------------------
         for view_code, df_view in view_tabs_dict.items():
             df_view.to_excel(writer, sheet_name=f'Missing_{view_code}'[:31], index=False)
+
+        # ------------------------------------------------------------
+        # ✅ Assignments sheet — enriched with owner/status from master.json
+        # ------------------------------------------------------------
+        try:
+            _enriched = merge_assignments(errors_df)
+            _asgn_df  = build_assignments_sheet(_enriched)
+            _asgn_df.to_excel(writer, sheet_name='Assignments', index=False)
+            save_open_assignments(_enriched)
+        except Exception:
+            pass
 
         marc_tn.to_excel(writer, sheet_name='Original Data (MARC)', index=False)
 

@@ -1,0 +1,40 @@
+{
+  "run_type": "SAP_VALIDATION",
+  "timestamp": "2026-05-20T15:55:05",
+  "user": "RPITA",
+  "plant_filter": "PT",
+  "metrics": {
+    "total_errors": 6679,
+    "fields_with_error": 22,
+    "materials_with_error": 3921
+  },
+  "files": {
+    "sap": "Item Browse Report.xlsx",
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "mvke": "MVKE.xlsx"
+  },
+  "top_fields": [
+    {
+      "Field": "Source List Required",
+      "Adjusted Nº of Errors": 1693
+    },
+    {
+      "Field": "Advanced Planning",
+      "Adjusted Nº of Errors": 1504
+    },
+    {
+      "Field": "Batch Management Required Ind.",
+      "Adjusted Nº of Errors": 1126
+    },
+    {
+      "Field": "MRP Controller",
+      "Adjusted Nº of Errors": 756
+    },
+    {
+      "Field": "Heuristic",
+      "Adjusted Nº of Errors": 394
+    }
+  ],
+  "report_path": "C:\\Users\\RPITA\\OneDrive - Visteon\\Desktop\\Rodrigo\\PLM_Web\\reports\\sap\\2026-05\\20260520_155505_SAP_Validation_PT.xlsx"
+}
