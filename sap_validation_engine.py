@@ -5629,8 +5629,9 @@ def validar_advanced_planning_fields(
     col_heur = _pick(marc_df, ['Heuristic'])
     col_pp   = _pick(marc_df, ['PP Plng Procedure'])
     col_req  = _pick(marc_df, ['Requirement Strategy'])
+    col_psms = _pick(marc_df, ['Plant-Specific Material Status', 'Plant Specific Material Status'])
 
-    if any(c is None for c in [col_adv, col_heur, col_pp, col_req]):
+    if any(c is None for c in [col_adv, col_heur, col_pp, col_req, col_psms]):
         return
 
     if not {'Material', 'Material Type'}.issubset(mara_df.columns):
@@ -5681,8 +5682,33 @@ def validar_advanced_planning_fields(
         heur    = _s(row.get(col_heur))
         pp      = normalize_code(row.get(col_pp), as_int=True)
         req     = normalize_code(row.get(col_req), as_int=True)
+        psms    = normalize_code(row.get(col_psms), as_int=True)
 
         planning_status = matplsta_map.get((material, plant))
+
+        # --------------------------------------------------------
+        # ✅ PSMS 25 / 75 (PRIORIDADE MÁXIMA)
+        # --------------------------------------------------------
+        if psms in {'25', '75'}:
+
+            # AP OFF → OK
+            if is_false(adv_raw):
+                pass
+
+            # AP ON → só permitido com status 9
+            elif is_true(adv_raw) and planning_status == '9':
+                pass
+
+            # Caso contrário → erro
+            else:
+                resultados.append({
+                    'Line': idx + 2,
+                    'Field': 'Advanced Planning',
+                    'Error': "PSMS 25/75: must be OFF or only allowed with Planning Status 9",
+                    'Material': material,
+                    'Plant': plant,
+                })
+                continue
 
         # --------------------------------------------------------
         # ✅ STATUS 1 RESTRICTIONS
@@ -5702,18 +5728,12 @@ def validar_advanced_planning_fields(
         # --------------------------------------------------------
         # ✅ STATUS 9 RULES
         # --------------------------------------------------------
-
-        # ✅ ROH → IGNORE
         if mt == 'ROH' and planning_status == '9':
             continue
 
-        # ✅ HALB PT01 → IGNORE only if AP TRUE
         if mt == 'HALB' and plant == 'PT01' and planning_status == '9' and is_true(adv_raw):
             continue
 
-        # ❌ FERT + status 9 → error
-        # ❌ HALB PT02 + status 9 → error
-        # ❌ HALB PT01 without AP TRUE → error
         if mt in {'FERT', 'HALB'} and planning_status == '9':
             resultados.append({
                 'Line': idx + 2,
@@ -5777,6 +5797,7 @@ def validar_advanced_planning_fields(
                 'Material': material,
                 'Plant': plant,
             })
+
 
 # -----------------------------------------------------------------------------
 # run_mrp_validation — kept for backward compatibility only.

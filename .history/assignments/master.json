@@ -14,6 +14,21 @@
       "owner": "João Santos",
       "team": "DTS : New Model/ECN Analyst | PTP : Release & Follow Up Analyst | OTC : Customer Service",
       "since": "2026-05-25"
+    },
+    "MRP Type": {
+      "owner": "Hugo Mariano",
+      "team": "DTS : New Model/ECN Analyst | PTP : Release & Follow Up Analyst | OTC : Customer Service",
+      "since": "2026-05-26"
+    },
+    "Gross Weight": {
+      "owner": "Filipa Loja",
+      "team": "DTS : New Model/ECN Analyst | PTP : Release & Follow Up Analyst | OTC : Customer Service | EWM : Packaging Analyst",
+      "since": "2026-05-26"
+    },
+    "Net Weight": {
+      "owner": "Filipa Loja",
+      "team": "DTS : New Model/ECN Analyst | PTP : Release & Follow Up Analyst | OTC : Customer Service | EWM : Packaging Analyst",
+      "since": "2026-05-26"
     }
   },
   "plant_overrides": {},
