@@ -1481,92 +1481,195 @@ def validar_purchasing_group(df, resultados):
                                'Plant':    str(row.get('Plant', '')).strip()})
 
 
-def validar_repetitive_manufacturing(df, resultados):
+def validar_repetitive_manufacturing(marc_df, zplm_marc_df, mara_df, resultados):
     """
-    Repetitive Manufacturing Allow rules by Material Type and Plant Type:
-    - ROH + MP/FP -> Yes; ROH + other -> No
-    - HALB + PP   -> must not be Yes; HALB + other -> Yes
-    - FERT + PP   -> must not be Yes; FERT + other -> Yes
+    Repetitive Manufacturing rules by Material Plant Type (from ZPLM MARC),
+    only for materials with Material Type in MARA = FERT/HALB/ROH:
+    - PP    -> field must be empty
+    - MP/FP -> field must be 'X'
     """
-    if 'Material Type' not in df.columns or 'Indicator: Repetitive Manufa. Allow' not in df.columns or 'Plant Type' not in df.columns:
-        print("⚠️ Required columns not found.")
+    required_marc = {'Material', 'Plant', 'Repetitive Manufacturing'}
+    required_mara = {'Material', 'Material Type'}
+
+    if not required_marc.issubset(marc_df.columns):
+        print("⚠️ Required columns not found in MARC.")
         return
 
-    for idx, row in df.iterrows():
-        erros = []
-        mt    = str(row['Material Type']).strip()
-        pt    = str(row['Plant Type']).strip()
-        repet = '' if pd.isna(row['Indicator: Repetitive Manufa. Allow']) else str(row['Indicator: Repetitive Manufa. Allow']).strip()
+    if mara_df is None or mara_df.empty or not required_mara.issubset(mara_df.columns):
+        print("⚠️ Required columns not found in MARA.")
+        return
 
-        if repet == '':
-            erros.append('Mandatory field blank')
+    if zplm_marc_df is None or zplm_marc_df.empty:
+        print("⚠️ ZPLM MARC dataframe not provided or empty.")
+        return
+
+    # Mapa Material -> Material Type (MARA)
+    mt_map = (
+        mara_df[['Material', 'Material Type']]
+        .dropna(subset=['Material'])
+        .assign(
+            Material=lambda d: d['Material'].astype(str).str.strip(),
+            Material_Type=lambda d: d['Material Type'].astype(str).str.strip().str.upper()
+        )
+        .set_index('Material')['Material_Type']
+        .to_dict()
+    )
+
+    zplm = zplm_marc_df.copy()
+    zplm.columns = [str(c).strip() for c in zplm.columns]
+
+    material_col = next((c for c in ['Material', 'Material Number'] if c in zplm.columns), None)
+    plant_col    = next((c for c in ['Plant', 'Plant Code'] if c in zplm.columns), None)
+    mpt_col      = next((c for c in ['Material Plant Type'] if c in zplm.columns), None)
+
+    if not material_col or not plant_col or not mpt_col:
+        print("⚠️ Required columns not found in ZPLM MARC.")
+        return
+
+    # mapa (Material, Plant) -> Material Plant Type
+    zplm['__MAT__'] = zplm[material_col].fillna('').astype(str).str.strip()
+    zplm['__PLANT__'] = zplm[plant_col].fillna('').astype(str).str.strip()
+    zplm['__MPT__'] = zplm[mpt_col].fillna('').astype(str).str.strip().str.upper()
+
+    mpt_map = (
+        zplm.drop_duplicates(subset=['__MAT__', '__PLANT__'], keep='last')
+            .set_index(['__MAT__', '__PLANT__'])['__MPT__']
+            .to_dict()
+    )
+
+    for idx, row in marc_df.iterrows():
+        erros = []
+
+        material = str(row.get('Material', '')).strip()
+        plant    = str(row.get('Plant', '')).strip()
+
+        # só valida FERT/HALB/ROH
+        mt = mt_map.get(material, '')
+        if mt not in {'FERT', 'HALB', 'ROH'}:
+            continue
+
+        mpt = mpt_map.get((material, plant), '')
+        repet = '' if pd.isna(row.get('Repetitive Manufacturing')) else str(row.get('Repetitive Manufacturing')).strip()
+
+        if not mpt:
+            erros.append(f"Material Plant Type not found in ZPLM MARC for Material '{material}' / Plant '{plant}'")
         else:
-            if mt == 'ROH':
-                if pt in ['MP', 'FP'] and repet != '1':
-                    erros.append(f"For ROH with Plant Type '{pt}', should be 'Yes' (Current: '{repet}')")
-                elif pt not in ['MP', 'FP', ''] and repet != '0':
-                    erros.append(f"For ROH with Plant Type '{pt}', should be 'No' (Current: '{repet}')")
-            elif mt == 'HALB':
-                if pt == 'PP' and repet == '1':
-                    erros.append("For HALB with Plant Type 'PP', shouldn't be 'Yes'")
-                elif pt not in ['PP', ''] and repet != '1':
-                    erros.append(f"For HALB with Plant Type '{pt}', should be 'Yes' (Current: '{repet}')")
-            elif mt == 'FERT':
-                if pt == 'PP' and repet == '1':
-                    erros.append("For FERT with Plant Type 'PP', shouldn't be 'Yes'")
-                elif pt not in ['PP', ''] and repet != '1':
-                    erros.append(f"For FERT with Plant Type '{pt}', should be 'Yes' (Current: '{repet}')")
+            if mpt == 'PP':
+                if repet != '':
+                    erros.append(
+                        f"For Material Plant Type 'PP', field 'Repetitive Manufacturing' must be empty "
+                        f"(Current: '{repet}')"
+                    )
+            elif mpt in ['MP', 'FP']:
+                if repet != 'X':
+                    erros.append(
+                        f"For Material Plant Type '{mpt}', field 'Repetitive Manufacturing' should be 'X' "
+                        f"(Current: '{repet}')"
+                    )
 
-        if erros:
-            resultados.append({'Line': idx + 2, 'Field': 'Indicator: Repetitive Manufa. Allow',
-                               'Error': ' \n '.join(erros),
-                               'Material': str(row.get('Material', '')).strip(),
-                               'Plant':    str(row.get('Plant', '')).strip()})
-
-
-def validar_repetitive_manufacturing_profile(df, resultados):
-    """FERT and HALB -> 'Z002'; ROH -> must NOT be 'Z002' (except MP/FP plants)."""
-
-    required_cols = {'Material Type', 'Repetitive Manufacturing Profile'}
-    if not required_cols.issubset(df.columns):
-        print("⚠️ Required columns not found.")
-        return
-
-    for idx, row in df.iterrows():
-        erros = []
-
-        mt  = str(row['Material Type']).strip()
-        val = str(row['Repetitive Manufacturing Profile']).strip()
-
-        # 👇 NOVO: Plant Type
-        plant_type = str(row.get('Plant Type', '')).strip().upper()
-
-        # --------------------------------------------------------
-        # ✅ FERT / HALB
-        # --------------------------------------------------------
-        if mt in ['FERT', 'HALB']:
-            if pd.isna(row['Repetitive Manufacturing Profile']) or val == '':
-                erros.append("Mandatory field blank For Material Type FERT or HALB")
-            elif val != 'Z002':
-                erros.append(f"Invalid value: '{val}' (should be 'Z002' For FERT or HALB)")
-
-        # --------------------------------------------------------
-        # ✅ ROH (EXCEPTION MP/FP)
-        # --------------------------------------------------------
-        if mt == 'ROH':
-            if val == 'Z002' and plant_type not in {'MP', 'FP'}:
-                erros.append("Material Type ROH cannot have value 'Z002'")
-
-        # --------------------------------------------------------
         if erros:
             resultados.append({
                 'Line': idx + 2,
-                'Field': 'Repetitive Manufacturing Profile',
-                'Error': ' | '.join(erros),
-                'Material': str(row.get('Material', '')).strip(),
-                'Plant':    str(row.get('Plant', '')).strip()
+                'Field': 'Repetitive Manufacturing',
+                'Error': ' \n '.join(erros),
+                'Material': material,
+                'Plant': plant
             })
 
+def validar_rem_profile(marc_df, zplm_marc_df, mara_df, resultados):
+    """
+    REM Profile rules by Material Plant Type (from ZPLM MARC),
+    only for materials with Material Type in MARA = FERT/HALB/ROH:
+    - PP    -> field must be empty
+    - MP/FP -> field must be 'Z002'
+    """
+    required_marc = {'Material', 'Plant', 'REM Profile'}
+    required_mara = {'Material', 'Material Type'}
+
+    if not required_marc.issubset(marc_df.columns):
+        print("⚠️ Required columns not found in MARC.")
+        return
+
+    if mara_df is None or mara_df.empty or not required_mara.issubset(mara_df.columns):
+        print("⚠️ Required columns not found in MARA.")
+        return
+
+    if zplm_marc_df is None or zplm_marc_df.empty:
+        print("⚠️ ZPLM MARC dataframe not provided or empty.")
+        return
+
+    # Mapa Material -> Material Type (MARA)
+    mt_map = (
+        mara_df[['Material', 'Material Type']]
+        .dropna(subset=['Material'])
+        .assign(
+            Material=lambda d: d['Material'].astype(str).str.strip(),
+            Material_Type=lambda d: d['Material Type'].astype(str).str.strip().str.upper()
+        )
+        .set_index('Material')['Material_Type']
+        .to_dict()
+    )
+
+    zplm = zplm_marc_df.copy()
+    zplm.columns = [str(c).strip() for c in zplm.columns]
+
+    material_col = next((c for c in ['Material', 'Material Number'] if c in zplm.columns), None)
+    plant_col    = next((c for c in ['Plant', 'Plant Code'] if c in zplm.columns), None)
+    mpt_col      = next((c for c in ['Material Plant Type'] if c in zplm.columns), None)
+
+    if not material_col or not plant_col or not mpt_col:
+        print("⚠️ Required columns not found in ZPLM MARC.")
+        return
+
+    # mapa (Material, Plant) -> Material Plant Type
+    zplm['__MAT__'] = zplm[material_col].fillna('').astype(str).str.strip()
+    zplm['__PLANT__'] = zplm[plant_col].fillna('').astype(str).str.strip()
+    zplm['__MPT__'] = zplm[mpt_col].fillna('').astype(str).str.strip().str.upper()
+
+    mpt_map = (
+        zplm.drop_duplicates(subset=['__MAT__', '__PLANT__'], keep='last')
+            .set_index(['__MAT__', '__PLANT__'])['__MPT__']
+            .to_dict()
+    )
+
+    for idx, row in marc_df.iterrows():
+        erros = []
+
+        material = str(row.get('Material', '')).strip()
+        plant    = str(row.get('Plant', '')).strip()
+
+        # só valida FERT/HALB/ROH
+        mt = mt_map.get(material, '')
+        if mt not in {'FERT', 'HALB', 'ROH'}:
+            continue
+
+        mpt = mpt_map.get((material, plant), '')
+        rem = '' if pd.isna(row.get('REM Profile')) else str(row.get('REM Profile')).strip()
+
+        if not mpt:
+            erros.append(f"Material Plant Type not found in ZPLM MARC for Material '{material}' / Plant '{plant}'")
+        else:
+            if mpt == 'PP':
+                if rem != '':
+                    erros.append(
+                        f"For Material Plant Type 'PP', field 'REM Profile' must be empty "
+                        f"(Current: '{rem}')"
+                    )
+            elif mpt in ['MP', 'FP']:
+                if rem != 'Z002':
+                    erros.append(
+                        f"For Material Plant Type '{mpt}', field 'REM Profile' should be 'Z002' "
+                        f"(Current: '{rem}')"
+                    )
+
+        if erros:
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'REM Profile',
+                'Error': ' \n '.join(erros),
+                'Material': material,
+                'Plant': plant
+            })
 
 def validar_source_list_required_marc(marc_df, mara_df, resultados):
     """
@@ -4421,8 +4524,8 @@ def postprocess_with_views_roles_and_classification(
     # -----------------------------------------------
     field_rules = {
         'Production Scheduling Profile':         lambda mt, pt: mt in ['FERT', 'HALB'],
-        'Repetitive Manufacturing Profile':      lambda mt, pt: mt in ['FERT', 'HALB'],
-        'Indicator: Repetitive Manufa. Allow':   lambda mt, pt: True,
+        'REM Profile':                           lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
+        'Repetitive Manufacturing':              lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
         'Enterproj Number':                      lambda mt, pt: mt == 'FERT',
         'Procurement Type':                      lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'] and pt in ['PP', 'MP'],
         'Account Assignment Group':              lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
@@ -4678,8 +4781,8 @@ def run_full_validation(
         (70, lambda: validar_profit_center(sap_df, resultados)),
         (71, lambda: validar_lifo_fifo_relevant_mbew(mbew_df, mara_df, resultados)),
         (72, lambda: validar_purchasing_group(sap_df, resultados)),
-        (74, lambda: validar_repetitive_manufacturing(sap_df, resultados)),
-        (76, lambda: validar_repetitive_manufacturing_profile(sap_df, resultados)),
+        (74, lambda: validar_repetitive_manufacturing(marc_df, zplm_marc_df, mara_df, resultados)),
+        (76, lambda: validar_rem_profile(marc_df, zplm_marc_df, mara_df, resultados)),
         (78, lambda: validar_source_list_required_marc(marc_df, mara_df, resultados)),
         (80, lambda: validar_storage_location(sap_df, resultados)),
         (82, lambda: validar_valuation_class(sap_df, resultados)),

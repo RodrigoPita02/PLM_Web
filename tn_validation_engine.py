@@ -895,80 +895,82 @@ def tn_validar_purchasing_group(df, resultados):
                 'Plant': plant
             })
 
-
 def tn_validar_repetitive_manufacturing(df, mara_df, resultados):
-    """TN02: must be BLANK. TN01: SAP checkbox logic (X / '')."""
-
-    col = 'Indicator: Repetitive Manufa. Allow'
-    needed = {'Material Type', col, 'Plant Type'}
-
-    if not needed.issubset(df.columns):
+    """
+    TN rule for Repetitive Manufacturing:
+    - Only validates materials with Material Type in MARA = FERT/HALB/ROH
+    - TN02 -> must be blank
+    - TN01 / others:
+        - PP    -> blank
+        - MP/FP -> 'X'
+    Uses the merged sap_like_df (df), which already contains Plant Type.
+    """
+    field_candidates = [
+        'Repetitive Manufacturing',
+        'Indicator: Repetitive Manufa. Allow'
+    ]
+    col = next((c for c in field_candidates if c in df.columns), None)
+    if not col:
         return
 
-    mt_map = _mt_map_from_mara(mara_df)
+    pt_candidates = ['Plant Type', 'Material Plant Type']
+    pt_col = next((c for c in pt_candidates if c in df.columns), None)
+    if not pt_col:
+        return
+
+    if 'Plant' not in df.columns or 'Material' not in df.columns:
+        return
+
+    if mara_df is None or mara_df.empty or 'Material' not in mara_df.columns or 'Material Type' not in mara_df.columns:
+        return
+
+    # Material -> Material Type (MARA)
+    mt_map = (
+        mara_df[['Material', 'Material Type']]
+        .dropna(subset=['Material'])
+        .assign(
+            Material=lambda d: d['Material'].fillna('').astype(str).str.strip(),
+            Material_Type=lambda d: d['Material Type'].fillna('').astype(str).str.strip().str.upper()
+        )
+        .set_index('Material')['Material_Type']
+        .to_dict()
+    )
 
     for idx, row in df.iterrows():
         erros = []
 
         plant = _norm_str(row.get('Plant')).upper()
         mat   = _norm_str(row.get('Material'))
-        mt    = mt_map.get(mat, _norm_str(row.get('Material Type', ''))).upper()
-        pt    = _norm_str(row.get('Plant Type')).upper()
+        pt    = _norm_str(row.get(pt_col)).upper()
+
+        # only validate FERT / HALB / ROH
+        mt = mt_map.get(mat, '')
+        if mt not in {'FERT', 'HALB', 'ROH'}:
+            continue
 
         val_raw = row.get(col)
-        val = str(val_raw).strip().upper() if pd.notna(val_raw) else ''
+        val = _norm_str(val_raw).upper()
 
-        # ✅ Normalização checkbox
+        # Checkbox normalization
         if val in {'X', '1', 'YES'}:
             val_norm = 'X'
         else:
             val_norm = ''
 
-        # 🔴 TN02 rule
         if plant == 'TN02':
             if val_norm != '':
-                erros.append(
-                    f"Must be blank for TN02 (current: '{val}')"
-                )
-
-        # 🟡 TN01 / default logic
+                erros.append(f"Must be blank for TN02 (current: '{val}')")
         else:
-            # ROH
-            if mt == 'ROH':
-                if pt in ('MP', 'FP'):
-                    if val_norm != 'X':
-                        erros.append(
-                            f"For ROH with Plant Type '{pt}', should be 'X' (current: '{val}')"
-                        )
-                elif pt != '':
-                    if val_norm != '':
-                        erros.append(
-                            f"For ROH with Plant Type '{pt}', should be blank (current: '{val}')"
-                        )
-            # HALB
-            elif mt == 'HALB':
-                if pt == 'PP':
-                    if val_norm == 'X':
-                        erros.append(
-                            "For HALB with Plant Type 'PP', shouldn't be 'X'"
-                        )
-                elif pt != '':
-                    if val_norm != 'X':
-                        erros.append(
-                            f"For HALB with Plant Type '{pt}', should be 'X' (current: '{val}')"
-                        )
-            # FERT
-            elif mt == 'FERT':
-                if pt == 'PP':
-                    if val_norm == 'X':
-                        erros.append(
-                            "For FERT with Plant Type 'PP', shouldn't be 'X'"
-                        )
-                elif pt != '':
-                    if val_norm != 'X':
-                        erros.append(
-                            f"For FERT with Plant Type '{pt}', should be 'X' (current: '{val}')"
-                        )
+            if pt == 'PP':
+                if val_norm != '':
+                    erros.append(
+                        f"For Plant Type 'PP', field '{col}' must be blank (current: '{val}')"
+                    )
+            elif pt in {'MP', 'FP'}:
+                if val_norm != 'X':
+                    erros.append(
+                        f"For Plant Type '{pt}', field '{col}' should be 'X' (current: '{val}')"
+                    )
 
         if erros:
             resultados.append({
@@ -980,32 +982,83 @@ def tn_validar_repetitive_manufacturing(df, mara_df, resultados):
             })
 
 def tn_validar_repetitive_manufacturing_profile(df, mara_df, resultados):
-    """TN02: must be BLANK. TN01: FERT/HALB -> 'Z002'; ROH must not be 'Z002'."""
-    col = 'Repetitive Manufacturing Profile'
-    if col not in df.columns:
+    """
+    TN rule for REM Profile:
+    - Only validates materials with Material Type in MARA = FERT/HALB/ROH
+    - TN02 -> must be blank
+    - TN01 / others:
+        - PP    -> blank
+        - MP/FP -> 'Z002'
+    Uses the merged sap_like_df (df), which already contains Plant Type.
+    """
+    field_candidates = [
+        'REM Profile',
+        'Repetitive Manufacturing Profile'
+    ]
+    col = next((c for c in field_candidates if c in df.columns), None)
+    if not col:
         return
-    mt_map = _mt_map_from_mara(mara_df)
+
+    pt_candidates = ['Plant Type', 'Material Plant Type']
+    pt_col = next((c for c in pt_candidates if c in df.columns), None)
+    if not pt_col:
+        return
+
+    if 'Plant' not in df.columns or 'Material' not in df.columns:
+        return
+
+    if mara_df is None or mara_df.empty or 'Material' not in mara_df.columns or 'Material Type' not in mara_df.columns:
+        return
+
+    # Material -> Material Type (MARA)
+    mt_map = (
+        mara_df[['Material', 'Material Type']]
+        .dropna(subset=['Material'])
+        .assign(
+            Material=lambda d: d['Material'].fillna('').astype(str).str.strip(),
+            Material_Type=lambda d: d['Material Type'].fillna('').astype(str).str.strip().str.upper()
+        )
+        .set_index('Material')['Material_Type']
+        .to_dict()
+    )
+
     for idx, row in df.iterrows():
         erros = []
+
         plant = _norm_str(row.get('Plant')).upper()
         mat   = _norm_str(row.get('Material'))
-        mt    = mt_map.get(mat, _norm_str(row.get('Material Type', ''))).upper()
-        val   = _norm_str(row.get(col))
-        if plant == 'TN02':
-            if val != '' and not pd.isna(row.get(col)):
-                erros.append(f"Must be blank or empty for TN02 (current: '{val}')")
-        else:
-            if mt in ('FERT', 'HALB'):
-                if val == '':
-                    erros.append("Mandatory field blank For Material Type FERT or HALB")
-                elif val != 'Z002':
-                    erros.append(f"Invalid value: '{val}' (should be 'Z002')")
-            if mt == 'ROH' and val == 'Z002':
-                erros.append("Material Type ROH cannot have value 'Z002'")
-        if erros:
-            resultados.append({'Line': idx + 2, 'Field': col,
-                               'Error': ' | '.join(erros), 'Material': mat, 'Plant': plant})
+        pt    = _norm_str(row.get(pt_col)).upper()
 
+        # only validate FERT / HALB / ROH
+        mt = mt_map.get(mat, '')
+        if mt not in {'FERT', 'HALB', 'ROH'}:
+            continue
+
+        val = _norm_str(row.get(col)).upper()
+
+        if plant == 'TN02':
+            if val != '':
+                erros.append(f"Must be blank for TN02 (current: '{val}')")
+        else:
+            if pt == 'PP':
+                if val != '':
+                    erros.append(
+                        f"For Plant Type 'PP', field '{col}' must be blank (current: '{val}')"
+                    )
+            elif pt in {'MP', 'FP'}:
+                if val != 'Z002':
+                    erros.append(
+                        f"For Plant Type '{pt}', field '{col}' should be 'Z002' (current: '{val}')"
+                    )
+
+        if erros:
+            resultados.append({
+                'Line': idx + 2,
+                'Field': col,
+                'Error': ' | '.join(erros),
+                'Material': mat,
+                'Plant': plant
+            })
 
 def tn_validar_source_list_required(df, resultados):
     """PP or FP -> Yes (1); others -> No (0)."""
