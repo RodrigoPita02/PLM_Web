@@ -6779,7 +6779,8 @@ def save_run_log(payload: dict, *, base_dir: str = ".history",
     run_type = payload.get("run_type", "UNKNOWN")
     subdir   = {"SAP_VALIDATION": "sap", "PLM_WORKFLOW_ATL": "atl",
                  "SAP_VALIDATION_PROGRESS": "progress", "MRP_VALIDATION": "mrp",
-                 "DATA_CLEANUPS": "dataclean"}.get(run_type, "misc")
+                 "DATA_CLEANUPS": "dataclean",
+                 "INDIRECT_MATERIALS": "indirect"}.get(run_type, "misc")
 
     out_dir = os.path.join(base_dir, subdir)
     _ensure_dir(out_dir)
@@ -6812,7 +6813,7 @@ def save_run_log(payload: dict, *, base_dir: str = ".history",
 def list_run_logs(run_type: str, *, base_dir: str = ".history", limit: int = 25) -> list:
     """Lists the last `limit` log entries for a given run type."""
     subdir_map = {"sap": "sap", "atl": "atl", "progress": "progress",
-                  "mrp": "mrp", "dataclean": "dataclean"}
+                  "mrp": "mrp", "dataclean": "dataclean", "indirect": "indirect"}
     folder = os.path.join(base_dir, subdir_map.get(run_type, ""))
     if not os.path.isdir(folder):
         return []
@@ -6841,6 +6842,7 @@ def save_report_to_vault(excel_bytes: io.BytesIO, *, report_type: str = "sap",
         "mrp":       "MRP_Validation",
         "dataclean": "Data_Cleanups",
         "progress":  "SAP_Progress",
+        "indirect":  "Indirect_Materials",
     }
     label = _type_labels.get(report_type, report_type.upper())
     out_dir = os.path.join(".", "reports", report_type, datetime.now().strftime("%Y-%m"))
@@ -8143,6 +8145,82 @@ def _ssa_load(df):
     df.columns = [str(c).strip() for c in df.columns]
     return df
 
+def _ssa_to_float(x):
+    """Convert SAP/Excel numeric-like value to float; blank/invalid -> None."""
+    s = _ssa_norm(x)
+    if s == '':
+        return None
+    try:
+        return float(str(s).replace(',', '.'))
+    except Exception:
+        return None
+
+
+def _ssa_is_zero_or_blank(x):
+    """True if value is blank, None, NaN or numeric zero."""
+    s = _ssa_norm(x)
+    if s == '':
+        return True
+    try:
+        return float(str(s).replace(',', '.')) == 0.0
+    except Exception:
+        return False
+
+
+def _ssa_float_equal(a, b, tol=1e-6):
+    """Numeric comparison with tolerance."""
+    fa = _ssa_to_float(a)
+    fb = _ssa_to_float(b)
+    if fa is None or fb is None:
+        return False
+    return abs(fa - fb) <= tol
+
+
+def _ssa_first_nonempty(*values):
+    """Return first non-empty normalized value."""
+    for v in values:
+        s = _ssa_norm(v)
+        if s != '':
+            return s
+    return ''
+
+
+def _ssa_get_vbpa_value(vbpa_df, doc, item, partner_func, field_name="Unloading Point"):
+    """
+    Returns the first matching VBPA value for a given document/item/partner function.
+    Prefers exact item match; if not found, returns header-level item=0/blank.
+    """
+    if vbpa_df is None or vbpa_df.empty:
+        return ''
+
+    vbpa = _ssa_load(vbpa_df)
+
+    doc_col = _ssa_pick(vbpa, ["SD Document", "VBELN"])
+    item_col = _ssa_pick(vbpa, ["Item (SD)", "POSNR"])
+    pf_col   = _ssa_pick(vbpa, ["Partner Function", "PARVW"])
+    val_col  = _ssa_pick(vbpa, [field_name])
+
+    if not all([doc_col, item_col, pf_col, val_col]):
+        return ''
+
+    df = vbpa[vbpa[doc_col].astype(str).str.strip() == str(doc).strip()].copy()
+    if df.empty:
+        return ''
+
+    df = df[df[pf_col].astype(str).str.strip().upper() == str(partner_func).strip().upper()]
+    if df.empty:
+        return ''
+
+    item_str = str(item).strip()
+    exact = df[df[item_col].astype(str).str.strip() == item_str]
+    if not exact.empty:
+        return _ssa_first_nonempty(*exact[val_col].tolist())
+
+    hdr = df[df[item_col].astype(str).str.strip().isin(['0', '', '000000', '0000000000'])]
+    if not hdr.empty:
+        return _ssa_first_nonempty(*hdr[val_col].tolist())
+
+    return ''
 
 # -----------------------------------------------------------------------------
 # Rule 1 — Mandatory fields
@@ -8256,6 +8334,308 @@ def ssa_validar_mandatory_fields(vbak_df, vbap_df):
 
     return pd.DataFrame(errors)
 
+def ssa_validar_terms_of_payment(vbak_df, vbkd_df=None):
+    """
+    Header-level:
+    - Terms of payment must not be empty.
+
+    Primary source: VBAK~Terms of Payment
+    Fallback source: VBKD~Terms of Payment
+    """
+    errors = []
+    empty_cols = ["Table", "Sales Document", "Item", "Material", "Plant", "Field", "Value", "Error"]
+
+    if vbak_df is None or vbak_df.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    vbak = _ssa_load(vbak_df)
+    vbak_doc = _ssa_pick(vbak, ["Sales Document", "VBELN"])
+    vbak_top = _ssa_pick(vbak, ["Terms of Payment", "ZTERM"])
+
+    vbkd = None
+    vbkd_doc = vbkd_top = vbkd_item = None
+    if vbkd_df is not None and not vbkd_df.empty:
+        vbkd = _ssa_load(vbkd_df)
+        vbkd_doc  = _ssa_pick(vbkd, ["SD Document", "VBELN"])
+        vbkd_item = _ssa_pick(vbkd, ["Item (SD)", "POSNR"])
+        vbkd_top  = _ssa_pick(vbkd, ["Terms of Payment", "ZTERM"])
+
+    for _, row in vbak.iterrows():
+        doc = _ssa_norm(row[vbak_doc]) if vbak_doc else ''
+        val = _ssa_norm(row[vbak_top]) if vbak_top else ''
+
+        if val == '' and vbkd is not None and vbkd_doc and vbkd_top:
+            sub = vbkd[vbkd[vbkd_doc].astype(str).str.strip() == doc].copy()
+            if vbkd_item:
+                sub = sub[sub[vbkd_item].astype(str).str.strip().isin(['0', '', '000000', '0000000000'])]
+            if not sub.empty:
+                val = _ssa_first_nonempty(*sub[vbkd_top].tolist())
+
+        if val == '':
+            errors.append({
+                "Table": "VBAK",
+                "Sales Document": doc,
+                "Item": "",
+                "Material": "",
+                "Plant": "",
+                "Field": "Terms of Payment",
+                "Value": "",
+                "Error": "Mandatory field blank: 'Terms of Payment'",
+            })
+
+    return pd.DataFrame(errors, columns=empty_cols) if not errors else pd.DataFrame(errors)
+
+def ssa_validar_shipping_point(vbap_df):
+    """
+    Item-level:
+    - Shipping Point must not be empty
+    - Shipping Point must be equal to Plant
+    """
+    errors = []
+    empty_cols = ["Table", "Sales Document", "Item", "Material", "Plant", "Field", "Value", "Error"]
+
+    if vbap_df is None or vbap_df.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    vbap = _ssa_load(vbap_df)
+
+    doc_col = _ssa_pick(vbap, ["Sales Document", "VBELN"])
+    item_col = _ssa_pick(vbap, ["Sales Document Item", "POSNR"])
+    mat_col  = _ssa_pick(vbap, ["Material", "MATNR"])
+    plt_col  = _ssa_pick(vbap, ["Plant", "WERKS"])
+    shp_col  = _ssa_pick(vbap, ["Shipping Point/Receiving Pt", "Shipping Point", "VSTEL"])
+    rej_col  = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
+
+    if not all([doc_col, item_col, mat_col, plt_col, shp_col]):
+        return pd.DataFrame(columns=empty_cols)
+
+    for _, row in vbap.iterrows():
+        if rej_col and _ssa_norm(row[rej_col]) != '':
+            continue
+
+        doc   = _ssa_norm(row[doc_col])
+        item  = _ssa_norm(row[item_col])
+        mat   = _ssa_norm(row[mat_col])
+        plant = _ssa_norm(row[plt_col])
+        shp   = _ssa_norm(row[shp_col])
+
+        if shp == '':
+            errors.append({
+                "Table": "VBAP",
+                "Sales Document": doc,
+                "Item": item,
+                "Material": mat,
+                "Plant": plant,
+                "Field": "Shipping Point",
+                "Value": "",
+                "Error": "Mandatory field blank: 'Shipping Point'",
+            })
+        elif plant != '' and shp != plant:
+            errors.append({
+                "Table": "VBAP",
+                "Sales Document": doc,
+                "Item": item,
+                "Material": mat,
+                "Plant": plant,
+                "Field": "Shipping Point",
+                "Value": shp,
+                "Error": f"Shipping Point must be equal to Plant (current Shipping Point='{shp}', Plant='{plant}')",
+            })
+
+    return pd.DataFrame(errors, columns=empty_cols) if not errors else pd.DataFrame(errors)
+
+def ssa_validar_unloading_point_consistency(vbpa_df):
+    """
+    Header vs Item:
+    - Unloading Point from header must equal Unloading Point from item.
+    - If one is blank, the other must also be blank.
+    - Uses VBPA partner function 'SH'.
+    """
+    errors = []
+    empty_cols = ["Table", "Sales Document", "Item", "Material", "Plant", "Field", "Value", "Error"]
+
+    if vbpa_df is None or vbpa_df.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    vbpa = _ssa_load(vbpa_df)
+
+    doc_col = _ssa_pick(vbpa, ["SD Document", "VBELN"])
+    item_col = _ssa_pick(vbpa, ["Item (SD)", "POSNR"])
+    pf_col   = _ssa_pick(vbpa, ["Partner Function", "PARVW"])
+    up_col   = _ssa_pick(vbpa, ["Unloading Point"])
+
+    if not all([doc_col, item_col, pf_col, up_col]):
+        return pd.DataFrame(columns=empty_cols)
+
+    sh = vbpa[vbpa[pf_col].astype(str).str.strip().str.upper() == "SH"].copy()
+    if sh.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    for doc, grp in sh.groupby(sh[doc_col].astype(str).str.strip()):
+        hdr_rows = grp[grp[item_col].astype(str).str.strip().isin(['0', '', '000000', '0000000000'])]
+        hdr_val = _ssa_first_nonempty(*hdr_rows[up_col].tolist()) if not hdr_rows.empty else ''
+
+        item_rows = grp[~grp[item_col].astype(str).str.strip().isin(['0', '', '000000', '0000000000'])]
+        if item_rows.empty:
+            continue
+
+        for _, row in item_rows.iterrows():
+            item = _ssa_norm(row[item_col])
+            item_val = _ssa_norm(row[up_col])
+
+            if hdr_val == '' and item_val == '':
+                continue
+            if hdr_val == '' and item_val != '':
+                errors.append({
+                    "Table": "VBPA",
+                    "Sales Document": doc,
+                    "Item": item,
+                    "Material": "",
+                    "Plant": "",
+                    "Field": "Unloading Point",
+                    "Value": item_val,
+                    "Error": "Header Unloading Point is blank but item Unloading Point is filled",
+                })
+            elif hdr_val != '' and item_val == '':
+                errors.append({
+                    "Table": "VBPA",
+                    "Sales Document": doc,
+                    "Item": item,
+                    "Material": "",
+                    "Plant": "",
+                    "Field": "Unloading Point",
+                    "Value": "",
+                    "Error": "Item Unloading Point is blank but header Unloading Point is filled",
+                })
+            elif hdr_val != item_val:
+                errors.append({
+                    "Table": "VBPA",
+                    "Sales Document": doc,
+                    "Item": item,
+                    "Material": "",
+                    "Plant": "",
+                    "Field": "Unloading Point",
+                    "Value": item_val,
+                    "Error": f"Unloading Point mismatch: header='{hdr_val}' vs item='{item_val}'",
+                })
+
+    return pd.DataFrame(errors, columns=empty_cols) if not errors else pd.DataFrame(errors)
+
+def ssa_validar_customer_reference(vbap_df):
+    """
+    Item-level:
+    - Customer Reference must not be empty
+    """
+    errors = []
+    empty_cols = ["Table", "Sales Document", "Item", "Material", "Plant", "Field", "Value", "Error"]
+
+    if vbap_df is None or vbap_df.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    vbap = _ssa_load(vbap_df)
+
+    doc_col = _ssa_pick(vbap, ["Sales Document", "VBELN"])
+    item_col = _ssa_pick(vbap, ["Sales Document Item", "POSNR"])
+    mat_col  = _ssa_pick(vbap, ["Material", "MATNR"])
+    plt_col  = _ssa_pick(vbap, ["Plant", "WERKS"])
+    ref_col  = _ssa_pick(vbap, ["Customer Reference", "BSTNK"])
+    rej_col  = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
+
+    if not all([doc_col, item_col, mat_col, plt_col, ref_col]):
+        return pd.DataFrame(columns=empty_cols)
+
+    for _, row in vbap.iterrows():
+        if rej_col and _ssa_norm(row[rej_col]) != '':
+            continue
+
+        ref = _ssa_norm(row[ref_col])
+        if ref == '':
+            errors.append({
+                "Table": "VBAP",
+                "Sales Document": _ssa_norm(row[doc_col]),
+                "Item": _ssa_norm(row[item_col]),
+                "Material": _ssa_norm(row[mat_col]),
+                "Plant": _ssa_norm(row[plt_col]),
+                "Field": "Customer Reference",
+                "Value": "",
+                "Error": "Mandatory field blank: 'Customer Reference'",
+            })
+
+    return pd.DataFrame(errors, columns=empty_cols) if not errors else pd.DataFrame(errors)
+
+def ssa_validar_weights(vbap_df):
+    """
+    Item-level:
+    - Gross Weight and Net Weight must not be blank or zero
+    - Gross Weight must equal Net Weight
+    """
+    errors = []
+    empty_cols = ["Table", "Sales Document", "Item", "Material", "Plant", "Field", "Value", "Error"]
+
+    if vbap_df is None or vbap_df.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    vbap = _ssa_load(vbap_df)
+
+    doc_col = _ssa_pick(vbap, ["Sales Document", "VBELN"])
+    item_col = _ssa_pick(vbap, ["Sales Document Item", "POSNR"])
+    mat_col  = _ssa_pick(vbap, ["Material", "MATNR"])
+    plt_col  = _ssa_pick(vbap, ["Plant", "WERKS"])
+    gwt_col  = _ssa_pick(vbap, ["Gross Weight"])
+    nwt_col  = _ssa_pick(vbap, ["Net Weight"])
+    rej_col  = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
+
+    if not all([doc_col, item_col, mat_col, plt_col, gwt_col, nwt_col]):
+        return pd.DataFrame(columns=empty_cols)
+
+    for _, row in vbap.iterrows():
+        if rej_col and _ssa_norm(row[rej_col]) != '':
+            continue
+
+        doc   = _ssa_norm(row[doc_col])
+        item  = _ssa_norm(row[item_col])
+        mat   = _ssa_norm(row[mat_col])
+        plant = _ssa_norm(row[plt_col])
+        gwt   = row[gwt_col]
+        nwt   = row[nwt_col]
+
+        if _ssa_is_zero_or_blank(gwt):
+            errors.append({
+                "Table": "VBAP",
+                "Sales Document": doc,
+                "Item": item,
+                "Material": mat,
+                "Plant": plant,
+                "Field": "Gross Weight",
+                "Value": _ssa_norm(gwt),
+                "Error": "Gross Weight must not be blank or zero",
+            })
+
+        if _ssa_is_zero_or_blank(nwt):
+            errors.append({
+                "Table": "VBAP",
+                "Sales Document": doc,
+                "Item": item,
+                "Material": mat,
+                "Plant": plant,
+                "Field": "Net Weight",
+                "Value": _ssa_norm(nwt),
+                "Error": "Net Weight must not be blank or zero",
+            })
+
+        if not _ssa_is_zero_or_blank(gwt) and not _ssa_is_zero_or_blank(nwt) and not _ssa_float_equal(gwt, nwt):
+            errors.append({
+                "Table": "VBAP",
+                "Sales Document": doc,
+                "Item": item,
+                "Material": mat,
+                "Plant": plant,
+                "Field": "Gross Weight / Net Weight",
+                "Value": f"Gross={_ssa_norm(gwt)} | Net={_ssa_norm(nwt)}",
+                "Error": "Gross Weight and Net Weight must have the same value",
+            })
+
+    return pd.DataFrame(errors, columns=empty_cols) if not errors else pd.DataFrame(errors)
 
 # -----------------------------------------------------------------------------
 # Rule 2 — Incoterms DDP + Country GB
@@ -8642,6 +9022,11 @@ def run_ssa_validation(
         ssa_validar_incompletion_log(vbak, vbap),
         ssa_validar_rejected_material_status(vbap, marc),
         ssa_validar_country_of_origin(vbap, marc),
+        ssa_validar_terms_of_payment(vbak, vbkd),
+        ssa_validar_shipping_point(vbap),
+        ssa_validar_unloading_point_consistency(vbpa),
+        ssa_validar_customer_reference(vbap),
+        ssa_validar_weights(vbap),
     ]
 
     # Combine all errors into one DataFrame
@@ -8659,6 +9044,13 @@ def run_ssa_validation(
         "Incompletion Log",
         "Rejected + Status 70-75",
         "Country of Origin",
+
+        # Novas regras
+        "Terms of Payment",
+        "Shipping Point",
+        "Unloading Point Consistency",
+        "Customer Reference",
+        "Weights",
     ]
     results = {
         name: df for name, df in zip(rule_names, all_frames)
