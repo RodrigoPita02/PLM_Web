@@ -4626,6 +4626,33 @@ def postprocess_with_views_roles_and_classification(
                 })
         if rows:
             view_tabs_dict[v] = pd.DataFrame(rows)
+    
+    # -------------------------------------------------
+    # ADD MRP Controller from MARC (Material + Plant)
+    # -------------------------------------------------
+    if marc_df is not None and not marc_df.empty and "MRP Controller" in marc_df.columns:
+
+        marc_tmp = marc_df[["Material", "Plant", "MRP Controller"]].copy()
+
+        marc_tmp["Material"] = marc_tmp["Material"].astype(str).str.strip()
+        marc_tmp["Plant"] = marc_tmp["Plant"].astype(str).str.strip()
+
+        views_missing_output_df["Material"] = views_missing_output_df["Material"].astype(str).str.strip()
+        views_missing_output_df["Plant"] = views_missing_output_df["Plant"].astype(str).str.strip()
+
+        views_missing_output_df = views_missing_output_df.merge(
+            marc_tmp,
+            on=["Material", "Plant"],
+            how="left"
+        )
+    else:
+        views_missing_output_df["MRP Controller"] = ""
+
+    # -------------------------------------------------
+    # REMOVE "View" only from Field With Error dataset
+    # -------------------------------------------------
+    if "View" in views_missing_output_df.columns:
+        views_missing_output_df = views_missing_output_df.drop(columns=["View"])
 
     return errors_df, errors_filtered_df, views_missing_output_df, contagem_final_df, coverage_df, view_tabs_dict
 

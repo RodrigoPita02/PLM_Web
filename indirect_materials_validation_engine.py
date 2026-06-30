@@ -19,13 +19,14 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from sap_validation_engine import normalize_code
+from sap_validation_engine import _style_sap_report
 from utils.fast_loader import load_xlsx_fast
 
 IM_MATERIAL_TYPES = frozenset({"ERSA", "HIBE", "VERP"})
 IM_PLANTS = frozenset({"PT01", "PT02", "TN01", "TN02"})
 
 ERROR_COLS = [
-    "Material", "Plant", "Field", "Value", "Error", "Error_Type", "Table", "View",
+    "Material", "Plant", "Field", "Value", "Error", "Error_Type", "Table",
 ]
 
 
@@ -87,7 +88,6 @@ def _append_error(errors, *, material, plant, field, value, error, table=""):
             "Error": error,
             "Error_Type": "Field Error",
             "Table": table,
-            "View": "",
         }
     )
 
@@ -195,10 +195,14 @@ def build_im_sap_like_df(marc_df, mara_df):
         'minimum lot size':                         'Min Lot Size',
         'min. lot size':                            'Min Lot Size',
         'min lot size':                             'Min Lot Size',
-        'mabst':                                    'Max Stock',
-        'maximum stock level':                      'Max Stock',
-        'max stock':                                'Max Stock',
-        'max.stock level':                          'Max Stock',
+        'bstma':                                    'Maximum Lot Size',
+        'maximum lot size':                         'Maximum Lot Size',
+        'max. lot size':                            'Maximum Lot Size',
+        'max lot size':                             'Maximum Lot Size',
+        'mabst':                                    'Max Stock Level',
+        'maximum stock level':                      'Max Stock Level',
+        'max stock':                                'Max Stock Level',
+        'max.stock level':                          'Max Stock Level',
         # MRP View 2
         'beskz':                                    'Procurement Type',
         'procurement type':                         'Procurement Type',
@@ -395,22 +399,17 @@ def im_validar_basic(sap_df, errors):
                 )
 
         # BRGEW — MARA
-        if gross_col:
-            gross_val = _to_float(row[gross_col])
-            if gross_val is None or gross_val <= 0:
-                _append_error(
-                    errors, material=material, plant=plant, field="Gross Weight (BRGEW)",
-                    value=row[gross_col], error="Mandatory field missing or <= 0", table="MARA",
-                )
-
+        if gross_col and _to_float(row[gross_col]) is None:
+            _append_error(
+                errors, material=material, plant=plant, field="Gross Weight (BRGEW)",
+                value=row[gross_col], error="Mandatory field blank or zero", table="MARA",
+            )
         # NTGEW — MARA
-        if net_col:
-            net_val = _to_float(row[net_col])
-            if net_val is None or net_val <= 0:
-                _append_error(
-                    errors, material=material, plant=plant, field="Net Weight (NTGEW)",
-                    value=row[net_col], error="Mandatory field missing or <= 0", table="MARA",
-                )
+        if net_col and _to_float(row[net_col]) is None:
+            _append_error(
+                errors, material=material, plant=plant, field="Net Weight (NTGEW)",
+                value=row[net_col], error="Mandatory field blank or zero", table="MARA",
+            )
         # GEWEI — MARA
         if uow_col and _is_blank(row[uow_col]):
             _append_error(
@@ -441,7 +440,7 @@ def im_validar_mrp_view1(sap_df, errors):
     psms_col     = _pick(sap_df, ["Plant Specific Material Status", "MMSTA"])
     lot_col      = _pick(sap_df, ["Lot Size", "Lot Sizing Procedure", "DISLS"])
     min_lot_col  = _pick(sap_df, ["Min Lot Size", "Minimum Lot Size", "BSTMI"])
-    max_stock_col= _pick(sap_df, ["Max Stock", "Maximum Stock level", "MABST"])
+    max_lot_col  = _pick(sap_df, ["Maximum Lot Size", "Max Lot Size", "BSTMA"])
 
     for _, row in sap_df.iterrows():
         material = row[mat_col] if mat_col else ""
@@ -514,23 +513,24 @@ def im_validar_mrp_view1(sap_df, errors):
                               field="Lot Size (DISLS)", value=val,
                               error="Should be 'H1'", table="MARC")
 
-        # BSTMI — MARC
-        if min_lot_col and _to_float(row[min_lot_col]) is None:
+        # BSTMI — MARC (mandatory for ERSA / HIBE / VERP)
+        if min_lot_col and mt in {"ERSA", "HIBE", "VERP"} and _is_blank(row[min_lot_col]):
             _append_error(errors, material=material, plant=plant,
-                          field="Min Lot Size (BSTMI)", value=row[min_lot_col],
-                          error="Mandatory field blank", table="MARC")
+                          field="Minimum Lot Size (BSTMI)", value="",
+                          error="Mandatory field blank for ERSA/HIBE/VERP", table="MARC")
 
-        # MABST — MARC
-        if max_stock_col and _to_float(row[max_stock_col]) is None:
+        # BSTMA — MARC (mandatory for ERSA / HIBE / VERP)
+        if max_lot_col and mt in {"ERSA", "HIBE", "VERP"} and _is_blank(row[max_lot_col]):
             _append_error(errors, material=material, plant=plant,
-                          field="Max Stock (MABST)", value=row[max_stock_col],
-                          error="Mandatory field blank", table="MARC")
+                          field="Maximum Lot Size (BSTMA)", value="",
+                          error="Mandatory field blank for ERSA/HIBE/VERP", table="MARC")
 
 
 def im_validar_mrp_view2(sap_df, errors):
     """MRP View 2 — all fields from MARC."""
     mat_col   = _pick(sap_df, ["Material", "MATNR"])
     plant_col = _pick(sap_df, ["Plant", "WERKS"])
+    mt_col    = _pick(sap_df, ["Material Type", "MTART"])
     proc_col  = _pick(sap_df, ["Procurement Type", "BESKZ"])
     spec_col  = _pick(sap_df, ["Special Procurement", "SOBSL"])
     stor_col  = _pick(sap_df, ["Storage Location Ext Proc", "LGPRO"])
@@ -538,6 +538,7 @@ def im_validar_mrp_view2(sap_df, errors):
     for _, row in sap_df.iterrows():
         material = row[mat_col] if mat_col else ""
         plant    = _norm(row[plant_col]).upper() if plant_col else ""
+        mt       = _norm(row[mt_col]).upper() if mt_col else ""
 
         # BESKZ — MARC
         if proc_col:
@@ -559,11 +560,44 @@ def im_validar_mrp_view2(sap_df, errors):
                               field="Special Procurement (SOBSL)", value=val,
                               error="TN02 must be 'Z3'", table="MARC")
 
-        # LGPRO — MARC  (must be blank)
-        if stor_col and not _is_blank(row[stor_col]):
-            _append_error(errors, material=material, plant=plant,
-                          field="Storage Location Ext Proc (LGPRO)", value=row[stor_col],
-                          error="Must be blank", table="MARC")
+        # LGPRO — MARC  (Stor. Loc. for Ext. Proc.)
+        # Expected values per Plant × Material Type (from mapping table):
+        #   PT01: HIBE → P160 | VERP → P155 | ERSA → P160
+        #   PT02: HIBE → P260 | VERP → P255 | ERSA → P260
+        #   TN01: HIBE → T160 | VERP → T155 | ERSA → T160
+        #   TN02: HIBE → blank | VERP → T255 | ERSA → blank
+        _LGPRO_EXPECTED = {
+            ("PT01", "HIBE"): "P160",
+            ("PT01", "VERP"): "P155",
+            ("PT01", "ERSA"): "P160",
+            ("PT02", "HIBE"): "P260",
+            ("PT02", "VERP"): "P255",
+            ("PT02", "ERSA"): "P260",
+            ("TN01", "HIBE"): "T160",
+            ("TN01", "VERP"): "T155",
+            ("TN01", "ERSA"): "T160",
+            ("TN02", "HIBE"): "",
+            ("TN02", "VERP"): "T255",
+            ("TN02", "ERSA"): "",
+        }
+        if stor_col and mt in {"HIBE", "ERSA", "VERP"}:
+            expected_lgpro = _LGPRO_EXPECTED.get((plant, mt))
+            val_lgpro = _norm(row[stor_col]).upper()
+            if expected_lgpro is None:
+                # Plant/MT combination not in mapping — skip
+                pass
+            elif expected_lgpro == "":
+                # Dash in mapping → field must be blank
+                if not _is_blank(val_lgpro):
+                    _append_error(errors, material=material, plant=plant,
+                                  field="Storage Location Ext Proc (LGPRO)", value=val_lgpro,
+                                  error="Must be blank for this Plant/Material Type", table="MARC")
+            else:
+                # Specific value expected
+                if val_lgpro != expected_lgpro:
+                    _append_error(errors, material=material, plant=plant,
+                                  field="Storage Location Ext Proc (LGPRO)", value=val_lgpro,
+                                  error=f"Should be '{expected_lgpro}'", table="MARC")
 
 
 def im_validar_mrp_view3(sap_df, errors):
@@ -645,26 +679,32 @@ def im_validar_plant_storage(sap_df, errors):
     """Plant Data / Storage 1 — all fields from MARC."""
     mat_col   = _pick(sap_df, ["Material", "MATNR"])
     plant_col = _pick(sap_df, ["Plant", "WERKS"])
+    mt_col    = _pick(sap_df, ["Material Type", "MTART"])
     per_col   = _pick(sap_df, ["Period Ind.", "IPRKZ"])
     exp_col   = _pick(sap_df, ["Expiration Date", "MHDRZ"])
 
     for _, row in sap_df.iterrows():
         material = row[mat_col] if mat_col else ""
         plant    = _norm(row[plant_col]).upper() if plant_col else ""
+        mt       = _norm(row[mt_col]).upper() if mt_col else ""
 
-        # IPRKZ — MARC
-        if per_col:
-            val = _norm(row[per_col]).upper()
-            if val != "D":
+        # IPRKZ — MARC (Period Ind. for SLED — mandatory, must be "D" for ERSA/HIBE/VERP)
+        if per_col and mt in {"ERSA", "HIBE", "VERP"}:
+            val = _norm(row[per_col]).upper() 
+            if _is_blank(val):
                 _append_error(errors, material=material, plant=plant,
-                              field="Period Ind. (IPRKZ)", value=val,
+                              field="Period Ind. for SLED (IPRKZ)", value="",
+                              error="Mandatory field blank for ERSA/HIBE/VERP", table="MARC")
+            elif val != "D":
+                _append_error(errors, material=material, plant=plant,
+                              field="Period Ind. for SLED (IPRKZ)", value=val,
                               error="Should be 'D'", table="MARC")
 
-        # MHDRZ — MARC  (must be blank)
-        if exp_col and not _is_blank(row[exp_col]):
+        # MHDRZ — MARC (Expiration Date — must be blank for ERSA/HIBE/VERP)
+        if exp_col and mt in {"ERSA", "HIBE", "VERP"} and not _is_blank(row[exp_col]):
             _append_error(errors, material=material, plant=plant,
                           field="Expiration Date (MHDRZ)", value=row[exp_col],
-                          error="Must be blank", table="MARC")
+                          error="Must be blank for ERSA/HIBE/VERP", table="MARC")
 
 
 def im_validar_general_plant(sap_df, errors):
@@ -883,98 +923,13 @@ def _style_im_report(
     summary_df: pd.DataFrame,
     coverage_df: pd.DataFrame | None = None,
 ) -> io.BytesIO:
-    xlsx_bytes.seek(0)
-    wb = load_workbook(xlsx_bytes)
 
-    thin    = Side(style="thin", color="B8CCE4")
-    bdr     = Border(left=thin, right=thin, top=thin, bottom=thin)
-    zebra   = PatternFill(start_color="F5F9FF", fill_type="solid")
-
-    tab_colors = {
-        "Executive Summary": "1F4E79",
-        "Adjusted Summary":  "2E75B6",
-        "Field With Error":  "FF7200",
-        "All Errors":        "C00000",
-        "Original Data":     "70AD47",
-    }
-    header_colors = {
-        "Executive Summary": "BDD7EE",
-        "Adjusted Summary":  "BDD7EE",
-        "Field With Error":  "FFE0CC",
-        "All Errors":        "FFD7D7",
-        "Original Data":     "E2EFDA",
-    }
-
-    total_errors = len(errors_df)
-    materials    = int(errors_df["Material"].nunique()) if not errors_df.empty else 0
-    fields       = int(errors_df["Field"].nunique())    if not errors_df.empty else 0
-
-    if "Executive Summary" in wb.sheetnames:
-        ws = wb["Executive Summary"]
-        ws.delete_rows(1, ws.max_row)
-        ws["A1"] = "Indirect Materials Validation — Executive Summary"
-        ws["A1"].font = Font(bold=True, size=14, color="1F4E79")
-        ws["A3"] = "Generated"
-        ws["B3"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-        ws["A4"] = "Total Errors"
-        ws["B4"] = total_errors
-        ws["A5"] = "Materials with Errors"
-        ws["B5"] = materials
-        ws["A6"] = "Distinct Fields"
-        ws["B6"] = fields
-        if not summary_df.empty:
-            ws["A8"] = "Top Fields"
-            ws["A8"].font = Font(bold=True)
-            for i, row in summary_df.head(10).iterrows():
-                ws.cell(row=9 + i, column=1, value=row["Field"])
-                ws.cell(row=9 + i, column=2, value=int(row["Adjusted Nº of Errors"]))
-
-    for sn in wb.sheetnames:
-        ws = wb[sn]
-        ws.sheet_properties.tabColor = tab_colors.get(sn, "4F81BD")
-        ws.freeze_panes = "A2"
-        ws.row_dimensions[1].height = 26
-        hfill = PatternFill(
-            start_color=header_colors.get(sn, "BDD7EE"), fill_type="solid"
-        )
-        hfont  = Font(bold=True, color="1F4E79")
-        halign = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        if ws.max_row < 1:
-            continue
-        for cell in ws[1]:
-            cell.fill      = hfill
-            cell.font      = hfont
-            cell.alignment = halign
-            cell.border    = bdr
-        err_idx = next(
-            (i for i, cell in enumerate(ws[1], start=1) if str(cell.value) == "Error"),
-            None,
-        )
-        for r_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
-            for cell in row:
-                cell.border    = bdr
-                wrap           = cell.column == err_idx
-                cell.alignment = Alignment(vertical="center", wrap_text=wrap)
-                if r_idx % 2 == 0:
-                    if cell.fill.fgColor.rgb in ("00000000", "FFFFFFFF", "00FFFFFF"):
-                        cell.fill = zebra
-        for col_idx, col in enumerate(ws.columns, start=1):
-            max_len = max((len(str(c.value or "")) for c in col), default=8)
-            ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 3, 55)
-        if err_idx:
-            ws.column_dimensions[get_column_letter(err_idx)].width = 60
-
-    desired  = ["Executive Summary", "Adjusted Summary", "Field With Error", "All Errors", "Original Data"]
-    existing = [s for s in desired if s in wb.sheetnames]
-    wb._sheets.sort(
-        key=lambda ws: existing.index(ws.title) if ws.title in existing else 99
+    return _style_sap_report(
+        xlsx_bytes,
+        errors_df=errors_df,
+        contagem_final_df=summary_df,
+        coverage_df=coverage_df,
     )
-
-    out = io.BytesIO()
-    wb.save(out)
-    out.seek(0)
-    return out
-
 
 # =============================================================================
 # MAIN ENTRY POINT
@@ -1106,10 +1061,7 @@ def run_indirect_materials_validation(
                 startrow=len(summary_df) + 4,
             )
         errors_df.to_excel(writer, sheet_name="Field With Error", index=False)
-        errors_df.to_excel(writer, sheet_name="All Errors",        index=False)
-        sap_im.drop(columns=["_IM_MT"], errors="ignore").to_excel(
-            writer, sheet_name="Original Data", index=False
-        )
+        errors_df.to_excel(writer, sheet_name="All Errors",       index=False)
 
     out.seek(0)
     styled = _style_im_report(

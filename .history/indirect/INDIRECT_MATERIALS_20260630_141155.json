@@ -1,0 +1,118 @@
+{
+  "run_type": "INDIRECT_MATERIALS",
+  "timestamp": "2026-06-30T14:11:55",
+  "user": "RPITA",
+  "plant_filter": "ALL",
+  "files": {
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "mvke": "MVKE.xlsx",
+    "mbew": "MBEW.xlsx"
+  },
+  "error_count": 32263,
+  "material_count": 7704,
+  "field_count": 23,
+  "summary": [
+    {
+      "Field": "Log. Handling Group (LOGGR)",
+      "Adjusted Nº of Errors": 7789,
+      "% of Total": 24.1
+    },
+    {
+      "Field": "Unit of Weight (GEWEI)",
+      "Adjusted Nº of Errors": 7286,
+      "% of Total": 22.6
+    },
+    {
+      "Field": "Price Unit (PEINH)",
+      "Adjusted Nº of Errors": 7284,
+      "% of Total": 22.6
+    },
+    {
+      "Field": "Material Group (MATKL)",
+      "Adjusted Nº of Errors": 6211,
+      "% of Total": 19.3
+    },
+    {
+      "Field": "Item Category Group (MTPOS / MVKE)",
+      "Adjusted Nº of Errors": 1201,
+      "% of Total": 3.7
+    },
+    {
+      "Field": "LIFO/FIFO-relevant (XLIFO)",
+      "Adjusted Nº of Errors": 796,
+      "% of Total": 2.5
+    },
+    {
+      "Field": "Purchasing Group (EKGRP)",
+      "Adjusted Nº of Errors": 568,
+      "% of Total": 1.8
+    },
+    {
+      "Field": "MRP Controller (DISPO)",
+      "Adjusted Nº of Errors": 502,
+      "% of Total": 1.6
+    },
+    {
+      "Field": "Handling Unit Type (HUTYP)",
+      "Adjusted Nº of Errors": 282,
+      "% of Total": 0.9
+    },
+    {
+      "Field": "Division (SPART)",
+      "Adjusted Nº of Errors": 95,
+      "% of Total": 0.3
+    },
+    {
+      "Field": "Gen. Item Cat. Grp (MTPOS)",
+      "Adjusted Nº of Errors": 94,
+      "% of Total": 0.3
+    },
+    {
+      "Field": "Auto PO (AUTPU)",
+      "Adjusted Nº of Errors": 27,
+      "% of Total": 0.1
+    },
+    {
+      "Field": "Source List Required (KORDB)",
+      "Adjusted Nº of Errors": 23,
+      "% of Total": 0.1
+    },
+    {
+      "Field": "Plant Specific Material Status (MMSTA)",
+      "Adjusted Nº of Errors": 20,
+      "% of Total": 0.1
+    },
+    {
+      "Field": "MRP Type (DISMM)",
+      "Adjusted Nº of Errors": 20,
+      "% of Total": 0.1
+    },
+    {
+      "Field": "Availability Check (MTVFP)",
+      "Adjusted Nº of Errors": 18,
+      "% of Total": 0.1
+    },
+    {
+      "Field": "Packaging Mat. Type (MARA)",
+      "Adjusted Nº of Errors": 13,
+      "% of Total": 0.0
+    },
+    {
+      "Field": "Matl Grp Pack.Matls (MAGRV)",
+      "Adjusted Nº of Errors": 11,
+      "% of Total": 0.0
+    },
+    {
+      "Field": "Lot Size (DISLS)",
+      "Adjusted Nº of Errors": 8,
+      "% of Total": 0.0
+    },
+    {
+      "Field": "MRP Group (DISGR)",
+      "Adjusted Nº of Errors": 7,
+      "% of Total": 0.0
+    }
+  ],
+  "report_path": "C:\\Users\\RPITA\\OneDrive - Visteon\\Desktop\\Rodrigo\\PLM_Web\\reports\\indirect\\2026-06\\20260630_141155_Indirect_Materials_ALL.xlsx"
+}
