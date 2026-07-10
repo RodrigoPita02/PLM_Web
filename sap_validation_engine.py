@@ -17,7 +17,28 @@ from openpyxl.chart.label import DataLabelList
 from openpyxl.chart.series import DataPoint
 
 from utils.fast_loader import load_xlsx_fast
-from rolesviews_data import get_rolesviews_bytesio
+from rolesviews_data import get_rolesviews_bytesio as _get_rolesviews_bytesio_raw
+
+
+def get_rolesviews_bytesio():
+    """
+    Defensive wrapper around rolesviews_data.get_rolesviews_bytesio().
+
+    If the underlying implementation caches/reuses a single BytesIO object
+    across calls, its read cursor may already be at EOF from an earlier
+    read elsewhere in the same process (e.g. a UI preview, or another
+    engine run in the same combined "All Sites" execution). openpyxl then
+    fails with "File is not a zip file" because it reads zero bytes.
+    Rewinding to position 0 here makes every call safe to read from
+    scratch, regardless of what happened to the object before.
+    """
+    buf = _get_rolesviews_bytesio_raw()
+    if hasattr(buf, "seek"):
+        try:
+            buf.seek(0)
+        except Exception:
+            pass
+    return buf
 
 
 # =============================================================================
@@ -2381,20 +2402,37 @@ def validar_marm_pc_ea_roh_halb(marm_df, mara_df, resultados):
         num_invalid = False
         den_invalid = False
 
-        for _, r in pc_rows.iterrows():
+        def _auom_to_float(x):
+            """
+            Safely converts Numerator/Denominator values to float.
+            Handles European decimal-comma exports (e.g. '1,000' -> 1.0)
+            and blank/NaN values. Returns None if truly unparseable.
+            """
+            if x is None or (isinstance(x, float) and pd.isna(x)):
+                return None
+            s = str(x).strip()
+            if s == '':
+                return None
+            s = s.replace(',', '.')
             try:
-                num = int(float(r.get('Numerator')))
-                den = int(float(r.get('Denominator')))
-            except Exception:
-                num = den = None
+                return float(s)
+            except (ValueError, TypeError):
+                return None
 
-            if num == 1 and den == 1:
+        for _, r in pc_rows.iterrows():
+            num = _auom_to_float(r.get('Numerator'))
+            den = _auom_to_float(r.get('Denominator'))
+
+            if (
+                num is not None and den is not None
+                and abs(num - 1) < 1e-6 and abs(den - 1) < 1e-6
+            ):
                 valid_pc_found = True
                 break
 
-            if num != 1:
+            if num is None or abs(num - 1) >= 1e-6:
                 num_invalid = True
-            if den != 1:
+            if den is None or abs(den - 1) >= 1e-6:
                 den_invalid = True
 
         if valid_pc_found:
@@ -4544,6 +4582,7 @@ def postprocess_with_views_roles_and_classification(
         'Loading Group':                         lambda mt, pt: True,
         'Division':                              lambda mt, pt: True,
         'Export/Import Group':                   lambda mt, pt: True,
+        'Intrastat Group':                       lambda mt, pt: True,
         'Product Hierarchy':                     lambda mt, pt: mt == 'FERT',
         'Price Control':                         lambda mt, pt: True,
         'Price Unit':                            lambda mt, pt: True,
@@ -4625,7 +4664,10 @@ def postprocess_with_views_roles_and_classification(
                     'Fields_Expected':  ','.join(view_to_fields.get(v, [])),
                 })
         if rows:
-            view_tabs_dict[v] = pd.DataFrame(rows)
+            df_view = pd.DataFrame(rows)
+            if not df_view.empty:
+                df_view = df_view.drop_duplicates(subset=['Material', 'Plant', 'Missing_View']).reset_index(drop=True)
+            view_tabs_dict[v] = df_view
     
     # -------------------------------------------------
     # ADD MRP Controller from MARC (Material + Plant)
@@ -4637,6 +4679,9 @@ def postprocess_with_views_roles_and_classification(
         marc_tmp["Material"] = marc_tmp["Material"].astype(str).str.strip()
         marc_tmp["Plant"] = marc_tmp["Plant"].astype(str).str.strip()
 
+        # Avoid repeated merges when MARC contains duplicate Material+Plant rows.
+        marc_tmp = marc_tmp.drop_duplicates(subset=["Material", "Plant"], keep="first")
+
         views_missing_output_df["Material"] = views_missing_output_df["Material"].astype(str).str.strip()
         views_missing_output_df["Plant"] = views_missing_output_df["Plant"].astype(str).str.strip()
 
@@ -4645,6 +4690,11 @@ def postprocess_with_views_roles_and_classification(
             on=["Material", "Plant"],
             how="left"
         )
+
+        if not views_missing_output_df.empty:
+            dedup_cols = [c for c in ['Material', 'Plant', 'Field', 'Error'] if c in views_missing_output_df.columns]
+            if dedup_cols:
+                views_missing_output_df = views_missing_output_df.drop_duplicates(subset=dedup_cols).reset_index(drop=True)
     else:
         views_missing_output_df["MRP Controller"] = ""
 
@@ -4750,7 +4800,46 @@ def run_full_validation(
     roles_df = rolesviews_dict["Roles"]
     views_df = rolesviews_dict["Views"]
 
-    # Apply plant filter to SAPUI5 Export
+    # ------------------------------------------------------------------
+    # 2b) Hard-scope this engine to Palmela plants only (PT01/PT02).
+    #
+    # marc_file / sap_file / mbew_file / zplm_marc_file may be *shared,
+    # global* exports (e.g. when app.py runs the combined "All Sites"
+    # report and hands the very same MARC file to both this engine and
+    # run_tn_validation()). Without this guard, whenever `plant_filter`
+    # is None (the common case for "All plants" combined runs), this
+    # engine would validate TN01/TN02 rows too — using Palmela's generic
+    # rules instead of the TN-exception-aware rules — producing spurious
+    # errors for Tunisia materials that don't match (and therefore aren't
+    # removed by) the app.py dedup step, since the error text differs
+    # from what the TN engine legitimately produces for the same
+    # Material/Plant/Field.
+    #
+    # This restriction is independent of `plant_filter` (which only
+    # narrows further, e.g. to a single PT01 or PT02 export). For a
+    # standalone Palmela-only run this is a no-op, since the uploaded
+    # files already only contain PT01/PT02.
+    PALMELA_PLANTS = {"PT01", "PT02"}
+
+    def _restrict_to_palmela_plants(df):
+        if df is None or df.empty:
+            return df
+        plant_col = next(
+            (c for c in ["Plant", "Valuation Area", "BWKEY", "WERKS"] if c in df.columns),
+            None
+        )
+        if plant_col is None:
+            return df
+        return df[
+            df[plant_col].astype(str).str.strip().str.upper().isin(PALMELA_PLANTS)
+        ].copy()
+
+    sap_df       = _restrict_to_palmela_plants(sap_df)
+    marc_df      = _restrict_to_palmela_plants(marc_df)
+    mbew_df      = _restrict_to_palmela_plants(mbew_df)
+    zplm_marc_df = _restrict_to_palmela_plants(zplm_marc_df)
+
+    # Apply the (optional) narrower export plant filter to SAPUI5 Export
     if plant_filter is not None and 'Plant' in sap_df.columns:
         pf = str(plant_filter).strip().upper()
         sap_df = sap_df[sap_df['Plant'].astype(str).str.strip().str.upper() == pf].copy()
@@ -4851,6 +4940,16 @@ def run_full_validation(
     # 5) Build errors DataFrame
     # ------------------------------------------------------------------
     errors_df = _coerce_df_for_display(pd.DataFrame(resultados))
+
+    # ✅ Safety-net dedup: remove exact duplicates (same Material, Plant,
+    # Field and Error). Different plants for the same material are fine
+    # and expected (e.g. PT01 vs PT02) — only an exact repeat of the same
+    # (Material, Plant, Field, Error) combination is removed here.
+    _dedup_key = [c for c in ['Material', 'Plant', 'Field', 'Error'] if c in errors_df.columns]
+    if len(_dedup_key) == 4 and not errors_df.empty:
+        for _c in _dedup_key:
+            errors_df[_c] = errors_df[_c].fillna('').astype(str).str.strip()
+        errors_df = errors_df.drop_duplicates(subset=_dedup_key).reset_index(drop=True)
 
     # Enterproj enrichment (optional — needs previous report)
     if previous_report:
@@ -7479,7 +7578,6 @@ def merge_assignments(errors_df: pd.DataFrame,
     # ✅ AUTO-LOAD ROLES (PATCH)
     if roles_df is None:
         try:
-            from rolesviews_data import get_rolesviews_bytesio
             from utils.fast_loader import load_xlsx_fast
 
             _rv = load_xlsx_fast(get_rolesviews_bytesio(), sheet_name=None)

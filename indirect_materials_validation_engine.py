@@ -26,7 +26,7 @@ IM_MATERIAL_TYPES = frozenset({"ERSA", "HIBE", "VERP"})
 IM_PLANTS = frozenset({"PT01", "PT02", "TN01", "TN02"})
 
 ERROR_COLS = [
-    "Material", "Plant", "Field", "Value", "Error", "Error_Type", "Table",
+    "Material", "Plant", "Field", "Value", "Error", "Error_Type", "Table", "View",
 ]
 
 
@@ -78,6 +78,22 @@ def _prepare_df(df):
     return out
 
 
+def _material_key(x):
+    """
+    Canonical Material key for cross-table joins/lookups (MARA <-> MARC).
+    Strips leading zeros so '000000000000900022' and '900022' match,
+    while '' stays '' (never becomes '0').
+    """
+    s = _norm(x)
+    if not s:
+        return ""
+    # Drop a trailing '.0' from Excel-cast floats, then strip leading zeros
+    if s.endswith(".0"):
+        s = s[:-2]
+    s = s.lstrip("0")
+    return s if s else "0"
+
+
 def _append_error(errors, *, material, plant, field, value, error, table=""):
     errors.append(
         {
@@ -88,6 +104,7 @@ def _append_error(errors, *, material, plant, field, value, error, table=""):
             "Error": error,
             "Error_Type": "Field Error",
             "Table": table,
+            "View": "",
         }
     )
 
@@ -256,8 +273,16 @@ def build_im_sap_like_df(marc_df, mara_df):
         'Handling Unit Type', 'Packaging Mat. Type', 'WH Material Group',
     ] if c in mara.columns]
 
-    # ── Merge ────────────────────────────────────────────────────────────────
-    df = marc.merge(mara[mara_cols], on='Material', how='left')
+    # ── Merge on canonical Material key (handles leading-zero mismatches,
+    #    e.g. MARC '000000000000900022' vs MARA '900022') ───────────────────
+    marc = marc.copy()
+    mara_subset = mara[mara_cols].copy()
+    marc['_MATKEY']        = marc['Material'].map(_material_key)
+    mara_subset['_MATKEY'] = mara_subset['Material'].map(_material_key)
+    mara_subset = mara_subset.drop(columns=['Material'])  # keep MARC's Material for display
+
+    df = marc.merge(mara_subset, on='_MATKEY', how='left')
+    df = df.drop(columns=['_MATKEY'])
 
     return df
 
@@ -267,6 +292,12 @@ def build_im_sap_like_df(marc_df, mara_df):
 # =============================================================================
 
 def _material_type_map(mara_df):
+    """
+    Material -> Material Type map, keyed by the CANONICAL material key
+    (leading zeros stripped) so lookups work regardless of how each
+    table formatted the Material number (e.g. '900022' vs
+    '000000000000900022').
+    """
     if mara_df is None or mara_df.empty:
         return {}
     mat_col = _pick(mara_df, ["Material", "MATNR"])
@@ -275,7 +306,7 @@ def _material_type_map(mara_df):
         return {}
     return dict(
         zip(
-            mara_df[mat_col].map(_norm),
+            mara_df[mat_col].map(_material_key),
             mara_df[mt_col].map(lambda x: _norm(x).upper()),
         )
     )
@@ -330,12 +361,12 @@ def im_validar_basic(sap_df, errors):
             desc = _norm(row[desc_col])
             if _is_blank(desc):
                 _append_error(
-                    errors, material=material, plant=plant, field="Description (MAKTX)",
+                    errors, material=material, plant=plant, field="Description",
                     value="", error="Mandatory field blank", table="MAKT",
                 )
             elif len(desc) > 40:
                 _append_error(
-                    errors, material=material, plant=plant, field="Description (MAKTX)",
+                    errors, material=material, plant=plant, field="Description",
                     value=desc, error=f"Description exceeds 40 characters (len={len(desc)})",
                     table="MAKT",
                 )
@@ -343,7 +374,7 @@ def im_validar_basic(sap_df, errors):
         # MEINS — MARA
         if base_uom_col and _is_blank(row[base_uom_col]):
             _append_error(
-                errors, material=material, plant=plant, field="Base UOM (MEINS)",
+                errors, material=material, plant=plant, field="Base UOM",
                 value="", error="Mandatory field blank", table="MARA",
             )
 
@@ -352,12 +383,12 @@ def im_validar_basic(sap_df, errors):
             val = normalize_code(row[div_col], as_int=True, zero_pad=2)
             if val == "":
                 _append_error(
-                    errors, material=material, plant=plant, field="Division (SPART)",
+                    errors, material=material, plant=plant, field="Division",
                     value="", error="Mandatory field blank", table="MARA",
                 )
             elif val != "00":
                 _append_error(
-                    errors, material=material, plant=plant, field="Division (SPART)",
+                    errors, material=material, plant=plant, field="Division",
                     value=row[div_col], error="Should be '00'", table="MARA",
                 )
 
@@ -366,18 +397,18 @@ def im_validar_basic(sap_df, errors):
             mg = _norm(row[mg_col]).upper()
             if _is_blank(mg):
                 _append_error(
-                    errors, material=material, plant=plant, field="Material Group (MATKL)",
+                    errors, material=material, plant=plant, field="Material Group",
                     value="", error="Mandatory field blank", table="MARA",
                 )
             elif mt in {"HIBE", "ERSA"} and not re.fullmatch(r"MT\d{7}", mg):
                 _append_error(
-                    errors, material=material, plant=plant, field="Material Group (MATKL)",
+                    errors, material=material, plant=plant, field="Material Group",
                     value=mg, error="HIBE/ERSA must match pattern MTXXXXXXX (MT + 7 digits)",
                     table="MARA",
                 )
             elif mt == "VERP" and not re.fullmatch(r"LF\d{7}", mg):
                 _append_error(
-                    errors, material=material, plant=plant, field="Material Group (MATKL)",
+                    errors, material=material, plant=plant, field="Material Group",
                     value=mg, error="VERP must match pattern LFXXXXXXX (LF + 7 digits)",
                     table="MARA",
                 )
@@ -388,34 +419,37 @@ def im_validar_basic(sap_df, errors):
             if _is_blank(val):
                 _append_error(
                     errors, material=material, plant=plant,
-                    field="Gen. Item Cat. Grp (MTPOS)",
+                    field="General Item Category Group",
                     value="", error="Mandatory field blank", table="MARA",
                 )
             elif val != "NORM":
                 _append_error(
                     errors, material=material, plant=plant,
-                    field="Gen. Item Cat. Grp (MTPOS)",
+                    field="General Item Category Group",
                     value=val, error="ERSA/HIBE must be 'NORM'", table="MARA",
                 )
 
-        # BRGEW — MARA
-        if gross_col and _to_float(row[gross_col]) is None:
+        # BRGEW — MARA (0 / 0.000 counts as blank)
+        gross_val = _to_float(row[gross_col]) if gross_col else None
+        if gross_col and (gross_val is None or gross_val == 0):
             _append_error(
-                errors, material=material, plant=plant, field="Gross Weight (BRGEW)",
+                errors, material=material, plant=plant, field="Gross Weight",
                 value=row[gross_col], error="Mandatory field blank or zero", table="MARA",
             )
-        # NTGEW — MARA
-        if net_col and _to_float(row[net_col]) is None:
+        # NTGEW — MARA (0 / 0.000 counts as blank)
+        net_val = _to_float(row[net_col]) if net_col else None
+        if net_col and (net_val is None or net_val == 0):
             _append_error(
-                errors, material=material, plant=plant, field="Net Weight (NTGEW)",
+                errors, material=material, plant=plant, field="Net Weight",
                 value=row[net_col], error="Mandatory field blank or zero", table="MARA",
             )
-        # GEWEI — MARA
-        if uow_col and _is_blank(row[uow_col]):
+        # GEWEI — MARA (only mandatory if the material actually has a weight > 0)
+        has_weight = (gross_val is not None and gross_val > 0) or (net_val is not None and net_val > 0)
+        if uow_col and has_weight and _is_blank(row[uow_col]):
             _append_error(
                 errors, material=material, plant=plant,
-                field="Unit of Weight (GEWEI)",
-                value="", error="Mandatory field blank", table="MARA",
+                field="Unit of Weight (ISO Format)",
+                value="", error="Mandatory field blank when a weight is set", table="MARA",
             )
 
         # MAGRV — MARA  (only VERP)
@@ -424,7 +458,7 @@ def im_validar_basic(sap_df, errors):
             if val != "ZSHP":
                 _append_error(
                     errors, material=material, plant=plant,
-                    field="Matl Grp Pack.Matls (MAGRV)",
+                    field="Matl Grp Pack.Matls",
                     value=val, error="VERP must be 'ZSHP'", table="MARA",
                 )
 
@@ -453,11 +487,11 @@ def im_validar_mrp_view1(sap_df, errors):
             expected = "ND" if plant == "TN02" and mt == "VERP" else "PD"
             if _is_blank(val):
                 _append_error(errors, material=material, plant=plant,
-                              field="MRP Type (DISMM)", value="",
+                              field="MRP Type", value="",
                               error="Mandatory field blank", table="MARC")
             elif val != expected:
                 _append_error(errors, material=material, plant=plant,
-                              field="MRP Type (DISMM)", value=val,
+                              field="MRP Type", value=val,
                               error=f"Should be '{expected}'", table="MARC")
 
         # DISPO — MARC
@@ -465,15 +499,15 @@ def im_validar_mrp_view1(sap_df, errors):
             val = _norm(row[mrp_ctrl_col]).upper()
             if _is_blank(val):
                 _append_error(errors, material=material, plant=plant,
-                              field="MRP Controller (DISPO)", value="",
+                              field="MRP Controller", value="",
                               error="Mandatory field blank", table="MARC")
             elif mt in {"HIBE", "ERSA"} and not re.fullmatch(r"NP\d", val):
                 _append_error(errors, material=material, plant=plant,
-                              field="MRP Controller (DISPO)", value=val,
+                              field="MRP Controller", value=val,
                               error="HIBE/ERSA must match NPX (NP + digit)", table="MARC")
             elif mt == "VERP" and not re.fullmatch(r"P\d{2}", val):
                 _append_error(errors, material=material, plant=plant,
-                              field="MRP Controller (DISPO)", value=val,
+                              field="MRP Controller", value=val,
                               error="VERP must match PXX (P + 2 digits)", table="MARC")
 
         # DISGR — MARC
@@ -482,11 +516,11 @@ def im_validar_mrp_view1(sap_df, errors):
             expected = "ZSTO" if plant == "TN02" and mt == "VERP" else "ZIM"
             if _is_blank(val):
                 _append_error(errors, material=material, plant=plant,
-                              field="MRP Group (DISGR)", value="",
+                              field="MRP Group", value="",
                               error="Mandatory field blank", table="MARC")
             elif val != expected:
                 _append_error(errors, material=material, plant=plant,
-                              field="MRP Group (DISGR)", value=val,
+                              field="MRP Group", value=val,
                               error=f"Should be '{expected}'", table="MARC")
 
         # MMSTA — MARC
@@ -494,15 +528,15 @@ def im_validar_mrp_view1(sap_df, errors):
             val = normalize_code(row[psms_col], as_int=True)
             if _is_blank(val):
                 _append_error(errors, material=material, plant=plant,
-                              field="Plant Specific Material Status (MMSTA)", value="",
+                              field="Plant Specific Material Status", value="",
                               error="Mandatory field blank", table="MARC")
             elif mt == "VERP" and val not in {"45", "70", "99"}:
                 _append_error(errors, material=material, plant=plant,
-                              field="Plant Specific Material Status (MMSTA)", value=val,
+                              field="Plant Specific Material Status", value=val,
                               error="VERP must be 45, 70 or 99", table="MARC")
             elif mt in {"ERSA", "HIBE"} and val != "80":
                 _append_error(errors, material=material, plant=plant,
-                              field="Plant Specific Material Status (MMSTA)", value=val,
+                              field="Plant Specific Material Status", value=val,
                               error="ERSA/HIBE must be '80'", table="MARC")
 
         # DISLS — MARC
@@ -510,19 +544,19 @@ def im_validar_mrp_view1(sap_df, errors):
             val = _norm(row[lot_col]).upper()
             if val != "H1":
                 _append_error(errors, material=material, plant=plant,
-                              field="Lot Size (DISLS)", value=val,
+                              field="Lot Sizing Procedure ", value=val,
                               error="Should be 'H1'", table="MARC")
 
         # BSTMI — MARC (mandatory for ERSA / HIBE / VERP)
         if min_lot_col and mt in {"ERSA", "HIBE", "VERP"} and _is_blank(row[min_lot_col]):
             _append_error(errors, material=material, plant=plant,
-                          field="Minimum Lot Size (BSTMI)", value="",
+                          field="Minimum Lot Size", value="",
                           error="Mandatory field blank for ERSA/HIBE/VERP", table="MARC")
 
         # BSTMA — MARC (mandatory for ERSA / HIBE / VERP)
         if max_lot_col and mt in {"ERSA", "HIBE", "VERP"} and _is_blank(row[max_lot_col]):
             _append_error(errors, material=material, plant=plant,
-                          field="Maximum Lot Size (BSTMA)", value="",
+                          field="Maximum Lot Size", value="",
                           error="Mandatory field blank for ERSA/HIBE/VERP", table="MARC")
 
 
@@ -545,11 +579,11 @@ def im_validar_mrp_view2(sap_df, errors):
             val = _norm(row[proc_col]).upper()
             if _is_blank(val):
                 _append_error(errors, material=material, plant=plant,
-                              field="Procurement Type (BESKZ)", value="",
+                              field="Procurement Type", value="",
                               error="Mandatory field blank", table="MARC")
             elif val not in {"F", "X"}:
                 _append_error(errors, material=material, plant=plant,
-                              field="Procurement Type (BESKZ)", value=val,
+                              field="Procurement Type", value=val,
                               error="Must be 'F' or 'X'", table="MARC")
 
         # SOBSL — MARC  (only TN02)
@@ -557,7 +591,7 @@ def im_validar_mrp_view2(sap_df, errors):
             val = _norm(row[spec_col]).upper()
             if val != "Z3":
                 _append_error(errors, material=material, plant=plant,
-                              field="Special Procurement (SOBSL)", value=val,
+                              field="Special Procurement Type", value=val,
                               error="TN02 must be 'Z3'", table="MARC")
 
         # LGPRO — MARC  (Stor. Loc. for Ext. Proc.)
@@ -590,13 +624,13 @@ def im_validar_mrp_view2(sap_df, errors):
                 # Dash in mapping → field must be blank
                 if not _is_blank(val_lgpro):
                     _append_error(errors, material=material, plant=plant,
-                                  field="Storage Location Ext Proc (LGPRO)", value=val_lgpro,
+                                  field="Storage Location for Ext. Procurement", value=val_lgpro,
                                   error="Must be blank for this Plant/Material Type", table="MARC")
             else:
                 # Specific value expected
                 if val_lgpro != expected_lgpro:
                     _append_error(errors, material=material, plant=plant,
-                                  field="Storage Location Ext Proc (LGPRO)", value=val_lgpro,
+                                  field="Storage Location for Ext. Procurement", value=val_lgpro,
                                   error=f"Should be '{expected_lgpro}'", table="MARC")
 
 
@@ -616,7 +650,7 @@ def im_validar_mrp_view3(sap_df, errors):
             val = _norm(row[per_col]).upper()
             if val != "M":
                 _append_error(errors, material=material, plant=plant,
-                              field="Period Indicator (PERKZ)", value=val,
+                              field="Period Indicator", value=val,
                               error="Should be 'M'", table="MARC")
 
         # MTVFP — MARC
@@ -624,7 +658,7 @@ def im_validar_mrp_view3(sap_df, errors):
             val = normalize_code(row[avail_col], as_int=True, zero_pad=2)
             if val != "01":
                 _append_error(errors, material=material, plant=plant,
-                              field="Availability Check (MTVFP)", value=row[avail_col],
+                              field="Availability Check", value=row[avail_col],
                               error="Should be '01'", table="MARC")
 
 
@@ -649,29 +683,29 @@ def im_validar_purchasing(sap_df, errors):
             if plant == "TN02" and mt == "VERP":
                 if val != "STO":
                     _append_error(errors, material=material, plant=plant,
-                                  field="Purchasing Group (EKGRP)", value=val,
+                                  field="Purchasing Group", value=val,
                                   error="TN02 VERP must be 'STO'", table="MARC")
             elif mt == "VERP":
                 if val != "IFL":
                     _append_error(errors, material=material, plant=plant,
-                                  field="Purchasing Group (EKGRP)", value=val,
+                                  field="Purchasing Group", value=val,
                                   error="VERP must be 'IFL'", table="MARC")
             elif mt in {"HIBE", "ERSA"}:
                 if val not in allowed:
                     _append_error(errors, material=material, plant=plant,
-                                  field="Purchasing Group (EKGRP)", value=val,
+                                  field="Purchasing Group", value=val,
                                   error="HIBE/ERSA must be IMR, IMT or IPS", table="MARC")
 
         # AUTPU — MARC
         if auto_col and not _is_x(row[auto_col]):
             _append_error(errors, material=material, plant=plant,
-                          field="Auto PO (AUTPU)", value=row[auto_col],
+                          field="Automatic Purchase Order Allowed", value=row[auto_col],
                           error="Must be 'X'", table="MARC")
 
         # KORDB — MARC
         if src_col and not _is_x(row[src_col]):
             _append_error(errors, material=material, plant=plant,
-                          field="Source List Required (KORDB)", value=row[src_col],
+                          field="Source List Required", value=row[src_col],
                           error="Must be 'X'", table="MARC")
 
 
@@ -693,17 +727,17 @@ def im_validar_plant_storage(sap_df, errors):
             val = _norm(row[per_col]).upper() 
             if _is_blank(val):
                 _append_error(errors, material=material, plant=plant,
-                              field="Period Ind. for SLED (IPRKZ)", value="",
+                              field="Period Ind. for SLED", value="",
                               error="Mandatory field blank for ERSA/HIBE/VERP", table="MARC")
             elif val != "D":
                 _append_error(errors, material=material, plant=plant,
-                              field="Period Ind. for SLED (IPRKZ)", value=val,
+                              field="Period Ind. for SLED", value=val,
                               error="Should be 'D'", table="MARC")
 
         # MHDRZ — MARC (Expiration Date — must be blank for ERSA/HIBE/VERP)
         if exp_col and mt in {"ERSA", "HIBE", "VERP"} and not _is_blank(row[exp_col]):
             _append_error(errors, material=material, plant=plant,
-                          field="Expiration Date (MHDRZ)", value=row[exp_col],
+                          field="Expiration Date", value=row[exp_col],
                           error="Must be blank for ERSA/HIBE/VERP", table="MARC")
 
 
@@ -732,11 +766,11 @@ def im_validar_general_plant(sap_df, errors):
             }.get(plant)
             if _is_blank(val):
                 _append_error(errors, material=material, plant=plant,
-                              field="Profit Center (PRCTR)", value="",
+                              field="Profit Center", value="",
                               error="Mandatory field blank", table="MARC")
             elif expected and val != expected:
                 _append_error(errors, material=material, plant=plant,
-                              field="Profit Center (PRCTR)", value=val,
+                              field="Profit Center", value=val,
                               error=f"Should be '{expected}'", table="MARC")
 
         # XMCNG — MARC
@@ -744,11 +778,11 @@ def im_validar_general_plant(sap_df, errors):
             is_x = _is_x(row[neg_col])
             if mt == "VERP" and not is_x:
                 _append_error(errors, material=material, plant=plant,
-                              field="Negative Stocks (XMCNG)", value=row[neg_col],
+                              field="Neg. stocks in plant", value=row[neg_col],
                               error="VERP must be 'X'", table="MARC")
             elif mt != "VERP" and is_x:
                 _append_error(errors, material=material, plant=plant,
-                              field="Negative Stocks (XMCNG)", value=row[neg_col],
+                              field="Neg. stocks in plant", value=row[neg_col],
                               error="Only VERP may be 'X'", table="MARC")
 
         # LOGGR — MARC
@@ -756,7 +790,7 @@ def im_validar_general_plant(sap_df, errors):
             val = _norm(row[log_col]).upper()
             if val != "NORM":
                 _append_error(errors, material=material, plant=plant,
-                              field="Log. Handling Group (LOGGR)", value=val,
+                              field="Log. Handling Group", value=val,
                               error="Should be 'NORM'", table="MARC")
 
 
@@ -775,7 +809,7 @@ def im_validar_mbew(mbew_df, mt_map, errors, plant_filter=None):
     for _, row in mbew_df.iterrows():
         material = row[mat_col] if mat_col else ""
         plant    = _norm(row[area_col]).upper() if area_col else ""
-        mt       = mt_map.get(_norm(material), "")
+        mt       = mt_map.get(_material_key(material), "")
         if mt not in IM_MATERIAL_TYPES:
             continue
         if plant_filter and plant != _norm(plant_filter).upper():
@@ -787,7 +821,7 @@ def im_validar_mbew(mbew_df, mt_map, errors, plant_filter=None):
             expected = {"HIBE": "3030", "ERSA": "3040"}.get(mt)
             if expected and val != expected:
                 _append_error(errors, material=material, plant=plant,
-                              field="Valuation Class (BKLAS)", value=val,
+                              field="Valuation Class", value=val,
                               error=f"{mt} must be '{expected}'", table="MBEW")
 
         # MLAST — MBEW  (ERSA/HIBE only)
@@ -795,7 +829,7 @@ def im_validar_mbew(mbew_df, mt_map, errors, plant_filter=None):
             val = normalize_code(row[pd_col], as_int=True)
             if val != "2":
                 _append_error(errors, material=material, plant=plant,
-                              field="Price Determination (MLAST)", value=row[pd_col],
+                              field="Price Control Determination", value=row[pd_col],
                               error="ERSA/HIBE must be '2'", table="MBEW")
 
         # VPRSV — MBEW  (ERSA/HIBE only)
@@ -803,7 +837,7 @@ def im_validar_mbew(mbew_df, mt_map, errors, plant_filter=None):
             val = _norm(row[pc_col]).upper()
             if val != "V":
                 _append_error(errors, material=material, plant=plant,
-                              field="Price Control (VPRSV)", value=val,
+                              field="Price Control", value=val,
                               error="ERSA/HIBE must be 'V'", table="MBEW")
 
         # PEINH — MBEW
@@ -811,13 +845,13 @@ def im_validar_mbew(mbew_df, mt_map, errors, plant_filter=None):
             val = normalize_code(row[pu_col], as_int=True)
             if val != "10000":
                 _append_error(errors, material=material, plant=plant,
-                              field="Price Unit (PEINH)", value=row[pu_col],
+                              field="Price Unit", value=row[pu_col],
                               error="Must be '10000'", table="MBEW")
 
         # XLIFO — MBEW
         if lifo_col and not _is_x(row[lifo_col]):
             _append_error(errors, material=material, plant=plant,
-                          field="LIFO/FIFO-relevant (XLIFO)", value=row[lifo_col],
+                          field="LIFO/FIFO-relevant", value=row[lifo_col],
                           error="Must be 'X'", table="MBEW")
 
 
@@ -833,7 +867,7 @@ def im_validar_mara_wh_packaging(mara_df, mt_map, errors):
 
     for _, row in mara_df.iterrows():
         material = row[mat_col] if mat_col else ""
-        mt       = mt_map.get(_norm(material), "")
+        mt       = mt_map.get(_material_key(material), "")
         if mt not in IM_MATERIAL_TYPES:
             continue
         mg = _norm(row[mg_col]).upper() if mg_col else ""
@@ -843,19 +877,19 @@ def im_validar_mara_wh_packaging(mara_df, mt_map, errors):
             val = _norm(row[wh_col]).upper()
             if val != "Z006":
                 _append_error(errors, material=material, plant="",
-                              field="WH Material Group (MARA)", value=val,
+                              field="WH Material Group", value=val,
                               error="ERSA MT0020012 must be 'Z006'", table="MARA")
 
         # HUTYP — MARA  (mandatory for VERP)
         if hut_col and mt == "VERP" and _is_blank(row[hut_col]):
             _append_error(errors, material=material, plant="",
-                          field="Handling Unit Type (HUTYP)", value="",
+                          field="Handling Unit Type", value="",
                           error="VERP cannot be blank", table="MARA")
 
         # Packaging Mat. Type — MARA  (mandatory for VERP)
         if pkg_col and mt == "VERP" and _is_blank(row[pkg_col]):
             _append_error(errors, material=material, plant="",
-                          field="Packaging Mat. Type (MARA)", value="",
+                          field="Packaging Mat. Type", value="",
                           error="Mandatory for VERP", table="MARA")
 
 
@@ -872,7 +906,7 @@ def im_validar_mvke(mvke_df, mt_map, errors):
 
     for _, row in mvke_df.iterrows():
         material = row[mat_col] if mat_col else ""
-        mt       = mt_map.get(_norm(material), "")
+        mt       = mt_map.get(_material_key(material), "")
         if mt != "VERP":
             continue
 
@@ -881,7 +915,7 @@ def im_validar_mvke(mvke_df, mt_map, errors):
             val = _norm(row[icg_col]).upper()
             if val != "NORM":
                 _append_error(errors, material=material, plant="",
-                              field="Item Category Group (MTPOS / MVKE)", value=val,
+                              field="Item Category Group (MVKE)", value=val,
                               error="VERP must be 'NORM'", table="MVKE")
 
         # Tax data — MVKE
@@ -897,39 +931,257 @@ def im_validar_mvke(mvke_df, mt_map, errors):
 # SUMMARY & STYLING
 # =============================================================================
 
-def _build_summary(errors_df):
+# IM-specific Field → View mapping (aligned with RolesViews.xlsx)
+# Fields not in the Roles sheet are mapped to "Not applicable"
+_IM_FIELD_TO_VIEW = {
+    # Basic Data (K)
+    "Material":                             "K",
+    "Description":                          "K",
+    "Material Type":                        "K",
+    "Base UOM":                             "K",
+    "Division":                             "K",
+    "Material Group":                       "K",
+    "General Item Category Group":          "K",
+    "Gross Weight":                         "K",
+    "Net Weight":                           "K",
+    "Unit of Weight (ISO Format)":          "K",
+    "Matl Grp Pack.Matls":                  "K",
+    # MRP / Purchasing (D / E)
+    "MRP Type":                             "D",
+    "MRP Controller":                       "D",
+    "MRP Group":                            "D",
+    "Plant Specific Material Status":       "D",
+    "Lot Sizing Procedure ":                "D",
+    "Minimum Lot Size":                     "D",
+    "Maximum Lot Size":                     "D",
+    "Procurement Type":                     "D",
+    "Special Procurement Type":             "D",
+    "Storage Location for Ext. Procurement":"D",
+    "Period Indicator":                     "D",
+    "Availability Check":                   "D",
+    "Purchasing Group":                     "E",
+    "Automatic Purchase Order Allowed":     "E",
+    "Source List Required":                 "E",
+    # Storage / General Plant (L)
+    "Period Ind. for SLED":                 "L",
+    "Expiration Date":                      "L",
+    "Profit Center":                        "L",
+    "Neg. stocks in plant":                 "L",
+    "Log. Handling Group":                  "L",
+    # Accounting (B)
+    "Valuation Class":                      "B",
+    "Price Control Determination":          "B",
+    "Price Control":                        "B",
+    "Price Unit":                           "B",
+    "LIFO/FIFO-relevant":                   "B",
+    # Sales (V)
+    "Packaging Mat. Type":                  "V",
+    "Item Category Group (MVKE)":           "V",
+    "Tax Data (MVKE)":                      "V",
+    # Warehouse Management (S) — only conditionally required (see _im_postprocess)
+    "WH Material Group":                    "S",
+    # No view
+    "Handling Unit Type":                   "Not applicable",
+}
+
+_IM_VIEW_TO_DESC = {
+    "K": "Basic Data",
+    "D": "MRP",
+    "E": "Purchasing",
+    "L": "Storage",
+    "B": "Accounting",
+    "V": "Sales",
+    "S": "Warehouse management",
+}
+
+# Required views per IM material type
+# Note: "B" (Accounting) is NOT required for VERP — packaging materials
+# are not accounting-relevant the same way, so it's excluded from scope.
+_IM_REQUIRED_VIEWS = {
+    "ERSA": {"K", "D", "E", "L", "B"},
+    "HIBE": {"K", "D", "E", "L", "B"},
+    "VERP": {"K", "D", "E", "L", "V"},
+}
+
+# All fields expected per view (for fields_expected column in view_tabs)
+_IM_VIEW_TO_FIELDS: dict[str, list[str]] = {}
+for _f, _v in _IM_FIELD_TO_VIEW.items():
+    if _v != "Not applicable":
+        _IM_VIEW_TO_FIELDS.setdefault(_v, []).append(_f)
+
+
+def _im_postprocess(
+    errors_df: pd.DataFrame,
+    sap_im_df: pd.DataFrame,
+    mt_map: dict,
+    plant_filter: str | None = None,
+):
+    """
+    IM equivalent of postprocess_with_views_roles_and_classification.
+
+    Reads the REAL 'Maintenance status' letters from MARC (via sap_im_df,
+    which carries the original MARC columns) to determine which views are
+    actually missing per (Material, Plant) — mirroring the SAP engine's
+    logic exactly, instead of assuming every required view is missing.
+
+    View 'K' (Basic Data) is always treated as present, even if absent
+    from the Maintenance status string, and is therefore never reported
+    as a missing view.
+
+    Returns:
+        errors_df, views_missing_output_df, contagem_final_df,
+        coverage_df, view_tabs_dict
+    """
+    errors_df = errors_df.copy()
+
+    # 1) Map Field → View
+    if "Field" in errors_df.columns:
+        errors_df["View"] = errors_df["Field"].map(_IM_FIELD_TO_VIEW).fillna("Not applicable")
+    else:
+        errors_df["View"] = "Not applicable"
+
+    mat_col    = _pick(sap_im_df, ["Material", "MATNR"])
+    plant_col  = _pick(sap_im_df, ["Plant", "WERKS"])
+    mt_col     = _pick(sap_im_df, ["Material Type", "MTART"])
+    mg_col     = _pick(sap_im_df, ["Material Group", "MATKL"])
+    maint_col  = _pick(sap_im_df, ["Maintenance status", "Maintenance Status", "PSTAT", "Maintained Status"])
+
+    # 2) Build Letters_Present per (Material, Plant), always including 'K'
+    #    ('K' — Basic Data — is implicitly present and never reported missing)
+    missing_lookup: dict[tuple, set] = {}
+    missing_rows = []
+    combos: list[tuple[str, str, str]] = []  # (material, plant, mt) for scope/coverage
+
+    for _, row in sap_im_df.iterrows():
+        mat   = _norm(row[mat_col])           if mat_col   else ""
+        plant = _norm(row[plant_col]).upper() if plant_col else ""
+        mt    = _norm(row[mt_col]).upper()    if mt_col    else mt_map.get(_material_key(mat), "")
+        if mt not in IM_MATERIAL_TYPES:
+            continue
+        combos.append((mat, plant, mt))
+
+        raw_status = _norm(row[maint_col]) if maint_col else ""
+        present = set(raw_status.upper()) if raw_status else set()
+        present.add("K")  # always present, regardless of Maintenance status content
+
+        required = set(_IM_REQUIRED_VIEWS.get(mt, set()))
+        # View 'S' (Warehouse Management) is only required for ERSA
+        # materials belonging to Material Group MT0020012 — everyone
+        # else is out of scope for this view entirely.
+        mg = _norm(row[mg_col]).upper() if mg_col else ""
+        if mt == "ERSA" and mg == "MT0020012":
+            required.add("S")
+
+        missing  = (required - present) - {"K"}  # K is never missing
+
+        key = (mat, plant)
+        missing_lookup[key] = missing
+
+        if missing:
+            missing_rows.append({
+                "Material":         mat,
+                "Plant":            plant,
+                "Material Type":    mt,
+                "Letters_Present":  ",".join(sorted(present)),
+                "Letters_Missing":  ",".join(sorted(missing)),
+            })
+
+    views_missing_df = pd.DataFrame(missing_rows)
+
+    # 3) Classify each error row: Missing View (justified) vs Field Error
+    def _classify(row):
+        view = str(row.get("View", "")).strip()
+        if view in ("", "Not applicable", "K"):
+            return "Field Error"
+        key = (str(row.get("Material", "")).strip(), str(row.get("Plant", "")).strip())
+        if view in missing_lookup.get(key, set()):
+            return "Missing View"
+        return "Field Error"
+
+    if not errors_df.empty:
+        errors_df["Error_Type"]                = errors_df.apply(_classify, axis=1)
+        errors_df["Justified_By_Missing_View"] = errors_df["Error_Type"] == "Missing View"
+    else:
+        errors_df["Error_Type"]                = pd.Series(dtype=str)
+        errors_df["Justified_By_Missing_View"] = pd.Series(dtype=bool)
+
+    # 4) Split — only actionable Field Errors go into "Field With Error" / Adjusted Summary
+    views_missing_output_df = (
+        errors_df[~errors_df["Justified_By_Missing_View"]].copy()
+        if not errors_df.empty else errors_df.copy()
+    )
+
+    # 5) Adjusted Summary (contagem_final_df) — Field Errors only
+    if not views_missing_output_df.empty and "Field" in views_missing_output_df.columns:
+        contagem_final_df = (
+            views_missing_output_df["Field"]
+            .value_counts()
+            .rename_axis("Field")
+            .reset_index(name="Adjusted Nº of Errors")
+        )
+        contagem_final_df["View"] = contagem_final_df["Field"].map(_IM_FIELD_TO_VIEW).fillna("Not applicable")
+        contagem_final_df["View_Description"] = contagem_final_df["View"].map(_IM_VIEW_TO_DESC).fillna("Not applicable")
+        contagem_final_df = contagem_final_df.sort_values(
+            "Adjusted Nº of Errors", ascending=False
+        ).reset_index(drop=True)
+    else:
+        contagem_final_df = pd.DataFrame(
+            columns=["Field", "Adjusted Nº of Errors", "View", "View_Description"]
+        )
+
+    # 6) Coverage per View — count of materials ACTUALLY missing each view
+    view_counts: dict[str, int] = {}
+    for missing in missing_lookup.values():
+        for v in missing:
+            view_counts[v] = view_counts.get(v, 0) + 1
+
+    coverage_df = pd.DataFrame([
+        {
+            "View":                          v,
+            "View_Description":              _IM_VIEW_TO_DESC.get(v, ""),
+            "Materiais without Active View":  cnt,
+        }
+        for v, cnt in sorted(view_counts.items())
+    ]) if view_counts else pd.DataFrame(columns=["View", "View_Description", "Materiais without Active View"])
+
+    # 7) view_tabs_dict — Missing_<View> tabs: only materials ACTUALLY missing that view
+    view_tabs_dict: dict[str, pd.DataFrame] = {}
+    for mat, plant, mt in combos:
+        missing = missing_lookup.get((mat, plant), set())
+        for v in missing:
+            fields = _IM_VIEW_TO_FIELDS.get(v, [])
+            row = {
+                "Material":         mat,
+                "Plant":            plant,
+                "Missing_View":     v,
+                "View_Description": _IM_VIEW_TO_DESC.get(v, ""),
+                "Fields_Expected":  ", ".join(fields),
+            }
+            view_tabs_dict.setdefault(v, []).append(row)
+
+    view_tabs_dict = {
+        v: pd.DataFrame(rows).drop_duplicates()
+        for v, rows in view_tabs_dict.items()
+    }
+
+    return (
+        errors_df,
+        views_missing_output_df,
+        contagem_final_df,
+        coverage_df,
+        view_tabs_dict,
+    )
+
+def _build_summary(errors_df: pd.DataFrame) -> pd.DataFrame:
     if errors_df.empty or "Field" not in errors_df.columns:
-        return pd.DataFrame(columns=["Field", "Adjusted Nº of Errors", "% of Total"])
-    summary = (
+        return pd.DataFrame(columns=["Field", "Adjusted Nº of Errors"])
+    return (
         errors_df["Field"]
         .value_counts()
         .rename_axis("Field")
         .reset_index(name="Adjusted Nº of Errors")
     )
-    total = summary["Adjusted Nº of Errors"].sum()
-    if total:
-        summary["% of Total"] = (
-            summary["Adjusted Nº of Errors"] / total * 100
-        ).round(1)
-    else:
-        summary["% of Total"] = 0.0
-    return summary.sort_values("Adjusted Nº of Errors", ascending=False).reset_index(drop=True)
 
-
-def _style_im_report(
-    xlsx_bytes: io.BytesIO,
-    *,
-    errors_df: pd.DataFrame,
-    summary_df: pd.DataFrame,
-    coverage_df: pd.DataFrame | None = None,
-) -> io.BytesIO:
-
-    return _style_sap_report(
-        xlsx_bytes,
-        errors_df=errors_df,
-        contagem_final_df=summary_df,
-        coverage_df=coverage_df,
-    )
 
 # =============================================================================
 # MAIN ENTRY POINT
@@ -1032,44 +1284,80 @@ def run_indirect_materials_validation(
         else pd.DataFrame(columns=ERROR_COLS)
     )
 
-    summary_df  = _build_summary(errors_df)
-    coverage_df = pd.DataFrame(
-        {
-            "Metric": [
-                "Materials in scope (MARC)",
-                "Materials with errors",
-                "Distinct fields with errors",
-                "Total errors",
-            ],
-            "Value": [
-                int(sap_im[mat_col_sl].nunique()),
-                int(errors_df["Material"].nunique()) if not errors_df.empty else 0,
-                int(errors_df["Field"].nunique())    if not errors_df.empty else 0,
-                len(errors_df),
-            ],
-        }
-    )
+    _cb(93, "Post-processing views and summary...")
+    (
+        errors_df,
+        views_missing_output_df,
+        contagem_final_df,
+        coverage_df,
+        view_tabs_dict,
+    ) = _im_postprocess(errors_df, sap_im, mt_map, plant_filter=plant_filter)
+
+    summary_df = _build_summary(errors_df)
 
     _cb(95, "Building Excel report...")
     out = io.BytesIO()
+
+    if not contagem_final_df.empty and "Adjusted Nº of Errors" in contagem_final_df.columns:
+        contagem_final_df = contagem_final_df.sort_values(
+            "Adjusted Nº of Errors", ascending=False
+        ).reset_index(drop=True)
+
+    base_row = 1
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         pd.DataFrame().to_excel(writer, sheet_name="Executive Summary", index=False)
-        summary_df.to_excel(writer, sheet_name="Adjusted Summary", index=False, startrow=1)
+
+        if not contagem_final_df.empty:
+            contagem_final_df.to_excel(
+                writer, sheet_name="Adjusted Summary", index=False, startrow=1
+            )
+            base_row = len(contagem_final_df) + 5
         if not coverage_df.empty:
             coverage_df.to_excel(
-                writer, sheet_name="Adjusted Summary", index=False,
-                startrow=len(summary_df) + 4,
+                writer, sheet_name="Adjusted Summary", index=False, startrow=base_row
             )
-        errors_df.to_excel(writer, sheet_name="Field With Error", index=False)
-        errors_df.to_excel(writer, sheet_name="All Errors",       index=False)
+
+        views_missing_output_df.to_excel(
+            writer, sheet_name="Field With Error", index=False
+        )
+        errors_df.to_excel(writer, sheet_name="All Errors", index=False)
+
+        # Consolidated "View is Missing" tab (mirrors SAP engine)
+        _cols_vm = ["Material", "Plant", "Missing_View", "View_Description", "Fields_Expected"]
+        _frames_vm = [
+            dfv[_cols_vm] for dfv in view_tabs_dict.values()
+            if dfv is not None and not dfv.empty
+        ]
+        if _frames_vm:
+            view_is_missing_df = pd.concat(_frames_vm, ignore_index=True).drop_duplicates()
+            view_is_missing_df = view_is_missing_df.sort_values(
+                ["Material", "Plant", "Missing_View"]
+            )
+        else:
+            view_is_missing_df = pd.DataFrame(columns=_cols_vm)
+        view_is_missing_df.to_excel(writer, sheet_name="View is Missing", index=False)
+
+        for view_code, df_view in view_tabs_dict.items():
+            df_view.to_excel(
+                writer, sheet_name=f"Missing_{view_code}"[:31], index=False
+            )
+
+        sap_im.drop(columns=["_IM_MT"], errors="ignore").to_excel(
+            writer, sheet_name="Original Data", index=False
+        )
 
     out.seek(0)
-    styled = _style_im_report(
+    styled = _style_sap_report(
         out,
         errors_df=errors_df,
-        summary_df=summary_df,
+        views_missing_output_df=views_missing_output_df,
+        contagem_final_df=contagem_final_df,
         coverage_df=coverage_df,
+        view_tabs_dict=view_tabs_dict,
+        sap_df=sap_im.drop(columns=["_IM_MT"], errors="ignore"),
+        plant_filter=plant_filter,
     )
+
     _cb(100, "Done.")
     return styled, errors_df, summary_df
 
@@ -1087,9 +1375,9 @@ def build_im_log_payload(
     report_path,
 ):
     return {
-        "run_type":    "INDIRECT_MATERIALS",
-        "timestamp":   datetime.now().isoformat(timespec="seconds"),
-        "user":        user,
+        "run_type":     "INDIRECT_MATERIALS",
+        "timestamp":    datetime.now().isoformat(timespec="seconds"),
+        "user":         user,
         "plant_filter": plant_filter,
         "files": {
             "mara": getattr(mara_file, "name", "MARA.xlsx"),

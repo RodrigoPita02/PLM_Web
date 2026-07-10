@@ -17,6 +17,28 @@ from utils.dashboard import (
 from utils.fast_loader import load_xlsx_fast
 from utils.identify import get_executor_identity
 from utils.layout import render_footer, render_header, inject_theme_overrides
+from rolesviews_data import get_rolesviews_bytesio as _get_rolesviews_bytesio_raw
+
+
+def _safe_rolesviews_bytesio():
+    """
+    Defensive wrapper around rolesviews_data.get_rolesviews_bytesio().
+    Rewinds the stream to position 0 before returning it, in case the
+    underlying implementation caches/reuses a single BytesIO object
+    across calls — otherwise a second read in the same run (e.g. the
+    combined "All Sites" flow, which loads RolesViews multiple times)
+    can fail with "File is not a zip file" because the cursor is
+    already at EOF from an earlier read.
+    """
+    buf = _get_rolesviews_bytesio_raw()
+    if hasattr(buf, "seek"):
+        try:
+            buf.seek(0)
+        except Exception:
+            pass
+    return buf
+
+
 from sap_validation_engine import (
     run_full_validation,
     run_ssa_validation,
@@ -613,13 +635,12 @@ def render_assignment_panel(errors_df: pd.DataFrame) -> None:
     # LOAD MASTER + ROLES (✅ PATCH AQUI)
     # ─────────────────────────────────────────────
     from sap_validation_engine import _load_master, _build_field_to_role_map
-    from rolesviews_data import get_rolesviews_bytesio
     from utils.fast_loader import load_xlsx_fast
 
     _master_cache = _load_master()
 
     try:
-        _rv = load_xlsx_fast(get_rolesviews_bytesio(), sheet_name=None)
+        _rv = load_xlsx_fast(_safe_rolesviews_bytesio(), sheet_name=None)
         _roles_df = _rv.get("Roles")
         _role_map = _build_field_to_role_map(_roles_df)
     except Exception:
@@ -716,10 +737,9 @@ def render_assignment_panel(errors_df: pd.DataFrame) -> None:
         st.dataframe(_all_asgn, width='stretch')
 
         try:
-            from rolesviews_data import get_rolesviews_bytesio
             from utils.fast_loader import load_xlsx_fast
 
-            _rv = load_xlsx_fast(get_rolesviews_bytesio(), sheet_name=None)
+            _rv = load_xlsx_fast(_safe_rolesviews_bytesio(), sheet_name=None)
             _roles_df = _rv.get("Roles")
 
             # ✅ IMPORTANTE: usar roles_df
@@ -1149,14 +1169,13 @@ elif main_choice == "📦 SAP Material Validation":
                             errors_df = pd.concat([_with_plant, _without_plant], ignore_index=True)
 
                     # Load RolesViews + combined MARC/MARA for postprocessing
-                    from rolesviews_data import get_rolesviews_bytesio
                     from utils.fast_loader import load_xlsx_fast as _lxf3
                     from sap_validation_engine import (
                         ensure_basic_data_k,
                         postprocess_with_views_roles_and_classification as _postprocess,
                         _style_sap_report as _style,
                     )
-                    _rv = _lxf3(get_rolesviews_bytesio(), sheet_name=None)
+                    _rv = _lxf3(_safe_rolesviews_bytesio(), sheet_name=None)
                     _roles_df_m = _rv.get("Roles")
                     _views_df_m = _rv.get("Views")
 
@@ -1271,10 +1290,9 @@ elif main_choice == "📦 SAP Material Validation":
                     if plant_filter_export != plant_filter_display:
                         from sap_validation_engine import _style_sap_report
                         from sap_validation_engine import postprocess_with_views_roles_and_classification
-                        from rolesviews_data import get_rolesviews_bytesio
                         from utils.fast_loader import load_xlsx_fast as _lxf
                         import io as _io
-                        _rv = _lxf(get_rolesviews_bytesio(), sheet_name=None)
+                        _rv = _lxf(_safe_rolesviews_bytesio(), sheet_name=None)
                         _roles = _rv.get("Roles"); _views = _rv.get("Views")
                         _mara_df = _lxf(mara_file, sheet_name=0)
                         _marc_df = _lxf(marc_file, sheet_name=0)

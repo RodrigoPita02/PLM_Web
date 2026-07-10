@@ -50,7 +50,24 @@ import pandas as pd
 import numpy as np
 
 from utils.fast_loader import load_xlsx_fast
-from rolesviews_data import get_rolesviews_bytesio
+from rolesviews_data import get_rolesviews_bytesio as _get_rolesviews_bytesio_raw
+
+
+def get_rolesviews_bytesio():
+    """
+    Defensive wrapper around rolesviews_data.get_rolesviews_bytesio().
+    See sap_validation_engine.py for the full explanation: rewinds the
+    stream to position 0 in case it's a cached/shared BytesIO whose
+    cursor is already at EOF from an earlier read elsewhere in the
+    same process.
+    """
+    buf = _get_rolesviews_bytesio_raw()
+    if hasattr(buf, "seek"):
+        try:
+            buf.seek(0)
+        except Exception:
+            pass
+    return buf
 
 from sap_validation_engine import (
     normalize_code,
@@ -152,6 +169,23 @@ def build_sap_like_df(marc_df, mara_df, zplm_marc_df):
     mara.columns = [str(c).strip() for c in mara.columns]
 
     # ------------------------------------------------------------
+    # ✅ DEDUPLICATE BEFORE ANY MERGE
+    #
+    # A left.merge(right, how='left') multiplies each left row once per
+    # matching right row. If the source MARC/MARA/ZPLM MARC exports
+    # contain duplicate rows for the same key (a common raw-export
+    # artifact), every downstream validation ends up seeing — and
+    # reporting — the exact same (Material, Plant, Field, Error) more
+    # than once. Deduplicating each table on its natural key right here,
+    # before any merge, prevents this at the source rather than trying
+    # to catch it afterwards.
+    # ------------------------------------------------------------
+    if 'Material' in marc.columns and 'Plant' in marc.columns:
+        marc = marc.drop_duplicates(subset=['Material', 'Plant'], keep='first')
+    if 'Material' in mara.columns:
+        mara = mara.drop_duplicates(subset=['Material'], keep='first')
+
+    # ------------------------------------------------------------
     # ✅ NORMALIZAR NOMES MARA
     # ------------------------------------------------------------
     mara_rename_map = {
@@ -175,8 +209,8 @@ def build_sap_like_df(marc_df, mara_df, zplm_marc_df):
         'availability check': 'Availability Check',
         'consumption mode': 'Consumption Mode',
         'jit delivery schedules': 'JIT Delivery Sched.',
-        'source list': 'Source List Required',
-        'source list required': 'Source List Required',
+        'source list': 'Source list',
+        'source list required': 'Source list required',
         'automatic po': 'Automatic Purchase Order Allowed',
         'automatic purchase order': 'Automatic Purchase Order Allowed',
         'automatic purchase order allowed': 'Automatic Purchase Order Allowed',
@@ -250,7 +284,8 @@ def build_sap_like_df(marc_df, mara_df, zplm_marc_df):
             if col in zplm.columns:
                 zplm_cols.append(col)
 
-        df = df.merge(zplm[zplm_cols], on=['Material', 'Plant'], how='left')
+        zplm = zplm[zplm_cols].drop_duplicates(subset=['Material', 'Plant'], keep='first')
+        df = df.merge(zplm, on=['Material', 'Plant'], how='left')
     else:
         for col in ['Plant Type', 'Enterproj Number']:
             if col not in df.columns:
@@ -1061,9 +1096,11 @@ def tn_validar_repetitive_manufacturing_profile(df, mara_df, resultados):
             })
 
 def tn_validar_source_list_required(df, resultados):
-    """PP or FP -> Yes (1); others -> No (0)."""
-    col = 'Source List Required'
-    if col not in df.columns or 'Plant Type' not in df.columns:
+    """PP or FP -> Yes (1); others -> No (0).
+
+    Supports both TN source fields: 'Source list' and 'Source list required'."""
+    col = next((c for c in ['Source list', 'Source list required'] if c in df.columns), None)
+    if col is None or 'Plant Type' not in df.columns:
         return
     for idx, row in df.iterrows():
         erros = []
@@ -1071,15 +1108,16 @@ def tn_validar_source_list_required(df, resultados):
         pt    = _norm_str(row.get('Plant Type')).upper()
         val   = _norm_str(row.get(col))
         mat   = _norm_str(row.get('Material'))
-        if val == '':
-            erros.append('Mandatory field blank')
+
+        if pt in ('PP', 'FP'):
+            if val == '':
+                erros.append('Mandatory field blank')
+            elif val not in ('1', '1.0', 'X', 'YES'):
+                erros.append(f"For Plant Type '{pt}', should be 'Yes' (current: '{val}')")
         else:
-            if pt in ('PP', 'FP'):
-                if val not in ('1', '1.0', 'X', 'YES'):
-                    erros.append(f"For Plant Type '{pt}', should be 'Yes' (current: '{val}')")
-            else:
-                if val not in ('0', ''):
-                    erros.append(f"For Plant Type '{pt}', should be 'No' (current: '{val}')")
+            if val not in ('0', ''):
+                erros.append(f"For Plant Type '{pt}', should be 'No' (current: '{val}')")
+
         if erros:
             resultados.append({'Line': idx + 2, 'Field': col,
                                'Error': ' | '.join(erros), 'Material': mat, 'Plant': plant})
@@ -1441,8 +1479,8 @@ def run_tn_validation(
         'period indicator': 'Period Type',
         'material plant type': 'Plant Type',
         'purchasing group': 'Purchasing Group',
-        'source list': 'Source List Required',
-        'source list required': 'Source List Required',
+        'source list': 'Source list',
+        'source list required': 'Source list required',
         'automatic po': 'Automatic Purchase Order Allowed',
         'automatic purchase order': 'Automatic Purchase Order Allowed',
         'issue storage location': 'Issue Storage Location',
@@ -1522,10 +1560,24 @@ def run_tn_validation(
     # Filtering it would exclude materials that exist in MARA but have no TN marc
     # entry yet, causing MARA-based validations to silently miss them.
     # Plant-level tables are filtered normally.
-    marm_df      = _filter_to_tn_materials(marm_df)
+    #
+    # marm_df (Alternative UoM) is ALSO material-level, not plant-level, and its
+    # only consumer is validar_marm_pc_ea_roh_halb, which is called with the full
+    # (unfiltered) mara_df. Filtering marm_df down to TN-only materials here would
+    # create a mismatch: materials that legitimately exist only in Palmela plants
+    # would still appear in mara_relevant (built from the global mara_df) but be
+    # missing from marm_groups (built from the TN-restricted marm_df), producing
+    # false "Alternative UoM found: none" errors for every non-TN material when
+    # running the combined/general report. So marm_df is intentionally left
+    # unfiltered here, same as mara_df.
     mbew_df      = _filter_to_tn_materials(mbew_df)
-    zplm_mara_df = _filter_to_tn_materials(zplm_mara_df)
     mvke_df      = _filter_to_tn_materials(mvke_df)
+    # zplm_mara_df: kept UNFILTERED for the same reason as marm_df above.
+    # validar_product_hierarchy_vs_enterproj() iterates the full (unfiltered)
+    # mara_df looking up each FERT material's Enterproj Number in zplm_mara_df.
+    # If zplm_mara_df were restricted to TN materials, every Palmela-only FERT
+    # material would be missing from that lookup, be treated as Enterproj="000...",
+    # and be falsely flagged as a "PH mismatch" when running the combined report.
 
     # ── 3. Build sap_like_df ──────────────────────────────────────────────────
     _cb(18, "Building SAP-like dataframe from MARC + MARA + ZPLM MARC...")
@@ -1539,9 +1591,6 @@ def run_tn_validation(
 
     if mvke_df is not None:
         mvke_df = _filter_valid_material_types(mvke_df, mara_df)
-
-    if marm_df is not None:
-        marm_df = _filter_valid_material_types(marm_df, mara_df)
 
     if mbew_df is not None:
         mbew_df = _filter_valid_material_types(mbew_df, mara_df)
@@ -1745,6 +1794,19 @@ def run_tn_validation(
     _cb(78, "Building errors DataFrame...")
     errors_df = _coerce_df_for_display(pd.DataFrame(resultados))
 
+    # ✅ Safety-net dedup: remove exact duplicates (same Material, Plant,
+    # Field and Error). This is acceptable/expected to differ across
+    # different plants for the same material (e.g. PT01 vs TN01), but the
+    # exact same (Material, Plant, Field, Error) combination should never
+    # be reported more than once — it would otherwise inflate error counts
+    # if any upstream merge or source table happens to contain duplicate
+    # rows for the same key.
+    _dedup_key = [c for c in ['Material', 'Plant', 'Field', 'Error'] if c in errors_df.columns]
+    if len(_dedup_key) == 4 and not errors_df.empty:
+        for _c in _dedup_key:
+            errors_df[_c] = errors_df[_c].fillna('').astype(str).str.strip()
+        errors_df = errors_df.drop_duplicates(subset=_dedup_key).reset_index(drop=True)
+
     
     # ------------------------------------------------------------
     # ✅ DETETAR ERROS NÃO MAPEADOS NO ROLES
@@ -1765,6 +1827,8 @@ def run_tn_validation(
             for f in sorted(missing_role_df['Field_clean'].unique()):
                 print(f)
             print("\n--------------------------------------\n")
+
+        errors_df = errors_df.drop(columns=['Field_clean'], errors='ignore')
     else:
         missing_role_df = pd.DataFrame()
 
