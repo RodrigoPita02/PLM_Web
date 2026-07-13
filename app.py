@@ -138,8 +138,6 @@ _CLASSIFY_RULES: list[tuple[str, object]] = [
     ("csr_item",    lambda n: "csr" in n and "item" in n),
     ("csr_head",    lambda n: "csr" in n and "head" in n),
     ("matplsta",    lambda n: "matplsta" in n),
-    # SAP export
-    ("sap",         lambda n: "sapui5" in n or ("item" in n and "browse" in n)),
     # Tabelas base
     ("mara",        lambda n: "mara" in n),
     ("marc",        lambda n: "marc" in n),
@@ -181,7 +179,6 @@ def classify_uploaded_files(files) -> dict:
 # LABELS PARA DISPLAY
 # ==========================================================
 LABELS_PT = {
-    "sap":       "SAPUI5 Export (Item Browse Report.xlsx)",
     "mara":      "MARA.xlsx",
     "marc":      "MARC.xlsx",
     "mvke":      "MVKE.xlsx",
@@ -207,7 +204,6 @@ def display_to_internal_key(display_name: str):
 
 # Colunas-chave esperadas por tipo de ficheiro (basta ter UMA das alternativas)
 FILE_EXPECTED_COLS: dict[str, list[list[str]]] = {
-    "sap":       [["Material", "Plant", "Material Type", "MRP Type"]],
     "mara":      [["Material", "Material Type"]],
     "marc":      [["Material", "Plant", "Maintenance status", "Cntry/Reg of Origin"]],
     "mvke":      [["Material", "Sales Organization"]],
@@ -275,7 +271,7 @@ def validate_uploaded_files(persisted: dict, keys_to_check: list[str]) -> dict[s
 
 # Keys obrigatórias por página
 REQUIRED_KEYS: dict[str, list[str]] = {
-    "📦 SAP Material Validation":         ["sap", "mara", "marc", "mvke", "zplm_marc", "zplm_mara", "marm", "mbew"],
+    "📦 SAP Material Validation":         ["mara", "marc", "mvke", "zplm_marc", "zplm_mara", "marm", "mbew"],
     "📦 Indirect Materials Report":         ["mara", "marc", "mvke", "mbew"],
     "Automotive + Timing Letter (A & TL)":["auto", "plm", "timing"],
     "📊 SAP Validation Progress": [],   # gerido pelo modo Auto/Manual
@@ -396,7 +392,6 @@ def show_file_status(required_keys: list[str], files: dict, persisted: dict,
                 "mard":       "MARD.xlsx",
                 "marm":       "MARM.xlsx",
                 "zplm":       "ZPLM MARC.xlsx or ZPLM MARA.xlsx",
-                "sapui5":     "SAPUI5 Export.xlsx",
                 "automotive": "PLM Automotive Validation.xlsx",
                 "timing":     "Timing Letters.xlsx",
             }
@@ -845,14 +840,7 @@ elif main_choice == "📦 SAP Material Validation":
     persisted_now = st.session_state.get("sap_files_persisted") or {}
 
     # Guard: se ficheiros em falta volta ao passo 1
-    # Para Tunisia e All Sites, o SAPUI5 Export ("sap") não é obrigatório
-    _current_site = st.session_state.get(
-        "sap_selected_site_scope",
-        st.session_state.get("sap_site_scope", "Palmela (PT01 / PT02)")
-    )
-    _is_tn_site = "Tunisia" in _current_site
-    _effective_required = [k for k in required_keys if not (_is_tn_site and k == "sap")]
-    if st.session_state.sap_step > 2 and any(k not in persisted_now for k in _effective_required):
+    if st.session_state.sap_step > 2 and any(k not in persisted_now for k in required_keys):
         st.session_state.sap_step = 1
         st.rerun()
 
@@ -863,7 +851,6 @@ elif main_choice == "📦 SAP Material Validation":
         <div style="background:var(--app-bg-secondary);border-left:4px solid var(--accent);border-radius:6px;padding:12px 16px;margin-bottom:12px;font-size:0.85rem;color:var(--app-fg)">
         <strong>📋 What files do you need?</strong><br><br>
         <table style="border-collapse:collapse;width:100%">
-        <tr><td style="padding:3px 8px">📄 <strong>SAPUI5 Export</strong></td><td style="color:var(--app-fg-muted)">SAP → Logistics → Item Browse Report (export as .xlsx)</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>MARA</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MARA (general material data)</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>MARC</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MARC (plant-level material data)</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>MVKE</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MVKE (sales organisation data)</td></tr>
@@ -891,20 +878,13 @@ elif main_choice == "📦 SAP Material Validation":
         show_file_status(required_keys, files, persisted,
                          optional_keys=["csr_item", "csr_head", "matplsta"])
 
-        if "sap" not in persisted:
-            st.info(
-                "ℹ️ SAPUI5 Export is optional for Tunisia-only validation. "
-                "If you choose Palmela or All Sites in the next step, the SAPUI5 Export will be required."
-            )
-
         # Quick column validation
         _col_errs_sap = validate_uploaded_files(persisted, required_keys)
         if _col_errs_sap:
             for _k, _msg in _col_errs_sap.items():
                 st.warning(f"⚠️ **{LABELS_PT.get(_k, _k)}** — {_msg}")
 
-        required_for_scope_selection = [k for k in required_keys if k != "sap"]
-        disabled = any(k not in persisted for k in required_for_scope_selection) or bool(_col_errs_sap)
+        disabled = any(k not in persisted for k in required_keys) or bool(_col_errs_sap)
         c1, c2 = st.columns(2)
         with c1:
             with st.expander("🧹 Clear uploaded files"):
@@ -972,11 +952,7 @@ elif main_choice == "📦 SAP Material Validation":
                 st.session_state.sap_step = 1
                 st.rerun()
         with c2:
-            disabled_next2 = False
-            if site_scope in ("Palmela (PT01 / PT02)", "All Sites") and "sap" not in persisted_now:
-                disabled_next2 = True
-                st.warning("⚠️ SAPUI5 Export is required for Palmela and All Sites mode.")
-            if st.button("➡️ Continue to Validation", key="sap_next2", disabled=disabled_next2, width='stretch'):
+            if st.button("➡️ Continue to Validation", key="sap_next2", width='stretch'):
                 st.session_state["sap_selected_site_scope"]   = site_scope
                 st.session_state["sap_selected_export_scope"] = export_scope
                 st.session_state["sap_selected_plant_filter_export"] = plant_filter_export
@@ -1021,14 +997,12 @@ elif main_choice == "📦 SAP Material Validation":
         <div style="margin-top:8px;font-size:0.8rem;color:var(--app-fg-muted)">Files loaded: <strong>{_n_files} required{"  +  " + str(len(_optional3)) + " optional" if _optional3 else ""}</strong></div>
         {"<div style='margin-top:6px;font-size:0.8rem;color:var(--color-ok)'>🔓 CSR exemption rules <strong>enabled</strong> — active CSRs will exempt FP materials from MRP = ND errors.</div>" if _optional3 else "<div style='margin-top:6px;font-size:0.8rem;color:var(--app-fg-muted)'>🔓 CSR files not uploaded — CSR exemption rules disabled.</div>"}
         {"<div style='margin-top:4px;font-size:0.8rem;color:var(--color-ok)'>🔓 MATPLSTA loaded — ROH Planning Status = 9 exemption <strong>enabled</strong>.</div>" if "matplsta" in _persisted3 else "<div style='margin-top:4px;font-size:0.8rem;color:var(--app-fg-muted)'>🔓 MATPLSTA not uploaded — all ROH with Per.Lot Sz.Plng Cal. filled will be flagged.</div>"}
-        {"<div style='margin-top:6px;font-size:0.8rem;color:var(--accent)'>⚠️ Tunisia validation does NOT use the SAPUI5 Export — field-level data sourced from MARC/MARA/MVKE tables directly.</div>" if _is_tn else ""}
-        {"<div style='margin-top:6px;font-size:0.8rem;color:var(--accent)'>⚠️ Both Sites mode runs Palmela engine (PT01/PT02 from SAPUI5 Export) + Tunisia engine (TN01/TN02 from MARC/MARA) and merges results.</div>" if _is_both else ""}
+        {"<div style='margin-top:6px;font-size:0.8rem;color:var(--accent)'>⚠️ Both Sites mode runs the Palmela engine (PT01/PT02) + Tunisia engine (TN01/TN02), both sourced from MARC/MARA/MVKE tables, and merges results.</div>" if _is_both else ""}
         </div>
         """, unsafe_allow_html=True)
 
         if st.button("▶️ Validate now", type="primary", key="sap_run"):
             files = rehydrate_persisted_mapping("sap_files_persisted")
-            sap_file  = files.get("sap")
             mara_file = files.get("mara")
             marc_file = files.get("marc")
             mvke_file = files.get("mvke")
@@ -1082,17 +1056,9 @@ elif main_choice == "📦 SAP Material Validation":
                 elif run_tn and run_palmela:
                     update_progress(2, "Running Palmela engine...")
 
-                    if sap_file is None:
-                        st.error("⚠️ SAPUI5 Export is required for Palmela validation in All Sites mode.")
-                        st.stop()
-                    ok_sheet, sheets = has_sheet(sap_file, "SAPUI5 Export")
-                    if not ok_sheet:
-                        st.error(f"Sheet 'SAPUI5 Export' not found. Available: {sheets}")
-                        st.stop()
-
                     _pt_filter = plant_filter_export if plant_filter_export in ("PT01", "PT02") else None
                     excel_pt, errors_pt, _ = run_full_validation(
-                        sap_file=sap_file, mara_file=mara_file, marc_file=marc_file,
+                        mara_file=mara_file, marc_file=marc_file,
                         mvke_file=mvke_file,
                         zplm_marc_file=zplm_marc, zplm_mara_file=zplm_mara,
                         marm_file=marm_file, previous_report=None,
@@ -1264,13 +1230,8 @@ elif main_choice == "📦 SAP Material Validation":
 
                 # ── PALMELA ONLY (default) ─────────────────────────────────────
                 else:
-                    ok_sheet, sheets = has_sheet(sap_file, "SAPUI5 Export")
-                    if not ok_sheet:
-                        st.error(f"Sheet 'SAPUI5 Export' not found. Available: {sheets}")
-                        st.stop()
-
                     excel_display, errors_df, summary_df = run_full_validation(
-                        sap_file=sap_file, mara_file=mara_file, marc_file=marc_file,
+                        mara_file=mara_file, marc_file=marc_file,
                         mvke_file=mvke_file,
                         zplm_marc_file=zplm_marc, zplm_mara_file=zplm_mara,
                         marm_file=marm_file,
@@ -1313,8 +1274,8 @@ elif main_choice == "📦 SAP Material Validation":
                             _vis_df.to_excel(_w, sheet_name="View is Missing", index=False)
                             for _vc, _vdf in _vtabs.items():
                                 _vdf.to_excel(_w, sheet_name=f"Missing_{_vc}"[:31], index=False)
-                            _lxf(sap_file, sheet_name="SAPUI5 Export").to_excel(
-                                _w, sheet_name="Original Data", index=False)
+                            _marc_df.to_excel(
+                                _w, sheet_name="Original Data (MARC)", index=False)
                         _buf.seek(0)
                         excel_export = _style_sap_report(
                             _buf, errors_df=_edf, views_missing_output_df=_vmout,
@@ -1336,7 +1297,7 @@ elif main_choice == "📦 SAP Material Validation":
             if save_history:
                 payload = build_sap_log_payload(
                     user=effective_executor, plant_filter=plant_filter_export or suffix,
-                    sap_file=sap_file, mara_file=mara_file, marc_file=marc_file,
+                    mara_file=mara_file, marc_file=marc_file,
                     mvke_file=mvke_file, errors_df=errors_df, summary_df=summary_df,
                     report_path=report_path,
                 )

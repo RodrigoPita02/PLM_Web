@@ -147,6 +147,344 @@ def ensure_basic_data_k(marc_df):
     return marc_df
 
 
+# =============================================================================
+# SHARED HELPERS — sap_like_df construction (used by BOTH Palmela and Tunisia)
+# =============================================================================
+# These used to live only in tn_validation_engine.py, since Tunisia has no
+# Item Browse Report / SAPUI5 Export and had to build an equivalent flat
+# dataframe from MARC + MARA + ZPLM MARC instead. The Palmela engine now
+# does the same (see run_full_validation below), so these helpers moved
+# here to be the single shared source of truth for both engines.
+
+def _normalize_columns(df, rename_map):
+    """Case-insensitive column rename (keys in rename_map are matched lowercased)."""
+    df = df.copy()
+    df.columns = [
+        rename_map.get(str(col).strip().lower(), str(col).strip())
+        for col in df.columns
+    ]
+    if df.columns.duplicated().any():
+        df = df.T.groupby(level=0).first().T
+    return df
+
+
+def _normalize_df_columns(df, rename_map):
+    """Same as _normalize_columns but tolerates df=None (used on optional tables)."""
+    if df is None:
+        return df
+    df = df.copy()
+    df.columns = [
+        rename_map.get(str(col).strip().lower(), str(col).strip())
+        for col in df.columns
+    ]
+    if df.columns.duplicated().any():
+        df = df.T.groupby(level=0).first().T
+    return df
+
+
+def _mt_map_from_mara(mara_df):
+    return dict(zip(
+        mara_df['Material'].astype(str).str.strip(),
+        mara_df['Material Type'].astype(str).str.strip().str.upper()
+    ))
+
+
+def _pt_map_from_zplm(zplm_marc_df):
+    if zplm_marc_df is None or zplm_marc_df.empty:
+        return {}
+    z = zplm_marc_df.copy()
+    z.columns = [str(c).strip() for c in z.columns]
+    for variant in ['Material Plant Type', 'MATERIAL PLANT TYPE']:
+        if variant in z.columns and 'Plant Type' not in z.columns:
+            z.rename(columns={variant: 'Plant Type'}, inplace=True)
+    if not {'Material', 'Plant', 'Plant Type'}.issubset(z.columns):
+        return {}
+    return {
+        (str(r['Material']).strip(), str(r['Plant']).strip().upper()):
+        str(r['Plant Type']).strip().upper()
+        for _, r in z.iterrows()
+    }
+
+
+def _filter_valid_material_types(df, mara_df):
+    """
+    Keep only materials with Material Type in {'FERT', 'HALB', 'ROH'}.
+    Uses MARA as source of truth.
+    """
+    if df is None or df.empty:
+        return df
+
+    VALID_MT = {'FERT', 'HALB', 'ROH'}
+
+    mt_map = dict(zip(
+        mara_df['Material'].astype(str).str.strip(),
+        mara_df['Material Type'].astype(str).str.strip().str.upper()
+    ))
+
+    df = df.copy()
+    df['_MT'] = df['Material'].astype(str).str.strip().map(mt_map)
+
+    # fallback (defensive)
+    if 'Material Type' in df.columns:
+        df['_MT'] = df['_MT'].fillna(
+            df['Material Type'].astype(str).str.strip().str.upper()
+        )
+
+    df = df[df['_MT'].isin(VALID_MT)]
+
+    return df.drop(columns=['_MT'], errors='ignore')
+
+
+def _get_mps99_material_plant_pairs(marc_df):
+    if marc_df is None or marc_df.empty:
+        return set()
+
+    df = marc_df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    if 'Material' not in df.columns or 'Plant' not in df.columns:
+        return set()
+
+    candidates = [
+        'Plant Specific Material Status',
+        'Material Plant Status',
+        'Plant Status',
+        'MATERIAL PLANT STATUS',
+        'MPS',
+    ]
+    status_col = next((c for c in candidates if c in df.columns), None)
+    if status_col is None:
+        return set()
+
+    pairs = set()
+    for _, row in df.iterrows():
+        material = str(row['Material']).strip()
+        plant = str(row['Plant']).strip().upper()
+        status = normalize_code(row[status_col], as_int=True)
+        if status == '99':
+            pairs.add((material, plant))
+
+    return pairs
+
+
+def _exclude_material_plant_status_99(df, pairs, plant_col='Plant'):
+    if df is None or df.empty or not pairs:
+        return df
+    if 'Material' not in df.columns or plant_col not in df.columns:
+        return df
+
+    materials = df['Material'].astype(str).str.strip()
+    plants = df[plant_col].astype(str).str.strip().str.upper()
+    keys = list(zip(materials, plants))
+    mask = [key not in pairs for key in keys]
+    return df.loc[mask].copy()
+
+
+def build_sap_like_df(marc_df, mara_df, zplm_marc_df):
+    """
+    Merges MARC + MARA + ZPLM MARC into a single flat DataFrame that mirrors
+    the column layout of the old SAPUI5 Export (Item Browse Report), so that
+    every validar_* function that used to read the Item Browse export can
+    read this instead. Used by BOTH the Palmela and Tunisia engines.
+    """
+    marc = marc_df.copy()
+    mara = mara_df.copy()
+
+    marc.columns = [str(c).strip() for c in marc.columns]
+    mara.columns = [str(c).strip() for c in mara.columns]
+
+    # ------------------------------------------------------------
+    # ✅ DEDUPLICATE BEFORE ANY MERGE
+    #
+    # A left.merge(right, how='left') multiplies each left row once per
+    # matching right row. If the source MARC/MARA/ZPLM MARC exports
+    # contain duplicate rows for the same key (a common raw-export
+    # artifact), every downstream validation ends up seeing — and
+    # reporting — the exact same (Material, Plant, Field, Error) more
+    # than once. Deduplicating each table on its natural key right here,
+    # before any merge, prevents this at the source rather than trying
+    # to catch it afterwards.
+    # ------------------------------------------------------------
+    if 'Material' in marc.columns and 'Plant' in marc.columns:
+        marc = marc.drop_duplicates(subset=['Material', 'Plant'], keep='first')
+    if 'Material' in mara.columns:
+        mara = mara.drop_duplicates(subset=['Material'], keep='first')
+
+    # ------------------------------------------------------------
+    # ✅ NORMALIZE MARA COLUMN NAMES
+    # ------------------------------------------------------------
+    mara_rename_map = {
+        'material description': 'Description',
+        'gen. item cat. grp': 'General Item Category Group',
+        'unit of weight': 'Unit of Weight (ISO Format)',
+        'unit of weight (iso format)': 'Unit of Weight (ISO Format)',
+        'material group': 'Material Group',
+        'product hierarchy': 'Product Hierarchy',
+        'old material number': 'Old material number',
+        'base unit of measure': 'Base Unit of Measure',
+        'export/import group': 'Export/Import Group',
+        'intrastat group': 'Export/Import Group',
+    }
+    mara = _normalize_columns(mara, mara_rename_map)
+
+    # ------------------------------------------------------------
+    # ✅ NORMALIZE MARC COLUMN NAMES
+    # ------------------------------------------------------------
+    marc_rename_map = {
+        'availability check': 'Availability Check',
+        'consumption mode': 'Consumption Mode',
+        'jit delivery schedules': 'JIT Delivery Sched.',
+        'source list': 'Source list',
+        'source list required': 'Source list required',
+        'automatic po': 'Automatic Purchase Order Allowed',
+        'automatic purchase order': 'Automatic Purchase Order Allowed',
+        'automatic purchase order allowed': 'Automatic Purchase Order Allowed',
+        'planning time fence': 'Planning Time Fence',
+        'plant-specific material status': 'Plant Specific Material Status',
+        'repetitive manufacturing': 'Indicator: Repetitive Manufa. Allow',
+        'repetitive manufacturing profile': 'Repetitive Manufacturing Profile',
+        'issue storage location': 'Issue Storage Location',
+        'production storage location': 'Issue Storage Location',
+        'planning strategy group': 'Planning Strategy Group',
+        'planning calendar': 'Planning Calendar',
+        'mrp type': 'MRP Type',
+        'profit center': 'Profit Center',
+        'purchasing group': 'Purchasing Group',
+        'special procurement type': 'Special Procurement Type',
+        'storage location for ext. procurement': 'Storage Location for Ext. Procurement',
+        'individual/ collective requirements': 'Individual/ Collective Requirements',
+        'individual collective requirements': 'Individual/ Collective Requirements',
+        'production supervisor': 'Production Supervisor',
+        'production scheduling profile': 'Production Scheduling Profile',
+        'advanced planning': 'Advanced Planning',
+        'heuristic': 'Heuristic',
+        'pp plng procedure': 'PP Plng Procedure',
+        'requirement strategy': 'Requirement Strategy',
+        'backflush': 'Backflush',
+        'material plant type': 'Plant Type',
+        'period indicator': 'Period Type',
+        'intrastat group': 'Export/Import Group',
+    }
+    marc = _normalize_columns(marc, marc_rename_map)
+
+    # ------------------------------------------------------------
+    # ✅ SELECT MARA COLUMNS
+    # ------------------------------------------------------------
+    mara_cols = [c for c in [
+        'Material', 'Material Type', 'Description', 'Base Unit of Measure',
+        'Division', 'Export/Import Group', 'General Item Category Group',
+        'Gross Weight', 'Net Weight', 'Unit of Weight (ISO Format)',
+        'Material Group', 'Product Hierarchy', 'Packaging Mat. Type',
+        'Old material number', 'Batch Management',
+    ] if c in mara.columns]
+
+    # ------------------------------------------------------------
+    # ✅ MERGE MARC + MARA
+    # ------------------------------------------------------------
+    df = marc.merge(mara[mara_cols], on='Material', how='left')
+    df.rename(columns={'Base Unit of Measure': 'Base UOM'}, inplace=True)
+
+    # ------------------------------------------------------------
+    # ✅ MERGE ZPLM
+    # ------------------------------------------------------------
+    if zplm_marc_df is not None and not zplm_marc_df.empty:
+        zplm = zplm_marc_df.copy()
+        zplm.columns = [str(c).strip() for c in zplm.columns]
+
+        zplm_rename_map = {
+            'Material Plant Type': 'Plant Type',
+            'enterproj number': 'Enterproj Number',
+            'material transfer': 'Material Transfer',
+            'eop date': 'EOP Date',
+            'service liability date': 'Service Liability Date',
+            'ltb quantity': 'LTB Quantity',
+            'ltb start date': 'LTB Start Date',
+        }
+        zplm = _normalize_columns(zplm, zplm_rename_map)
+
+        zplm_cols = ['Material', 'Plant']
+        for col in [
+            'Plant Type', 'Enterproj Number', 'Material Transfer',
+            'EOP Date', 'Service Liability Date', 'LTB Quantity', 'LTB Start Date'
+        ]:
+            if col in zplm.columns:
+                zplm_cols.append(col)
+
+        zplm = zplm[zplm_cols].drop_duplicates(subset=['Material', 'Plant'], keep='first')
+        df = df.merge(zplm, on=['Material', 'Plant'], how='left')
+    else:
+        for col in ['Plant Type', 'Enterproj Number']:
+            if col not in df.columns:
+                df[col] = ''
+
+    # ------------------------------------------------------------
+    # ✅ NORMALIZE PLANT TYPE
+    # ------------------------------------------------------------
+    if 'Plant Type' in df.columns:
+        df['Plant Type'] = df['Plant Type'].fillna('').astype(str).str.strip().str.upper()
+
+    # ------------------------------------------------------------
+    # ✅ BATCH MANAGEMENT (CRITICAL)
+    # ------------------------------------------------------------
+
+    # 📌 Global (MARA)
+    df['Batch Management'] = df.get('Batch Management', '')
+
+    # 📌 Plant-level (MARC)
+    batch_plant_candidates = [
+        'Batch Management(Plant)',
+        'Batch Management (Plant)',
+        'Batch Mgmt Plant'
+    ]
+
+    batch_plant_col = next(
+        (col for col in df.columns if col in batch_plant_candidates),
+        None
+    )
+
+    if batch_plant_col:
+        df['Batch Management(Plant)'] = df[batch_plant_col]
+    else:
+        df['Batch Management(Plant)'] = ''
+
+    # 📌 SAPUI5 compatibility (for validar_batch_management)
+    #
+    # The old Item Browse Report represented this checkbox as '1' (active)
+    # / '0' (inactive). Raw MARC uses SAP's native convention: 'X' (active)
+    # / blank (inactive). validar_batch_management() still expects the old
+    # '1'/'0' convention, so we translate it here rather than touching that
+    # (shared, already-proven) validation function.
+    def _x_to_1(series):
+        s = series.astype(str).str.strip().str.upper()
+        return s.map(lambda v: '1' if v == 'X' else ('0' if v in ('', 'NAN', 'NONE') else v))
+
+    df['Batch Management Required Ind.'] = _x_to_1(df['Batch Management(Plant)'])
+
+    # Same translation for JIT Delivery Sched. — validar_jit_delivery_sched()
+    # expects '1.0' (active) / '' (inactive), matching how the old Item
+    # Browse Report exported this checkbox as a numeric column.
+    if 'JIT Delivery Sched.' in df.columns:
+        _jit = df['JIT Delivery Sched.'].astype(str).str.strip().str.upper()
+        df['JIT Delivery Sched.'] = _jit.map(
+            lambda v: '1.0' if v == 'X' else ('' if v in ('', 'NAN', 'NONE') else v)
+        )
+
+    # ------------------------------------------------------------
+    # ✅ ENSURE CRITICAL COLUMNS EXIST
+    # ------------------------------------------------------------
+    required_cols = [
+        'Plant Type',
+        'Batch Management Required Ind.',
+        'MRP Type',
+        'Availability Check'
+    ]
+
+    for col in required_cols:
+        if col not in df.columns:
+            df[col] = ''
+
+    return df
+
+
 def build_material_transfer_map(zplm_marc_df):
     """
     Creates a map (Material, Plant) -> bool indicating whether 'Material Transfer'
@@ -2041,6 +2379,11 @@ def validar_account_assignment_group(df, resultados, mvke_df):
                          if mvke_norm is not None and not mvke_norm.empty else set())
 
     FERT_REQUIRED = {('PT00', '10'), ('PT00', '20'), ('US00', '30')}
+    # Tunisia FERT materials additionally carry TN00/10 + TN00/20 MVKE entries
+    # (already validated separately and correctly by tn_validar_account_assignment_group).
+    # These are legitimate combinations from Palmela's point of view too — not
+    # required here, but must not be flagged as "unexpected" when present.
+    FERT_ALLOWED_EXTRA = {('TN00', '10'), ('TN00', '20')}
 
     def _err(material, msg):
         resultados.append({
@@ -2065,7 +2408,7 @@ def validar_account_assignment_group(df, resultados, mvke_df):
                 _err(material,
                      f"FERT: missing required MVKE combination "
                      f"SalesOrg='{sorg}' / DC='{dchan}'")
-            for sorg, dchan in sorted(combos - FERT_REQUIRED):
+            for sorg, dchan in sorted(combos - FERT_REQUIRED - FERT_ALLOWED_EXTRA):
                 _err(material,
                      f"FERT: unexpected MVKE combination "
                      f"SalesOrg='{sorg}' / DC='{dchan}' "
@@ -2648,18 +2991,49 @@ def validar_storage_location_ext_procurement(marc_df, zplm_marc_df, mara_df, res
         marc_df is None
         or zplm_marc_df is None
         or mara_df is None
+        or marc_df.empty
+        or zplm_marc_df.empty
+        or mara_df.empty
         or not required_marc.issubset(marc_df.columns)
         or not required_zplm.issubset(zplm_marc_df.columns)
         or not required_mara.issubset(mara_df.columns)
     ):
         return
 
-    df = marc_df.merge(
-        zplm_marc_df[["Material", "Plant", "Plant Type"]],
+    # Defensive: normalize + deduplicate inputs to avoid join multiplication
+    marc = marc_df.copy()
+    marc.columns = [str(c).strip() for c in marc.columns]
+    if 'Material' in marc.columns and 'Plant' in marc.columns:
+        marc['Material'] = marc['Material'].astype(str).str.strip()
+        marc['Plant'] = marc['Plant'].astype(str).str.strip().str.upper()
+        marc = marc.drop_duplicates(subset=['Material', 'Plant'], keep='first')
+    else:
+        return
+
+    zplm = zplm_marc_df.copy()
+    zplm.columns = [str(c).strip() for c in zplm.columns]
+    # normalize possible variant column names
+    for variant in ['Material Plant Type', 'MATERIAL PLANT TYPE']:
+        if variant in zplm.columns and 'Plant Type' not in zplm.columns:
+            zplm.rename(columns={variant: 'Plant Type'}, inplace=True)
+    if 'Material' in zplm.columns and 'Plant' in zplm.columns:
+        zplm['Material'] = zplm['Material'].astype(str).str.strip()
+        zplm['Plant'] = zplm['Plant'].astype(str).str.strip().str.upper()
+        zplm = zplm.drop_duplicates(subset=['Material', 'Plant'], keep='first')
+
+    mara = mara_df.copy()
+    mara.columns = [str(c).strip() for c in mara.columns]
+    if 'Material' in mara.columns:
+        mara['Material'] = mara['Material'].astype(str).str.strip()
+        if 'Material Type' in mara.columns:
+            mara['Material Type'] = mara['Material Type'].astype(str).str.strip().str.upper()
+
+    df = marc.merge(
+        zplm[["Material", "Plant", "Plant Type"]] if {'Material','Plant','Plant Type'}.issubset(zplm.columns) else zplm[["Material","Plant"]],
         on=["Material", "Plant"],
         how="left",
     ).merge(
-        mara_df[["Material", "Material Type"]],
+        mara[["Material", "Material Type"]] if {'Material','Material Type'}.issubset(mara.columns) else mara[["Material"]],
         on="Material",
         how="left",
     )
@@ -2676,10 +3050,11 @@ def validar_storage_location_ext_procurement(marc_df, zplm_marc_df, mara_df, res
 
     for idx, row in df.iterrows():
         material = str(row.get("Material", "")).strip()
-        plant = str(row.get("Plant", "")).strip()
+        plant = str(row.get("Plant", "")).strip().upper()
         plant_type = str(row.get("Plant Type", "")).strip().upper()
         mt = str(row.get("Material Type", "")).strip().upper()
-        sloc_ext = str(row.get("Storage Location for Ext. Procurement", "")).strip()
+        _sloc_raw = row.get("Storage Location for Ext. Procurement")
+        sloc_ext = "" if pd.isna(_sloc_raw) else str(_sloc_raw).strip()
 
         # ✅ Só FERT / HALB / ROH
         if mt not in {"FERT", "HALB", "ROH"}:
@@ -2703,6 +3078,7 @@ def validar_storage_location_ext_procurement(marc_df, zplm_marc_df, mara_df, res
         # --------------------------------------------------------
         expected = expected_map.get((plant, mt))
 
+        # Only validate explicit expected values when we can map plant+mt → expected
         if expected and sloc_ext != "":
             if sloc_ext != expected:
                 resultados.append({
@@ -2896,6 +3272,9 @@ def validar_batch_management_plant_marc(marc_df, zplm_marc_df, mara_df, resultad
         marc_df is None
         or zplm_marc_df is None
         or mara_df is None
+        or marc_df.empty
+        or zplm_marc_df.empty
+        or mara_df.empty
         or not required_marc.issubset(marc_df.columns)
         or not required_zplm.issubset(zplm_marc_df.columns)
         or not required_mara.issubset(mara_df.columns)
@@ -2982,6 +3361,9 @@ def validar_version_indicator_marc(
         marc_df is None
         or zplm_marc_df is None
         or mara_df is None
+        or marc_df.empty
+        or zplm_marc_df.empty
+        or mara_df.empty
         or not required_marc.issubset(marc_df.columns)
         or not required_zplm.issubset(zplm_marc_df.columns)
         or not required_mara.issubset(mara_df.columns)
@@ -4712,7 +5094,6 @@ def postprocess_with_views_roles_and_classification(
 # =============================================================================
 
 def run_full_validation(
-    sap_file,
     mara_file,
     marc_file,
     mvke_file,
@@ -4729,13 +5110,18 @@ def run_full_validation(
     matplsta_file=None,
 ):
     """
-    Runs the complete SAPUI5 validation pipeline:
+    Runs the complete Palmela validation pipeline:
       1. Load files
-      2. Pre-normalisation
+      2. Pre-normalisation + build sap_like_df (MARC + MARA + ZPLM MARC)
       3. All field validations
       4. Post-processing (Views / Roles / Summary)
       5. Excel generation in-memory
     Returns: (excel_bytes, errors_df, summary_df)
+
+    NOTE: This engine no longer depends on the Item Browse Report / SAPUI5
+    Export. Like the Tunisia engine, it builds an equivalent flat dataframe
+    (`sap_like_df`) from MARC + MARA + ZPLM MARC via build_sap_like_df(),
+    and runs the exact same validar_* functions against it.
     """
     def _cb(pct, msg):
         if progress_callback:
@@ -4744,9 +5130,6 @@ def run_full_validation(
     # ------------------------------------------------------------------
     # 1) Load DataFrames
     # ------------------------------------------------------------------
-    _cb(5,  "Loading SAPUI5 Export...")
-    sap_df = load_xlsx_fast(sap_file, sheet_name="SAPUI5 Export")
-
     _cb(7,  "Loading MARA...")
     mara_df = load_xlsx_fast(mara_file, sheet_name=0)
 
@@ -4782,8 +5165,6 @@ def run_full_validation(
     # ------------------------------------------------------------------
     # 2) Basic sanity checks
     # ------------------------------------------------------------------
-    if sap_df is None:
-        raise ValueError("SAPUI5 Export.xlsx not loaded or missing sheet 'SAPUI5 Export'")
     if mara_df is None:
         raise ValueError("MARA.xlsx not loaded.")
     if marc_df is None:
@@ -4801,53 +5182,159 @@ def run_full_validation(
     views_df = rolesviews_dict["Views"]
 
     # ------------------------------------------------------------------
-    # 2b) Hard-scope this engine to Palmela plants only (PT01/PT02).
+    # 2b) Column normalisation — same rename maps used by the TN engine,
+    # since raw MARC/MBEW/ZPLM MARC/MVKE/MARM exports may use column names
+    # that differ slightly from what the validar_* functions expect (these
+    # used to be normalised for free by the Item Browse Report's own column
+    # layout; now that we build sap_like_df ourselves, we normalise here).
+    # ------------------------------------------------------------------
+    marc_df = _normalize_df_columns(marc_df, {
+        'plant': 'Plant',
+        'werks': 'Plant',
+        'intrastat group': 'Export/Import Group',
+        'period indicator': 'Period Type',
+        'material plant type': 'Plant Type',
+        'purchasing group': 'Purchasing Group',
+        'source list': 'Source list',
+        'source list required': 'Source list required',
+        'automatic po': 'Automatic Purchase Order Allowed',
+        'automatic purchase order': 'Automatic Purchase Order Allowed',
+        'issue storage location': 'Issue Storage Location',
+        'production storage location': 'Issue Storage Location',
+        'planning strategy group': 'Planning Strategy Group',
+        'plant-specific material status': 'Plant Specific Material Status',
+    })
+    mbew_df = _normalize_df_columns(mbew_df, {
+        'plant': 'Plant',
+        'werks': 'Plant',
+        'valuation area': 'Plant',
+        'bwkey': 'Plant',
+        'price control': 'Price Control',
+        'price unit': 'Price Unit',
+        'valuation class': 'Valuation Class',
+        'cost est. with qty structure': 'With Qty Structure',
+    })
+    zplm_marc_df = _normalize_df_columns(zplm_marc_df, {
+        'plant': 'Plant',
+        'werks': 'Plant',
+        'material plant type': 'Plant Type',
+        'enterproj number': 'Enterproj Number',
+        'material transfer': 'Material Transfer',
+        'eop date': 'EOP Date',
+        'service liability date': 'Service Liability Date',
+        'ltb quantity': 'LTB Quantity',
+        'ltb start date': 'LTB Start Date',
+    })
+    # ✅ Keep a 'Material Plant Type' alias alongside the normalized 'Plant Type'.
+    # validar_repetitive_manufacturing() and validar_rem_profile() read
+    # zplm_marc_df directly (not sap_like_df) and expect the original raw
+    # column name; every other zplm_marc_df consumer expects 'Plant Type'.
+    if zplm_marc_df is not None and 'Plant Type' in zplm_marc_df.columns:
+        zplm_marc_df['Material Plant Type'] = zplm_marc_df['Plant Type']
+
+    mvke_df = _normalize_df_columns(mvke_df, {'plant': 'Plant', 'werks': 'Plant', 'material': 'Material'})
+    marm_df = _normalize_df_columns(marm_df, {'plant': 'Plant', 'werks': 'Plant', 'material': 'Material'})
+
+    # ------------------------------------------------------------------
+    # 2c) Hard-scope this engine to Palmela plants only (PT01/PT02), and
+    # narrow further to a single plant if `plant_filter` asks for one.
     #
-    # marc_file / sap_file / mbew_file / zplm_marc_file may be *shared,
-    # global* exports (e.g. when app.py runs the combined "All Sites"
-    # report and hands the very same MARC file to both this engine and
-    # run_tn_validation()). Without this guard, whenever `plant_filter`
-    # is None (the common case for "All plants" combined runs), this
-    # engine would validate TN01/TN02 rows too — using Palmela's generic
-    # rules instead of the TN-exception-aware rules — producing spurious
-    # errors for Tunisia materials that don't match (and therefore aren't
-    # removed by) the app.py dedup step, since the error text differs
-    # from what the TN engine legitimately produces for the same
-    # Material/Plant/Field.
+    # marc_file / mbew_file / zplm_marc_file may be *shared, global*
+    # exports (e.g. when app.py runs the combined "All Sites" report and
+    # hands the very same MARC file to both this engine and
+    # run_tn_validation()). Without this guard, this engine would validate
+    # TN01/TN02 rows too — using Palmela's generic rules instead of the
+    # TN-exception-aware rules — producing spurious errors for Tunisia
+    # materials that don't match (and therefore aren't removed by) the
+    # app.py dedup step, since the error text differs from what the TN
+    # engine legitimately produces for the same Material/Plant/Field.
     #
-    # This restriction is independent of `plant_filter` (which only
-    # narrows further, e.g. to a single PT01 or PT02 export). For a
-    # standalone Palmela-only run this is a no-op, since the uploaded
-    # files already only contain PT01/PT02.
+    # For a standalone Palmela-only run this is a no-op, since the
+    # uploaded files already only contain PT01/PT02.
+    # ------------------------------------------------------------------
     PALMELA_PLANTS = {"PT01", "PT02"}
-
-    def _restrict_to_palmela_plants(df):
-        if df is None or df.empty:
-            return df
-        plant_col = next(
-            (c for c in ["Plant", "Valuation Area", "BWKEY", "WERKS"] if c in df.columns),
-            None
-        )
-        if plant_col is None:
-            return df
-        return df[
-            df[plant_col].astype(str).str.strip().str.upper().isin(PALMELA_PLANTS)
-        ].copy()
-
-    sap_df       = _restrict_to_palmela_plants(sap_df)
-    marc_df      = _restrict_to_palmela_plants(marc_df)
-    mbew_df      = _restrict_to_palmela_plants(mbew_df)
-    zplm_marc_df = _restrict_to_palmela_plants(zplm_marc_df)
-
-    # Apply the (optional) narrower export plant filter to SAPUI5 Export
-    if plant_filter is not None and 'Plant' in sap_df.columns:
+    pt_scope = set(PALMELA_PLANTS)
+    if plant_filter:
         pf = str(plant_filter).strip().upper()
-        sap_df = sap_df[sap_df['Plant'].astype(str).str.strip().str.upper() == pf].copy()
+        if pf in PALMELA_PLANTS:
+            pt_scope = {pf}
+
+    def _fpt(df, col='Plant'):
+        if df is None or df.empty or col not in df.columns:
+            return df
+        return df[df[col].astype(str).str.strip().str.upper().isin(pt_scope)].copy()
+
+    marc_df      = _fpt(marc_df)
+    mbew_df      = _fpt(mbew_df)
+    zplm_marc_df = _fpt(zplm_marc_df) if zplm_marc_df is not None else None
 
     # ------------------------------------------------------------------
     # 3) Pre-normalisation
     # ------------------------------------------------------------------
     marc_df = ensure_basic_data_k(marc_df)
+    marc_df_full = marc_df.copy()
+
+    # ------------------------------------------------------------------
+    # 3b) Build sap_like_df (replaces the Item Browse Report / SAPUI5 Export)
+    # ------------------------------------------------------------------
+    _cb(18, "Building SAP-like dataframe from MARC + MARA + ZPLM MARC...")
+    sap_like_df = build_sap_like_df(marc_df, mara_df, zplm_marc_df)
+
+    # ✅ GLOBAL FILTER — ONLY FERT / HALB / ROH (Indirect Materials — ERSA,
+    # HIBE, VERP — are handled by the separate Indirect Materials engine)
+    sap_like_df = _filter_valid_material_types(sap_like_df, mara_df)
+
+    # Exclude Material Plant Status 99 rows from all validations except
+    # Advanced Planning.
+    exclude_mps99_pairs = _get_mps99_material_plant_pairs(marc_df_full)
+    if exclude_mps99_pairs:
+        sap_like_df = _exclude_material_plant_status_99(sap_like_df, exclude_mps99_pairs)
+        marc_df = _exclude_material_plant_status_99(marc_df, exclude_mps99_pairs)
+        if zplm_marc_df is not None:
+            zplm_marc_df = _exclude_material_plant_status_99(
+                zplm_marc_df,
+                exclude_mps99_pairs,
+            )
+        if mvke_df is not None:
+            mvke_df = _exclude_material_plant_status_99(
+                mvke_df,
+                exclude_mps99_pairs,
+            )
+        if mbew_df is not None:
+            if 'Plant' in mbew_df.columns:
+                mbew_df = _exclude_material_plant_status_99(
+                    mbew_df,
+                    exclude_mps99_pairs,
+                    plant_col='Plant',
+                )
+            elif 'Valuation Area' in mbew_df.columns:
+                mbew_df = _exclude_material_plant_status_99(
+                    mbew_df,
+                    exclude_mps99_pairs,
+                    plant_col='Valuation Area',
+                )
+
+    marc_df     = _filter_valid_material_types(marc_df, mara_df)
+
+    if mvke_df is not None:
+        mvke_df = _filter_valid_material_types(mvke_df, mara_df)
+
+    if mbew_df is not None:
+        mbew_df = _filter_valid_material_types(mbew_df, mara_df)
+
+    if mbew_df is not None and not mbew_df.empty:
+        mbew_cols = [c for c in [
+            'Material', 'Plant', 'Price Control', 'Price Unit',
+            'Valuation Class', 'With Qty Structure'
+        ] if c in mbew_df.columns]
+        if 'Material' in mbew_cols:
+            mbew_small = mbew_df[mbew_cols].copy()
+            if 'Plant' in mbew_small.columns and 'Plant' in sap_like_df.columns:
+                mbew_small = mbew_small.drop_duplicates(subset=['Material', 'Plant'], keep='first')
+                sap_like_df = sap_like_df.merge(mbew_small, on=['Material', 'Plant'], how='left')
+            else:
+                mbew_small = mbew_small.drop_duplicates(subset=['Material'], keep='first')
+                sap_like_df = sap_like_df.merge(mbew_small, on='Material', how='left')
 
     # ------------------------------------------------------------------
     # 4) Run all field validations
@@ -4857,61 +5344,60 @@ def run_full_validation(
     # Mandatory fields
     for coluna in ['Material', 'Material Type', 'Description', 'Base UOM', 'Plant', 'Plant Type']:
         _cb(20, f"Validating mandatory field: {coluna}...")
-        validar_campo_obrigatorio(sap_df, coluna, resultados)
+        validar_campo_obrigatorio(sap_like_df, coluna, resultados)
 
     validations = [
-        (22, lambda: validar_procurement_type(sap_df, resultados)),
-        (24, lambda: validar_account_assignment_group(sap_df, resultados, mvke_df)),
-        (26, lambda: validar_automatic_purchase_order(sap_df, resultados)),
-        (28, lambda: validar_batch_management(sap_df, resultados)),
-        (30, lambda: validar_consumption_mode(sap_df, resultados)),
+        (22, lambda: validar_procurement_type(sap_like_df, resultados)),
+        (24, lambda: validar_account_assignment_group(sap_like_df, resultados, mvke_df)),
+        (26, lambda: validar_automatic_purchase_order(sap_like_df, resultados)),
+        (28, lambda: validar_batch_management(sap_like_df, resultados)),
+        (30, lambda: validar_consumption_mode(sap_like_df, resultados)),
         (32, lambda: validar_consumption_per(marc_df, mara_df, resultados)),
-        (33, lambda: validar_division(sap_df, resultados)),
-        (34, lambda: validar_export_import_group(sap_df, resultados)),
-        (36, lambda: validar_general_item_category_group(sap_df, resultados)),
-        (38, lambda: validar_gross_weight(sap_df, resultados)),
-        (40, lambda: validar_item_category_group(sap_df, resultados, mvke_df)),
-        (42, lambda: validar_jit_delivery_sched(sap_df, resultados)),
-        (44, lambda: validar_loading_group(sap_df, resultados)),
-        (46, lambda: validar_lot_sizing_procedure(sap_df, resultados)),
+        (33, lambda: validar_division(sap_like_df, resultados)),
+        (34, lambda: validar_export_import_group(sap_like_df, resultados)),
+        (36, lambda: validar_general_item_category_group(sap_like_df, resultados)),
+        (38, lambda: validar_gross_weight(sap_like_df, resultados)),
+        (40, lambda: validar_item_category_group(sap_like_df, resultados, mvke_df)),
+        (42, lambda: validar_jit_delivery_sched(sap_like_df, resultados)),
+        (44, lambda: validar_loading_group(sap_like_df, resultados)),
+        (46, lambda: validar_lot_sizing_procedure(sap_like_df, resultados)),
         (47, lambda: validar_per_lot_sz_plng_cal(marc_df, resultados, mara_df, matplsta_df)),
-        (48, lambda: validar_material_group(sap_df, resultados)),
-        (50, lambda: validar_mrp_type(sap_df, resultados, zplm_marc_df, csr_item_df, csr_head_df)),
+        (48, lambda: validar_material_group(sap_like_df, resultados)),
+        (50, lambda: validar_mrp_type(sap_like_df, resultados, zplm_marc_df, csr_item_df, csr_head_df)),
         (51, lambda: validar_individual_collective_requirements_marc(marc_df, mara_df, resultados)),
-        (52, lambda: validar_net_weight(sap_df, resultados)),
-        (54, lambda: validar_period_type(sap_df, resultados)),
+        (52, lambda: validar_net_weight(sap_like_df, resultados)),
+        (54, lambda: validar_period_type(sap_like_df, resultados)),
         (55, lambda: validar_storage_location_ext_procurement(marc_df, zplm_marc_df, mara_df, resultados)),
-        (56, lambda: validar_planning_calendar(sap_df, resultados)),
+        (56, lambda: validar_planning_calendar(sap_like_df, resultados)),
         (57, lambda: validar_stock_determination_group_marc(marc_df, mara_df, resultados)),
-        (58, lambda: validar_planning_time_fence(sap_df, resultados)),
+        (58, lambda: validar_planning_time_fence(sap_like_df, resultados)),
         (59, lambda: validar_version_indicator_marc(marc_df, zplm_marc_df, mara_df, resultados)),
-        (60, lambda: validar_price_control(sap_df, resultados)),
-        (61, lambda: validar_batch_management_plant_marc(marc_df, zplm_marc_df, mara_df, resultados)),
-        (62, lambda: validar_price_unit(sap_df, resultados)),
-        (63, lambda: validar_product_hierarchy(sap_df, resultados, mvke_df, mara_df)),
+        (60, lambda: validar_price_control(sap_like_df, resultados)),
+        (62, lambda: validar_price_unit(sap_like_df, resultados)),
+        (63, lambda: validar_product_hierarchy(sap_like_df, resultados, mvke_df, mara_df)),
         (64, lambda: validar_production_supervisor_marc(marc_df, mara_df, resultados)),
         (66, lambda: validar_product_hierarchy_vs_enterproj(mara_df, zplm_mara_df, resultados)),
         (67, lambda: validar_packaging_material_type_mara(mara_df, resultados)),
-        (68, lambda: validar_production_scheduling_profile(sap_df, resultados)),
+        (68, lambda: validar_production_scheduling_profile(sap_like_df, resultados)),
         (69, lambda: validar_country_region_origin_fp(marc_df, zplm_marc_df, mara_df, resultados)),
-        (70, lambda: validar_profit_center(sap_df, resultados)),
+        (70, lambda: validar_profit_center(sap_like_df, resultados)),
         (71, lambda: validar_lifo_fifo_relevant_mbew(mbew_df, mara_df, resultados)),
-        (72, lambda: validar_purchasing_group(sap_df, resultados)),
+        (72, lambda: validar_purchasing_group(sap_like_df, resultados)),
         (74, lambda: validar_repetitive_manufacturing(marc_df, zplm_marc_df, mara_df, resultados)),
         (76, lambda: validar_rem_profile(marc_df, zplm_marc_df, mara_df, resultados)),
         (78, lambda: validar_source_list_required_marc(marc_df, mara_df, resultados)),
-        (80, lambda: validar_storage_location(sap_df, resultados)),
-        (82, lambda: validar_valuation_class(sap_df, resultados)),
-        (84, lambda: validar_with_qty_structure(sap_df, resultados)),
-        (86, lambda: validar_enterproj_number(sap_df, resultados)),
-        (87, lambda: validar_mrp_controller(sap_df, resultados)),
-        (88, lambda: validar_plant_specific_material_status(sap_df, resultados)),
-        (89, lambda: validar_backflush(sap_df, resultados)),
-        (90, lambda: validar_strategy_group(sap_df, resultados)),
-        (91, lambda: validar_product_related_origin(sap_df, resultados)),
-        (92, lambda: validar_availability_check(sap_df, resultados)),
-        (93, lambda: validar_material_group_appoint(sap_df, resultados)),
-        (94, lambda: validar_purchasing_group_dxx(sap_df, resultados)),
+        (80, lambda: validar_storage_location(sap_like_df, resultados)),
+        (82, lambda: validar_valuation_class(sap_like_df, resultados)),
+        (84, lambda: validar_with_qty_structure(sap_like_df, resultados)),
+        (86, lambda: validar_enterproj_number(sap_like_df, resultados)),
+        (87, lambda: validar_mrp_controller(sap_like_df, resultados)),
+        (88, lambda: validar_plant_specific_material_status(sap_like_df, resultados)),
+        (89, lambda: validar_backflush(sap_like_df, resultados)),
+        (90, lambda: validar_strategy_group(sap_like_df, resultados)),
+        (91, lambda: validar_product_related_origin(sap_like_df, resultados)),
+        (92, lambda: validar_availability_check(sap_like_df, resultados)),
+        (93, lambda: validar_material_group_appoint(sap_like_df, resultados)),
+        (94, lambda: validar_purchasing_group_dxx(sap_like_df, resultados)),
     ]
 
     for pct, fn in validations:
@@ -4930,11 +5416,16 @@ def run_full_validation(
 
     _cb(96, "Validating Advanced Planning fields (MARC)...")
     validar_advanced_planning_fields(
-        marc_df=marc_df,
+        marc_df=marc_df_full,
         mara_df=mara_df,
         resultados=resultados,
         matplsta_df=matplsta_df,
     )
+
+    _cb(97, "Validating Neg. stocks in plant (MARC)...")
+    neg_errors_early = validar_neg_stocks_in_plant(marc_df, mara_df)
+    if neg_errors_early:
+        resultados.extend(neg_errors_early)
 
     # ------------------------------------------------------------------
     # 5) Build errors DataFrame
@@ -4951,6 +5442,25 @@ def run_full_validation(
             errors_df[_c] = errors_df[_c].fillna('').astype(str).str.strip()
         errors_df = errors_df.drop_duplicates(subset=_dedup_key).reset_index(drop=True)
 
+    # ------------------------------------------------------------
+    # ✅ DETECT ERRORS NOT MAPPED IN ROLES (parity with TN engine)
+    # ------------------------------------------------------------
+    if roles_df is not None and not roles_df.empty:
+        errors_df['Field_clean'] = errors_df['Field'].astype(str).str.strip()
+        roles_set = set(roles_df['Field'].astype(str).str.strip())
+
+        missing_role_df = errors_df[~errors_df['Field_clean'].isin(roles_set)].copy()
+
+        if not missing_role_df.empty:
+            print("\n--- ⚠️ ERRORS NOT MAPPED IN ROLES ---\n")
+            for f in sorted(missing_role_df['Field_clean'].unique()):
+                print(f)
+            print("\n--------------------------------------\n")
+
+        errors_df = errors_df.drop(columns=['Field_clean'], errors='ignore')
+    else:
+        missing_role_df = pd.DataFrame()
+
     # Enterproj enrichment (optional — needs previous report)
     if previous_report:
         errors_df = fill_plant_and_validate_enterproj_from_zplm(
@@ -4961,9 +5471,6 @@ def run_full_validation(
     # Additional enrichments
     if not errors_df.empty:
         errors_df = add_old_material_number_errors(mara_df, errors_df)
-        neg_errors = validar_neg_stocks_in_plant(marc_df, mara_df)
-        if neg_errors:
-            errors_df = pd.concat([errors_df, pd.DataFrame(neg_errors)], ignore_index=True)
 
     # ------------------------------------------------------------------
     # 6) Post-processing
@@ -5013,10 +5520,14 @@ def run_full_validation(
         errors_df.to_excel(writer, sheet_name="All Errors", index=False)
         view_is_missing_df.to_excel(writer, sheet_name="View is Missing", index=False)
 
+        # Missing Role Mapping sheet (parity with TN engine)
+        if not missing_role_df.empty:
+            missing_role_df[['Field', 'Material', 'Plant', 'Error']].to_excel(
+                writer, sheet_name="Missing Role Mapping", index=False
+            )
+
         for view_code, df_view in view_tabs_dict.items():
             df_view.to_excel(writer, sheet_name=f"Missing_{view_code}"[:31], index=False)
-
-        sap_df.to_excel(writer, sheet_name="Original Data", index=False)
 
         # Assignments sheet — enriched with owner/status from master.json
         try:
@@ -5027,6 +5538,8 @@ def run_full_validation(
         except Exception:
             pass
 
+        marc_df.to_excel(writer, sheet_name="Original Data (MARC)", index=False)
+
     # Apply full professional styling
     file_bytes.seek(0)
     file_bytes = _style_sap_report(
@@ -5036,7 +5549,7 @@ def run_full_validation(
         contagem_final_df=contagem_final_df,
         coverage_df=coverage_df,
         view_tabs_dict=view_tabs_dict,
-        sap_df=sap_df,
+        sap_df=marc_df,
         plant_filter=plant_filter,
     )
 
@@ -6796,7 +7309,7 @@ def _ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
 
-def build_sap_log_payload(*, user, plant_filter, sap_file, mara_file, marc_file,
+def build_sap_log_payload(*, user, plant_filter, mara_file, marc_file,
                            mvke_file, errors_df, summary_df, report_path=None):
     """Log payload for a SAP Validation run."""
     def _name(f, default):
@@ -6813,8 +7326,7 @@ def build_sap_log_payload(*, user, plant_filter, sap_file, mara_file, marc_file,
         "plant_filter": plant_filter or "ALL",
         "metrics": {"total_errors": total_errors, "fields_with_error": total_fields,
                     "materials_with_error": total_materials},
-        "files": {"sap": _name(sap_file, "Item Browse Report.xlsx"),
-                  "mara": _name(mara_file, "MARA.xlsx"),
+        "files": {"mara": _name(mara_file, "MARA.xlsx"),
                   "marc": _name(marc_file, "MARC.xlsx"),
                   "mvke": _name(mvke_file, "MVKE.xlsx")},
         "top_fields": summary_df.head(5).to_dict(orient="records") if summary_df is not None else [],
