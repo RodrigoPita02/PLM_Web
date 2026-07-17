@@ -1,0 +1,39 @@
+{
+  "run_type": "SAP_VALIDATION",
+  "timestamp": "2026-07-15T09:24:54",
+  "user": "RPITA",
+  "plant_filter": "PT",
+  "metrics": {
+    "total_errors": 3833,
+    "fields_with_error": 21,
+    "materials_with_error": 2560
+  },
+  "files": {
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "mvke": "MVKE.xlsx"
+  },
+  "top_fields": [
+    {
+      "Field": "Advanced Planning",
+      "Adjusted Nº of Errors": 1687
+    },
+    {
+      "Field": "Batch Management Required Ind.",
+      "Adjusted Nº of Errors": 1060
+    },
+    {
+      "Field": "Individual/ Collective Requirements",
+      "Adjusted Nº of Errors": 278
+    },
+    {
+      "Field": "MRP Type",
+      "Adjusted Nº of Errors": 184
+    },
+    {
+      "Field": "Version Indicator",
+      "Adjusted Nº of Errors": 102
+    }
+  ],
+  "report_path": "C:\\Users\\RPITA\\OneDrive - Visteon\\Desktop\\Rodrigo\\PLM_Web\\reports\\sap\\2026-07\\20260715_092454_SAP_Validation_PT.xlsx"
+}

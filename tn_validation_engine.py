@@ -1013,9 +1013,9 @@ def tn_validar_storage_location_ext_procurement(marc_df, zplm_marc_df, mara_df, 
             erros.append("Mandatory field blank for Plant Type FP in TN02")
 
         # --------------------------------------------------------
-        # ✅ TN01 VALUE RULES
+        # ✅ TN01 VALUE RULES  (only relevant when Plant Type = PP)
         # --------------------------------------------------------
-        if plant == 'TN01' and mt in {'FERT', 'HALB', 'ROH'}:
+        if plant == 'TN01' and pt == 'PP' and mt in {'FERT', 'HALB', 'ROH'}:
             expected_map = {
                 'ROH':  'T100',
                 'HALB': 'T115',
@@ -1030,9 +1030,9 @@ def tn_validar_storage_location_ext_procurement(marc_df, zplm_marc_df, mara_df, 
                 erros.append(f"Invalid value: '{val}' (should be '{expected}' for TN01 {mt})")
 
         # --------------------------------------------------------
-        # ✅ TN02 VALUE RULES
+        # ✅ TN02 VALUE RULES  (only relevant when Plant Type = PP or FP)
         # --------------------------------------------------------
-        if plant == 'TN02' and mt in {'FERT', 'HALB', 'ROH'}:
+        if plant == 'TN02' and pt in ('PP', 'FP') and mt in {'FERT', 'HALB', 'ROH'}:
 
             if mt == 'ROH':
                 if val != '':
@@ -1250,6 +1250,12 @@ def run_tn_validation(
         'valuation class': 'Valuation Class',
         'cost est. with qty structure': 'With Qty Structure',
     })
+    # ✅ 'Valuation Area' alias — validar_lifo_fifo_relevant_mbew() hard-requires
+    # a column literally named 'Valuation Area' (MBEW's own SAP field name),
+    # while everything else here was normalized to 'Plant'. Keep both.
+    if mbew_df is not None and 'Plant' in mbew_df.columns:
+        mbew_df['Valuation Area'] = mbew_df['Plant']
+
     zplm_marc_df = _normalize_df_columns(zplm_marc_df, {
         'plant': 'Plant',
         'werks': 'Plant',
@@ -1261,6 +1267,25 @@ def run_tn_validation(
         'ltb quantity': 'LTB Quantity',
         'ltb start date': 'LTB Start Date',
     })
+
+    # ✅ DEDUPLICATE ZPLM MARC to one row per (Material, Plant) — BEFORE any
+    # consumer touches it. See sap_validation_engine.py's run_full_validation
+    # for the full explanation: ZPLM MARC's change-history columns suggest
+    # it can hold multiple historical rows per (Material, Plant), which
+    # would otherwise multiply every validation that merges against it
+    # directly (validar_batch_management_plant_marc, validar_version_indicator_marc,
+    # validar_country_region_origin_fp, tn_validar_storage_location_ext_procurement).
+    if zplm_marc_df is not None and not zplm_marc_df.empty and {'Material', 'Plant'}.issubset(zplm_marc_df.columns):
+        _sort_col = next(
+            (c for c in ['Changed On', 'Change Number', 'Created On'] if c in zplm_marc_df.columns),
+            None
+        )
+        if _sort_col:
+            # Convert to string to handle mixed datetime/time types
+            zplm_marc_df[_sort_col] = zplm_marc_df[_sort_col].fillna('').astype(str)
+            zplm_marc_df = zplm_marc_df.sort_values(_sort_col, ascending=False, na_position='last')
+        zplm_marc_df = zplm_marc_df.drop_duplicates(subset=['Material', 'Plant'], keep='first')
+
     mvke_df = _normalize_df_columns(mvke_df, {'plant': 'Plant', 'werks': 'Plant', 'material': 'Material'})
     marm_df = _normalize_df_columns(marm_df, {'plant': 'Plant', 'werks': 'Plant', 'material': 'Material'})
 

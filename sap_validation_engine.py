@@ -3060,10 +3060,17 @@ def validar_storage_location_ext_procurement(marc_df, zplm_marc_df, mara_df, res
         if mt not in {"FERT", "HALB", "ROH"}:
             continue
 
+        # ✅ This field only applies to Plant Type PP (Palmela plants have
+        # no FP exception, unlike TN02). For any other Plant Type
+        # (FP, MP, COI, etc.), the field is not checked at all — blank or
+        # any value is fine.
+        if plant_type != "PP":
+            continue
+
         # --------------------------------------------------------
         # 1️⃣ Campo obrigatório para PP
         # --------------------------------------------------------
-        if plant_type == "PP" and sloc_ext == "":
+        if sloc_ext == "":
             resultados.append({
                 "Line": idx + 2,
                 "Field": "Storage Location for Ext. Procurement",
@@ -3078,16 +3085,14 @@ def validar_storage_location_ext_procurement(marc_df, zplm_marc_df, mara_df, res
         # --------------------------------------------------------
         expected = expected_map.get((plant, mt))
 
-        # Only validate explicit expected values when we can map plant+mt → expected
-        if expected and sloc_ext != "":
-            if sloc_ext != expected:
-                resultados.append({
-                    "Line": idx + 2,
-                    "Field": "Storage Location for Ext. Procurement",
-                    "Error": f"Invalid value: '{sloc_ext}' (expected '{expected}' for {plant} / {mt})",
-                    "Material": material,
-                    "Plant": plant,
-                })
+        if expected and sloc_ext != expected:
+            resultados.append({
+                "Line": idx + 2,
+                "Field": "Storage Location for Ext. Procurement",
+                "Error": f"Invalid value: '{sloc_ext}' (expected '{expected}' for {plant} / {mt})",
+                "Material": material,
+                "Plant": plant,
+            })
 
 
 def validar_individual_collective_requirements_marc(marc_df, mara_df, resultados):
@@ -3339,6 +3344,7 @@ def validar_version_indicator_marc(
     - Plant Type FP or MP  → must be 'X'
     - Any other Plant Type → must be EMPTY
     - ONLY for Material Types: FERT, HALB, ROH
+    - ✅ EXCLUDES: Planning Status (PSMS) ∈ {10, 70, 75}
     Validation per (Material, Plant).
     """
 
@@ -3346,6 +3352,7 @@ def validar_version_indicator_marc(
         "Material",
         "Plant",
         "Version Indicator",
+        "Plant Specific Material Status",
     }
     required_zplm = {
         "Material",
@@ -3389,6 +3396,16 @@ def validar_version_indicator_marc(
 
         # ✅ Só FERT / HALB / ROH
         if mt not in {"FERT", "HALB", "ROH"}:
+            continue
+
+        # ✅ SKIP: Planning Status (PSMS) ∈ {10, 70, 75}
+        psms_raw = row.get("Plant Specific Material Status", "")
+        try:
+            psms = int(float(str(psms_raw).strip())) if str(psms_raw).strip() else None
+        except (ValueError, TypeError):
+            psms = None
+        
+        if psms in {10, 70, 75}:
             continue
 
         version_ind = _norm_str(row.get("Version Indicator")).upper()
@@ -5162,6 +5179,8 @@ def run_full_validation(
     _cb(21, "Loading MBEW data...")
     mbew_df = load_xlsx_fast(mbew_file, sheet_name=0) if mbew_file else None
 
+    
+
     # ------------------------------------------------------------------
     # 2) Basic sanity checks
     # ------------------------------------------------------------------
@@ -5204,6 +5223,13 @@ def run_full_validation(
         'planning strategy group': 'Planning Strategy Group',
         'plant-specific material status': 'Plant Specific Material Status',
     })
+    # ✅ 'Strategy Group' alias — validar_strategy_group() (generic, Palmela-only)
+    # expects this exact name (matching the old Item Browse Report column),
+    # while everything else (including TN's own tn_validar_strategy_group)
+    # was written against 'Planning Strategy Group'. Keep both.
+    if 'Planning Strategy Group' in marc_df.columns:
+        marc_df['Strategy Group'] = marc_df['Planning Strategy Group']
+
     mbew_df = _normalize_df_columns(mbew_df, {
         'plant': 'Plant',
         'werks': 'Plant',
@@ -5214,6 +5240,12 @@ def run_full_validation(
         'valuation class': 'Valuation Class',
         'cost est. with qty structure': 'With Qty Structure',
     })
+    # ✅ 'Valuation Area' alias — validar_lifo_fifo_relevant_mbew() hard-requires
+    # a column literally named 'Valuation Area' (MBEW's own SAP field name),
+    # while everything else here was normalized to 'Plant'. Keep both.
+    if mbew_df is not None and 'Plant' in mbew_df.columns:
+        mbew_df['Valuation Area'] = mbew_df['Plant']
+
     zplm_marc_df = _normalize_df_columns(zplm_marc_df, {
         'plant': 'Plant',
         'werks': 'Plant',
@@ -5231,6 +5263,30 @@ def run_full_validation(
     # column name; every other zplm_marc_df consumer expects 'Plant Type'.
     if zplm_marc_df is not None and 'Plant Type' in zplm_marc_df.columns:
         zplm_marc_df['Material Plant Type'] = zplm_marc_df['Plant Type']
+
+    # ✅ DEDUPLICATE ZPLM MARC to one row per (Material, Plant) — BEFORE any
+    # consumer touches it (build_sap_like_df AND the several validar_*
+    # functions that merge marc_df with zplm_marc_df directly: Storage
+    # Location for Ext. Procurement, Version Indicator, Batch Management
+    # (Plant), Country/Region of Origin, Repetitive Manufacturing, REM
+    # Profile). ZPLM MARC carries change-history columns (Original/Change
+    # Number, Created/Changed By/On), which strongly suggests it can
+    # legitimately hold more than one historical row per (Material, Plant).
+    # A left.merge(zplm_marc_df, on=['Material','Plant']) multiplies every
+    # matching row, so without this, every one of those validations would
+    # inflate massively. We keep the most recently changed row per
+    # (Material, Plant) when a date/change column is available, else just
+    # the first occurrence.
+    if zplm_marc_df is not None and not zplm_marc_df.empty and {'Material', 'Plant'}.issubset(zplm_marc_df.columns):
+        _sort_col = next(
+            (c for c in ['Changed On', 'Change Number', 'Created On'] if c in zplm_marc_df.columns),
+            None
+        )
+        if _sort_col:
+            # Convert to string to handle mixed datetime/time types
+            zplm_marc_df[_sort_col] = zplm_marc_df[_sort_col].fillna('').astype(str)
+            zplm_marc_df = zplm_marc_df.sort_values(_sort_col, ascending=False, na_position='last')
+        zplm_marc_df = zplm_marc_df.drop_duplicates(subset=['Material', 'Plant'], keep='first')
 
     mvke_df = _normalize_df_columns(mvke_df, {'plant': 'Plant', 'werks': 'Plant', 'material': 'Material'})
     marm_df = _normalize_df_columns(marm_df, {'plant': 'Plant', 'werks': 'Plant', 'material': 'Material'})
@@ -5335,6 +5391,8 @@ def run_full_validation(
             else:
                 mbew_small = mbew_small.drop_duplicates(subset=['Material'], keep='first')
                 sap_like_df = sap_like_df.merge(mbew_small, on='Material', how='left')
+
+    
 
     # ------------------------------------------------------------------
     # 4) Run all field validations
