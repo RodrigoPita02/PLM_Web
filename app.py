@@ -2372,7 +2372,7 @@ elif main_choice == "📋 SSA Validation":
     render_wizard(st.session_state.ssa_step, WIZARD_STEPS_DEFAULT)
 
     ssa_required = ["vbak", "vbap", "vbkd", "kna1"]
-    ssa_optional = ["marc", "vbpa"]
+    ssa_optional = ["marc", "vbpa", "vbfa"]
 
     if st.session_state.ssa_step == 1:
         st.markdown("### 📂 Step 1 — Load Files")
@@ -2384,19 +2384,20 @@ elif main_choice == "📋 SSA Validation":
         <tr><td style="padding:3px 8px">📄 <strong>VBAP</strong></td><td style="color:var(--app-fg-muted)">SA Items — Plant, Route, IFS ID, Supplier Code, Material</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>VBKD</strong></td><td style="color:var(--app-fg-muted)">SA Business data — Incoterms</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>KNA1</strong></td><td style="color:var(--app-fg-muted)">Customer master — Country (GB check)</td></tr>
-        <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>MARC</strong></td><td style="color:var(--app-fg-muted)">Optional — Material Status 70/75 + Country of Origin checks</td></tr>
-        <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>VBPA</strong></td><td style="color:var(--app-fg-muted)">Optional — Partner country override for DDP+GB rule</td></tr>
+        <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>MARC</strong></td><td style="color:var(--app-fg-muted)">Optional — Material Status 70/75/99, MRP Type checks</td></tr>
+        <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>VBPA</strong></td><td style="color:var(--app-fg-muted)">Optional — Partner country override for DDP+GB rule, Unloading Point</td></tr>
+        <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>VBFA</strong></td><td style="color:var(--app-fg-muted)">Optional — Sales Document Flow, gates the Weights rule on OBD existence</td></tr>
         </table>
         </div>
         """, unsafe_allow_html=True)
 
         uploads = st.file_uploader(
-            "Drop VBAK, VBAP, VBKD, KNA1 + optional MARC and VBPA",
+            "Drop VBAK, VBAP, VBKD, KNA1 + optional MARC, VBPA and VBFA",
             type="xlsx", accept_multiple_files=True, key="ssa_uploader",
         )
 
         def classify_ssa_files(files):
-            mapping = {k: None for k in ["vbak","vbap","vbkd","vbpa","kna1","marc"]}
+            mapping = {k: None for k in ["vbak","vbap","vbkd","vbpa","kna1","marc","vbfa"]}
             for f in (files or []):
                 name = f.name.lower()
                 if "vbak" in name:   mapping["vbak"] = f
@@ -2405,6 +2406,7 @@ elif main_choice == "📋 SSA Validation":
                 elif "vbpa" in name: mapping["vbpa"] = f
                 elif "kna1" in name: mapping["kna1"] = f
                 elif "marc" in name: mapping["marc"] = f
+                elif "vbfa" in name: mapping["vbfa"] = f
             return mapping
 
         files_map = classify_ssa_files(uploads)
@@ -2417,9 +2419,10 @@ elif main_choice == "📋 SSA Validation":
             label_map = {
                 "vbak": "VBAK.xlsx", "vbap": "VBAP.xlsx",
                 "vbkd": "VBKD.xlsx", "kna1": "KNA1.xlsx",
-                "marc": "MARC.xlsx (optional)", "vbpa": "VBPA.xlsx (optional)"
+                "marc": "MARC.xlsx (optional)", "vbpa": "VBPA.xlsx (optional)",
+                "vbfa": "VBFA.xlsx (optional)"
             }
-            for key in ["vbak","vbap","vbkd","kna1","marc","vbpa"]:
+            for key in ["vbak","vbap","vbkd","kna1","marc","vbpa","vbfa"]:
                 in_up   = files_map.get(key) is not None
                 in_pers = key in persisted
                 if in_up:
@@ -2469,6 +2472,7 @@ elif main_choice == "📋 SSA Validation":
         _pers_ssa  = st.session_state.get("ssa_files_persisted") or {}
         _has_marc  = "marc" in _pers_ssa
         _has_vbpa  = "vbpa" in _pers_ssa
+        _has_vbfa  = "vbfa" in _pers_ssa
 
         st.markdown(f"""
         <div style="background:var(--app-bg-secondary);border:1px solid var(--app-border);border-radius:10px;padding:16px 20px;margin-bottom:16px">
@@ -2478,10 +2482,12 @@ elif main_choice == "📋 SSA Validation":
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:0.87rem;color:var(--app-fg)">
             <div><span style="color:var(--app-fg-muted)">Executor</span><br><strong>{_exec_ssa}</strong></div>
             <div><span style="color:var(--app-fg-muted)">Scope</span><br><strong>{_scope_ssa}</strong></div>
-            <div><span style="color:var(--app-fg-muted)">Optional files</span><br><strong>{"MARC ✅" if _has_marc else "MARC ⬜"} &nbsp; {"VBPA ✅" if _has_vbpa else "VBPA ⬜"}</strong></div>
+            <div><span style="color:var(--app-fg-muted)">Optional files</span><br><strong>{"MARC ✅" if _has_marc else "MARC ⬜"} &nbsp; {"VBPA ✅" if _has_vbpa else "VBPA ⬜"} &nbsp; {"VBFA ✅" if _has_vbfa else "VBFA ⬜"}</strong></div>
         </div>
         <div style="margin-top:10px;font-size:0.8rem;color:var(--app-fg-muted)">
-            Rules: Mandatory Fields · Incoterms DDP+GB · Incompletion Log{"· Rejected Status 70/75 · Country of Origin" if _has_marc else ""}
+            Rules: Mandatory Fields · Incoterms · Incompletion Log · Terms of Payment · Shipping Point ·
+            Unloading Point Consistency · Customer Reference · Weights{" (OBD-gated via VBFA)" if _has_vbfa else ""} ·
+            Order Without Items · Customer Material{"· Rejected Status 70/75/99 · MRP Type" if _has_marc else ""}
         </div>
         </div>
         """, unsafe_allow_html=True)
@@ -2496,7 +2502,9 @@ elif main_choice == "📋 SSA Validation":
                     kna1_file=files.get("kna1"),
                     marc_file=files.get("marc"),
                     vbpa_file=files.get("vbpa"),
+                    vbfa_file=files.get("vbfa"),
                     plant_filter=st.session_state.get("ssa_plant_filter"),
+                    apply_styles=False,
                 )
             st.session_state.ssa_excel   = excel_bytes
             st.session_state.ssa_results = results_dict
