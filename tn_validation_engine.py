@@ -27,6 +27,7 @@
 #   3.5  Consumption Mode   — TN02 HALB: must be '0' or empty
 #   3.10 JIT Delivery Sched.— TN01/TN02 FP: must be 'Yes' (Palmela: PP only)
 #   3.14 MRP Type           — TN02 FERT/HALB: must be 'PD'
+#   3.15 MRP Group          — TN02 FERT: must be 'ZSTO'
 #                             PSMS=25 Planning Calendar: TN01->TN1, TN02->TN2
 #   3.16 Planning Calendar  — TN01 FP/MP: 'TN1'; TN02 FP/MP: 'TN2'
 #   3.17 Planning Time Fence— TN02 FERT: must be 0 or empty
@@ -43,6 +44,7 @@
 #   4.11 Indiv/Coll.Req.    — TN01/TN02 HALB/ROH: must be '2' (Palmela: '1')
 #   4.13 Production Superv. — TN02: must be BLANK (Palmela: 'Z01')
 #   3.32 Advanced Planning  — TN01 FERT, TN02 FERT/HALB: must be 'X'
+#   3.32 Proposed Strategy  — TN01/TN02 FERT/HALB: '20' or 'Z1' (Palmela: must be '20')
 # =============================================================================
 
 import io
@@ -108,6 +110,7 @@ from sap_validation_engine import (
     validar_price_control,
     validar_price_unit,
     validar_product_hierarchy,
+    validar_product_hierarchy_mvke,
     validar_valuation_class,
     validar_with_qty_structure,
     validar_product_related_origin,
@@ -349,6 +352,38 @@ def tn_validar_jit_delivery_sched(df, resultados):
         if erros:
             resultados.append({'Line': idx + 2, 'Field': col,
                                'Error': ' \n '.join(erros), 'Material': mat, 'Plant': plant})
+
+
+def tn_validar_mrp_group(marc_df, mara_df, resultados):
+    """TN02 FERT: MRP Group is mandatory and must be 'ZSTO'."""
+    col = 'MRP Group'
+    if marc_df is None or marc_df.empty or col not in marc_df.columns:
+        return
+
+    mt_map = _mt_map_from_mara(mara_df)
+    for idx, row in marc_df.iterrows():
+        plant = _norm_str(row.get('Plant')).upper()
+        mat = _norm_str(row.get('Material'))
+        mt = mt_map.get(mat, _norm_str(row.get('Material Type', '')).upper())
+
+        if plant != 'TN02' or mt != 'FERT':
+            continue
+
+        val = _norm_str(row.get(col)).upper()
+        if val == '':
+            error = "Mandatory field blank (TN02 FERT requires MRP Group = 'ZSTO')"
+        elif val != 'ZSTO':
+            error = f"TN02 FERT requires MRP Group = 'ZSTO' (current: '{val}')"
+        else:
+            continue
+
+        resultados.append({
+            'Line': idx + 2,
+            'Field': col,
+            'Error': error,
+            'Material': mat,
+            'Plant': plant,
+        })
 
 
 def tn_validar_mrp_type(df, mara_df, resultados, zplm_marc_df=None,
@@ -1107,7 +1142,9 @@ def tn_validar_production_supervisor(marc_df, mara_df, resultados):
 
 
 def tn_validar_advanced_planning_fields(marc_df, mara_df, resultados):
-    """TN01 FERT -> X; TN02 FERT/HALB -> X. Heuristic/PP Proc/Req Strategy same as Palmela."""
+    """TN01 FERT -> X; TN02 FERT/HALB -> X. Heuristic/PP Proc same as Palmela.
+    Proposed Strategy (Requirement Strategy): '20' or 'Z1' for TN01/TN02 FERT/HALB
+    (Palmela equivalent requires exactly '20', no 'Z1' exception)."""
     if marc_df is None or mara_df is None:
         return
 
@@ -1155,7 +1192,12 @@ def tn_validar_advanced_planning_fields(marc_df, mara_df, resultados):
             resultados.append({'Line': idx + 2, 'Field': 'PP Plng Procedure',
                                'Error': "Invalid value: should be '4'",
                                'Material': mat, 'Plant': plant})
-        if req != '20':
+        if plant in {'TN01', 'TN02'}:
+            if req not in {'20', 'Z1'}:
+                resultados.append({'Line': idx + 2, 'Field': 'Proposed Strategy',
+                                   'Error': f"Invalid value: '{req}' (should be '20', or 'Z1' for TN01/TN02)",
+                                   'Material': mat, 'Plant': plant})
+        elif req != '20':
             resultados.append({'Line': idx + 2, 'Field': 'Proposed Strategy',
                                'Error': "Invalid value: should be '20'",
                                'Material': mat, 'Plant': plant})
@@ -1238,6 +1280,8 @@ def run_tn_validation(
         'issue storage location': 'Issue Storage Location',
         'production storage location': 'Issue Storage Location',
         'planning strategy group': 'Planning Strategy Group',
+        'mrp group': 'MRP Group',
+        'disgr': 'MRP Group',
         'plant-specific material status': 'Plant Specific Material Status',
     })
     mbew_df = _normalize_df_columns(mbew_df, {
@@ -1452,6 +1496,7 @@ def run_tn_validation(
 
     _cb(30, "Validating Product Hierarchy...")
     validar_product_hierarchy(sap_like_df, resultados, mvke_df, mara_df)
+    validar_product_hierarchy_mvke(sap_like_df, resultados, mvke_df)
 
     _cb(31, "Validating Valuation Class, With Qty Structure...")
     validar_valuation_class(sap_like_df, resultados)
@@ -1494,6 +1539,9 @@ def run_tn_validation(
     _cb(47, "Validating MRP Type (TN)...")
     tn_validar_mrp_type(sap_like_df, mara_df, resultados, zplm_marc_tn,
                          csr_item_df, csr_head_df)
+
+    _cb(47.5, "Validating MRP Group (TN02 FERT)...")
+    tn_validar_mrp_group(marc_tn, mara_df, resultados)
 
     _cb(48, "Validating Planning Calendar (TN)...")
     tn_validar_planning_calendar(sap_like_df, resultados)
