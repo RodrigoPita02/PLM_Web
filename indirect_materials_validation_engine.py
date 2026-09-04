@@ -565,6 +565,7 @@ def im_validar_mrp_view2(sap_df, errors):
     mat_col   = _pick(sap_df, ["Material", "MATNR"])
     plant_col = _pick(sap_df, ["Plant", "WERKS"])
     mt_col    = _pick(sap_df, ["Material Type", "MTART"])
+    mg_col    = _pick(sap_df, ["Material Group", "MATKL"])
     proc_col  = _pick(sap_df, ["Procurement Type", "BESKZ"])
     spec_col  = _pick(sap_df, ["Special Procurement", "SOBSL"])
     stor_col  = _pick(sap_df, ["Storage Location Ext Proc", "LGPRO"])
@@ -573,6 +574,7 @@ def im_validar_mrp_view2(sap_df, errors):
         material = row[mat_col] if mat_col else ""
         plant    = _norm(row[plant_col]).upper() if plant_col else ""
         mt       = _norm(row[mt_col]).upper() if mt_col else ""
+        mg       = _norm(row[mg_col]).upper() if mg_col else ""
 
         # BESKZ — MARC
         if proc_col:
@@ -600,6 +602,8 @@ def im_validar_mrp_view2(sap_df, errors):
         #   PT02: HIBE → P260 | VERP → P255 | ERSA → P260
         #   TN01: HIBE → T160 | VERP → T155 | ERSA → T160
         #   TN02: HIBE → blank | VERP → T255 | ERSA → blank
+        # Special case: ERSA + Material Group MT0020012 may also use:
+        #   PT01 → P100 | PT02 → P200 | TN01 → T100 | TN02 → blank
         _LGPRO_EXPECTED = {
             ("PT01", "HIBE"): "P160",
             ("PT01", "VERP"): "P155",
@@ -614,24 +618,37 @@ def im_validar_mrp_view2(sap_df, errors):
             ("TN02", "VERP"): "T255",
             ("TN02", "ERSA"): "",
         }
+        _LGPRO_ALLOWED_FOR_MT0020012 = {
+            "PT01": "P100",
+            "PT02": "P200",
+            "TN01": "T100",
+            "TN02": "",
+        }
         if stor_col and mt in {"HIBE", "ERSA", "VERP"}:
             expected_lgpro = _LGPRO_EXPECTED.get((plant, mt))
             val_lgpro = _norm(row[stor_col]).upper()
             if expected_lgpro is None:
                 # Plant/MT combination not in mapping — skip
                 pass
-            elif expected_lgpro == "":
-                # Dash in mapping → field must be blank
-                if not _is_blank(val_lgpro):
-                    _append_error(errors, material=material, plant=plant,
-                                  field="Storage Location for Ext. Procurement", value=val_lgpro,
-                                  error="Must be blank for this Plant/Material Type", table="MARC")
             else:
-                # Specific value expected
-                if val_lgpro != expected_lgpro:
-                    _append_error(errors, material=material, plant=plant,
-                                  field="Storage Location for Ext. Procurement", value=val_lgpro,
-                                  error=f"Should be '{expected_lgpro}'", table="MARC")
+                allowed_values = {expected_lgpro} if expected_lgpro != "" else {""}
+                if mt == "ERSA" and mg == "MT0020012":
+                    special_value = _LGPRO_ALLOWED_FOR_MT0020012.get(plant)
+                    if special_value is not None:
+                        allowed_values.add(special_value)
+                if "" in allowed_values:
+                    if not _is_blank(val_lgpro):
+                        if val_lgpro not in allowed_values:
+                            allowed_values_str = ", ".join(sorted(v for v in allowed_values if v)) or "blank"
+                            _append_error(errors, material=material, plant=plant,
+                                          field="Storage Location for Ext. Procurement", value=val_lgpro,
+                                          error=f"Must be blank or one of: {allowed_values_str}", table="MARC")
+                else:
+                    if val_lgpro not in allowed_values:
+                        allowed_values_str = ", ".join(sorted(allowed_values))
+                        _append_error(errors, material=material, plant=plant,
+                                      field="Storage Location for Ext. Procurement", value=val_lgpro,
+                                      error=f"Should be one of: {allowed_values_str}", table="MARC")
 
 
 def im_validar_mrp_view3(sap_df, errors):

@@ -27,6 +27,7 @@
 #   3.5  Consumption Mode   — TN02 HALB: must be '0' or empty
 #   3.10 JIT Delivery Sched.— TN01/TN02 FP: must be 'Yes' (Palmela: PP only)
 #   3.14 MRP Type           — TN02 FERT/HALB: must be 'PD'
+#   3.15 MRP Group          — TN02 FERT: must be 'ZSTO'
 #                             PSMS=25 Planning Calendar: TN01->TN1, TN02->TN2
 #   3.16 Planning Calendar  — TN01 FP/MP: 'TN1'; TN02 FP/MP: 'TN2'
 #   3.17 Planning Time Fence— TN02 FERT: must be 0 or empty
@@ -43,6 +44,7 @@
 #   4.11 Indiv/Coll.Req.    — TN01/TN02 HALB/ROH: must be '2' (Palmela: '1')
 #   4.13 Production Superv. — TN02: must be BLANK (Palmela: 'Z01')
 #   3.32 Advanced Planning  — TN01 FERT, TN02 FERT/HALB: must be 'X'
+#   3.32 Proposed Strategy  — TN01/TN02 FERT/HALB: '20' or 'Z1' (Palmela: must be '20')
 # =============================================================================
 
 import io
@@ -108,6 +110,7 @@ from sap_validation_engine import (
     validar_price_control,
     validar_price_unit,
     validar_product_hierarchy,
+    validar_product_hierarchy_mvke,
     validar_valuation_class,
     validar_with_qty_structure,
     validar_product_related_origin,
@@ -123,277 +126,19 @@ from sap_validation_engine import (
     validar_costing_lot_size,
     validar_safety_time_marc,
     validar_material_price_determination_control,
+    # Shared helpers (moved here so both engines share a single implementation)
+    _normalize_columns,
+    _normalize_df_columns,
+    build_sap_like_df,
+    _mt_map_from_mara,
+    _pt_map_from_zplm,
+    _filter_valid_material_types,
+    _get_mps99_material_plant_pairs,
+    _exclude_material_plant_status_99,
 )
 
 TN_PLANTS = {"TN01", "TN02"}
 
-
-# =============================================================================
-# STEP 1 — Build sap_like_df  (replaces SAPUI5 Export for Tunisia)
-# =============================================================================
-
-# =============================================================================
-# STEP 1 — Build sap_like_df
-# =============================================================================
-def _normalize_columns(df, rename_map):
-    df = df.copy()
-    df.columns = [
-        rename_map.get(str(col).strip().lower(), str(col).strip())
-        for col in df.columns
-    ]
-    if df.columns.duplicated().any():
-        df = df.T.groupby(level=0).first().T
-    return df
-
-def _normalize_df_columns(df, rename_map):
-    if df is None:
-        return df
-    df = df.copy()
-    df.columns = [
-        rename_map.get(str(col).strip().lower(), str(col).strip())
-        for col in df.columns
-    ]
-    if df.columns.duplicated().any():
-        df = df.T.groupby(level=0).first().T
-    return df
-
-def build_sap_like_df(marc_df, mara_df, zplm_marc_df):
-    """
-    Merges MARC + MARA + ZPLM MARC into a single flat DataFrame that mirrors
-    the column layout of the SAPUI5 Export used by Palmela functions.
-    """
-    marc = marc_df.copy()
-    mara = mara_df.copy()
-
-    marc.columns = [str(c).strip() for c in marc.columns]
-    mara.columns = [str(c).strip() for c in mara.columns]
-
-    # ------------------------------------------------------------
-    # ✅ DEDUPLICATE BEFORE ANY MERGE
-    #
-    # A left.merge(right, how='left') multiplies each left row once per
-    # matching right row. If the source MARC/MARA/ZPLM MARC exports
-    # contain duplicate rows for the same key (a common raw-export
-    # artifact), every downstream validation ends up seeing — and
-    # reporting — the exact same (Material, Plant, Field, Error) more
-    # than once. Deduplicating each table on its natural key right here,
-    # before any merge, prevents this at the source rather than trying
-    # to catch it afterwards.
-    # ------------------------------------------------------------
-    if 'Material' in marc.columns and 'Plant' in marc.columns:
-        marc = marc.drop_duplicates(subset=['Material', 'Plant'], keep='first')
-    if 'Material' in mara.columns:
-        mara = mara.drop_duplicates(subset=['Material'], keep='first')
-
-    # ------------------------------------------------------------
-    # ✅ NORMALIZAR NOMES MARA
-    # ------------------------------------------------------------
-    mara_rename_map = {
-        'material description': 'Description',
-        'gen. item cat. grp': 'General Item Category Group',
-        'unit of weight': 'Unit of Weight (ISO Format)',
-        'unit of weight (iso format)': 'Unit of Weight (ISO Format)',
-        'material group': 'Material Group',
-        'product hierarchy': 'Product Hierarchy',
-        'old material number': 'Old material number',
-        'base unit of measure': 'Base Unit of Measure',
-        'export/import group': 'Export/Import Group',
-        'intrastat group': 'Export/Import Group',
-    }
-    mara = _normalize_columns(mara, mara_rename_map)
-
-    # ------------------------------------------------------------
-    # ✅ NORMALIZAR NOMES MARC
-    # ------------------------------------------------------------
-    marc_rename_map = {
-        'availability check': 'Availability Check',
-        'consumption mode': 'Consumption Mode',
-        'jit delivery schedules': 'JIT Delivery Sched.',
-        'source list': 'Source list',
-        'source list required': 'Source list required',
-        'automatic po': 'Automatic Purchase Order Allowed',
-        'automatic purchase order': 'Automatic Purchase Order Allowed',
-        'automatic purchase order allowed': 'Automatic Purchase Order Allowed',
-        'planning time fence': 'Planning Time Fence',
-        'plant-specific material status': 'Plant Specific Material Status',
-        'repetitive manufacturing': 'Indicator: Repetitive Manufa. Allow',
-        'repetitive manufacturing profile': 'Repetitive Manufacturing Profile',
-        'issue storage location': 'Issue Storage Location',
-        'planning strategy group': 'Planning Strategy Group',
-        'planning calendar': 'Planning Calendar',
-        'mrp type': 'MRP Type',
-        'profit center': 'Profit Center',
-        'purchasing group': 'Purchasing Group',
-        'special procurement type': 'Special Procurement Type',
-        'storage location for ext. procurement': 'Storage Location for Ext. Procurement',
-        'individual/ collective requirements': 'Individual/ Collective Requirements',
-        'individual collective requirements': 'Individual/ Collective Requirements',
-        'production supervisor': 'Production Supervisor',
-        'production scheduling profile': 'Production Scheduling Profile',
-        'advanced planning': 'Advanced Planning',
-        'heuristic': 'Heuristic',
-        'pp plng procedure': 'PP Plng Procedure',
-        'requirement strategy': 'Requirement Strategy',
-        'backflush': 'Backflush',
-        'material plant type': 'Plant Type',
-        'period indicator': 'Period Type',
-        'intrastat group': 'Export/Import Group',
-    }
-    marc = _normalize_columns(marc, marc_rename_map)
-
-    # ------------------------------------------------------------
-    # ✅ SELEÇÃO DE COLUNAS MARA
-    # ------------------------------------------------------------
-    mara_cols = [c for c in [
-        'Material', 'Material Type', 'Description', 'Base Unit of Measure',
-        'Division', 'Export/Import Group', 'General Item Category Group',
-        'Gross Weight', 'Net Weight', 'Unit of Weight (ISO Format)',
-        'Material Group', 'Product Hierarchy', 'Packaging Mat. Type',
-        'Old material number', 'Batch Management',
-    ] if c in mara.columns]
-
-    # ------------------------------------------------------------
-    # ✅ MERGE MARC + MARA
-    # ------------------------------------------------------------
-    df = marc.merge(mara[mara_cols], on='Material', how='left')
-    df.rename(columns={'Base Unit of Measure': 'Base UOM'}, inplace=True)
-
-    # ------------------------------------------------------------
-    # ✅ MERGE ZPLM
-    # ------------------------------------------------------------
-    if zplm_marc_df is not None and not zplm_marc_df.empty:
-        zplm = zplm_marc_df.copy()
-        zplm.columns = [str(c).strip() for c in zplm.columns]
-
-        zplm_rename_map = {
-            'Material Plant Type': 'Plant Type',
-            'enterproj number': 'Enterproj Number',
-            'material transfer': 'Material Transfer',
-            'eop date': 'EOP Date',
-            'service liability date': 'Service Liability Date',
-            'ltb quantity': 'LTB Quantity',
-            'ltb start date': 'LTB Start Date',
-        }
-        zplm = _normalize_columns(zplm, zplm_rename_map)
-
-        zplm_cols = ['Material', 'Plant']
-        for col in [
-            'Plant Type', 'Enterproj Number', 'Material Transfer',
-            'EOP Date', 'Service Liability Date', 'LTB Quantity', 'LTB Start Date'
-        ]:
-            if col in zplm.columns:
-                zplm_cols.append(col)
-
-        zplm = zplm[zplm_cols].drop_duplicates(subset=['Material', 'Plant'], keep='first')
-        df = df.merge(zplm, on=['Material', 'Plant'], how='left')
-    else:
-        for col in ['Plant Type', 'Enterproj Number']:
-            if col not in df.columns:
-                df[col] = ''
-
-    # ------------------------------------------------------------
-    # ✅ NORMALIZAR PLANT TYPE
-    # ------------------------------------------------------------
-    if 'Plant Type' in df.columns:
-        df['Plant Type'] = df['Plant Type'].fillna('').astype(str).str.strip().str.upper()
-
-    # ------------------------------------------------------------
-    # ✅ BATCH MANAGEMENT (CRÍTICO)
-    # ------------------------------------------------------------
-
-    # 📌 Global (MARA)
-    df['Batch Management'] = df.get('Batch Management', '')
-
-    # 📌 Plant-level (MARC)
-    batch_plant_candidates = [
-        'Batch Management(Plant)',
-        'Batch Management (Plant)',
-        'Batch Mgmt Plant'
-    ]
-
-    batch_plant_col = next(
-        (col for col in df.columns if col in batch_plant_candidates),
-        None
-    )
-
-    if batch_plant_col:
-        df['Batch Management(Plant)'] = df[batch_plant_col]
-    else:
-        df['Batch Management(Plant)'] = ''
-
-    # 📌 SAPUI5 compatibility (para validar_batch_management)
-    df['Batch Management Required Ind.'] = df['Batch Management(Plant)']
-
-    # ------------------------------------------------------------
-    # ✅ GARANTIR COLUNAS CRÍTICAS
-    # ------------------------------------------------------------
-    required_cols = [
-        'Plant Type',
-        'Batch Management Required Ind.',
-        'MRP Type',
-        'Availability Check'
-    ]
-
-    for col in required_cols:
-        if col not in df.columns:
-            df[col] = ''
-
-    return df
-
-# =============================================================================
-# HELPERS
-# =============================================================================
-
-def _mt_map_from_mara(mara_df):
-    return dict(zip(
-        mara_df['Material'].astype(str).str.strip(),
-        mara_df['Material Type'].astype(str).str.strip().str.upper()
-    ))
-
-
-def _pt_map_from_zplm(zplm_marc_df):
-    if zplm_marc_df is None or zplm_marc_df.empty:
-        return {}
-    z = zplm_marc_df.copy()
-    z.columns = [str(c).strip() for c in z.columns]
-    for variant in ['Material Plant Type', 'MATERIAL PLANT TYPE']:
-        if variant in z.columns and 'Plant Type' not in z.columns:
-            z.rename(columns={variant: 'Plant Type'}, inplace=True)
-    if not {'Material', 'Plant', 'Plant Type'}.issubset(z.columns):
-        return {}
-    return {
-        (str(r['Material']).strip(), str(r['Plant']).strip().upper()):
-        str(r['Plant Type']).strip().upper()
-        for _, r in z.iterrows()
-    }
-
-def _filter_valid_material_types(df, mara_df):
-    """
-    Keep only materials with Material Type in {'FERT', 'HALB', 'ROH'}.
-    Uses MARA as source of truth.
-    """
-    if df is None or df.empty:
-        return df
-
-    VALID_MT = {'FERT', 'HALB', 'ROH'}
-
-    mt_map = dict(zip(
-        mara_df['Material'].astype(str).str.strip(),
-        mara_df['Material Type'].astype(str).str.strip().str.upper()
-    ))
-
-    df = df.copy()
-    df['_MT'] = df['Material'].astype(str).str.strip().map(mt_map)
-
-    # fallback (defensivo)
-    if 'Material Type' in df.columns:
-        df['_MT'] = df['_MT'].fillna(
-            df['Material Type'].astype(str).str.strip().str.upper()
-        )
-
-    df = df[df['_MT'].isin(VALID_MT)]
-
-    return df.drop(columns=['_MT'], errors='ignore')
 
 # =============================================================================
 # STEP 2 — TN-specific replacement functions
@@ -556,7 +301,13 @@ def tn_validar_automatic_purchase_order(df, resultados):
             })
 
 def tn_validar_consumption_mode(df, mara_df, resultados):
-    """FERT -> 0 or empty. TN02 HALB -> 0 or empty. Others -> 2."""
+    """
+    Consumption Mode rules for Tunisia:
+    - TN01 + Plant Type FP -> must be '5' (takes precedence over Material Type).
+    - FERT -> '0' or empty.
+    - TN02 HALB -> '0' or empty.
+    - All other materials -> must be '2'.
+    """
     col = 'Consumption Mode'
     if col not in df.columns:
         return
@@ -564,11 +315,20 @@ def tn_validar_consumption_mode(df, mara_df, resultados):
     for idx, row in df.iterrows():
         erros = []
         plant = _norm_str(row.get('Plant')).upper()
+        ptype = _norm_str(row.get('Plant Type')).upper()
         mat   = _norm_str(row.get('Material'))
         mt    = mt_map.get(mat, '')
         raw   = row.get(col)
         val   = normalize_code(raw, as_int=True)
-        if mt == 'FERT':
+
+        # TN01 FP is the most specific rule and therefore takes precedence,
+        # including when the material type is FERT.
+        if plant == 'TN01' and ptype == 'FP':
+            if val == '':
+                erros.append("Mandatory field blank (TN01 FP requires Consumption Mode = '5')")
+            elif val != '5':
+                erros.append(f"Invalid value: '{raw}' (TN01 FP requires Consumption Mode = '5')")
+        elif mt == 'FERT':
             if val not in ('', '0'):
                 erros.append(f"Invalid value: '{raw}' (FERT requires Consumption Mode = '0' or empty)")
         elif plant == 'TN02' and mt == 'HALB':
@@ -582,6 +342,42 @@ def tn_validar_consumption_mode(df, mara_df, resultados):
         if erros:
             resultados.append({'Line': idx + 2, 'Field': col,
                                'Error': '\n'.join(erros), 'Material': mat, 'Plant': plant})
+
+
+def tn_validar_gr_processing_time(marc_df, resultados):
+    """
+    MARC['GR processing time'] must be exactly '3' for TN02.
+
+    The column name is intentionally case-sensitive. In particular, this rule
+    does not use or fall back to a similarly named 'GR Processing Time' field.
+    """
+    col = 'GR processing time'
+    if marc_df is None or marc_df.empty or col not in marc_df.columns:
+        return
+
+    for idx, row in marc_df.iterrows():
+        plant = _norm_str(row.get('Plant')).upper()
+        if plant != 'TN02':
+            continue
+
+        mat = _norm_str(row.get('Material'))
+        raw = row.get(col)
+        val = normalize_code(raw, as_int=True)
+
+        if val == '':
+            error = "Mandatory field blank (TN02 requires GR processing time = '3')"
+        elif val != '3':
+            error = f"Invalid value: '{raw}' (TN02 requires GR processing time = '3')"
+        else:
+            continue
+
+        resultados.append({
+            'Line': idx + 2,
+            'Field': col,
+            'Error': error,
+            'Material': mat,
+            'Plant': plant,
+        })
 
 
 def tn_validar_jit_delivery_sched(df, resultados):
@@ -607,6 +403,38 @@ def tn_validar_jit_delivery_sched(df, resultados):
         if erros:
             resultados.append({'Line': idx + 2, 'Field': col,
                                'Error': ' \n '.join(erros), 'Material': mat, 'Plant': plant})
+
+
+def tn_validar_mrp_group(marc_df, mara_df, resultados):
+    """TN02 FERT: MRP Group is mandatory and must be 'ZSTO'."""
+    col = 'MRP Group'
+    if marc_df is None or marc_df.empty or col not in marc_df.columns:
+        return
+
+    mt_map = _mt_map_from_mara(mara_df)
+    for idx, row in marc_df.iterrows():
+        plant = _norm_str(row.get('Plant')).upper()
+        mat = _norm_str(row.get('Material'))
+        mt = mt_map.get(mat, _norm_str(row.get('Material Type', '')).upper())
+
+        if plant != 'TN02' or mt != 'FERT':
+            continue
+
+        val = _norm_str(row.get(col)).upper()
+        if val == '':
+            error = "Mandatory field blank (TN02 FERT requires MRP Group = 'ZSTO')"
+        elif val != 'ZSTO':
+            error = f"TN02 FERT requires MRP Group = 'ZSTO' (current: '{val}')"
+        else:
+            continue
+
+        resultados.append({
+            'Line': idx + 2,
+            'Field': col,
+            'Error': error,
+            'Material': mat,
+            'Plant': plant,
+        })
 
 
 def tn_validar_mrp_type(df, mara_df, resultados, zplm_marc_df=None,
@@ -882,7 +710,7 @@ def tn_validar_profit_center(df, resultados):
 
 
 def tn_validar_purchasing_group(df, resultados):
-    """PP -> must be 'DXX'; FP -> must be 'STO'; MP -> blank."""
+    """PP -> must not be blank; FP -> must be 'STO'; MP -> blank."""
 
     col = 'Purchasing Group'
     if col not in df.columns or 'Plant Type' not in df.columns:
@@ -902,8 +730,6 @@ def tn_validar_purchasing_group(df, resultados):
         if pt == 'PP':
             if val == '':
                 erros.append("Mandatory field blank for Plant Type 'PP'")
-            elif val.upper() != 'DXX':
-                erros.append(f"For Plant Type 'PP', should be 'DXX' (current: '{val}')")
 
         # -----------------------------
         # FP → obrigatório e = STO
@@ -1096,59 +922,102 @@ def tn_validar_repetitive_manufacturing_profile(df, mara_df, resultados):
             })
 
 def tn_validar_source_list_required(df, resultados):
-    """PP or FP -> Yes (1); others -> No (0).
+    """
+    Tunisia:
+    Source List must always be blank.
 
-    Supports both TN source fields: 'Source list' and 'Source list required'."""
-    col = next((c for c in ['Source list', 'Source list required'] if c in df.columns), None)
-    if col is None or 'Plant Type' not in df.columns:
+    Supports both fields:
+    - Source list
+    - Source list required
+    """
+
+    col = next(
+        (
+            c
+            for c in ['Source list', 'Source list required']
+            if c in df.columns
+        ),
+        None
+    )
+
+    if col is None:
         return
+
     for idx, row in df.iterrows():
-        erros = []
+
         plant = _norm_str(row.get('Plant')).upper()
-        pt    = _norm_str(row.get('Plant Type')).upper()
-        val   = _norm_str(row.get(col))
         mat   = _norm_str(row.get('Material'))
+        val   = _norm_str(row.get(col)).upper()
 
-        if pt in ('PP', 'FP'):
-            if val == '':
-                erros.append('Mandatory field blank')
-            elif val not in ('1', '1.0', 'X', 'YES'):
-                erros.append(f"For Plant Type '{pt}', should be 'Yes' (current: '{val}')")
-        else:
-            if val not in ('0', ''):
-                erros.append(f"For Plant Type '{pt}', should be 'No' (current: '{val}')")
-
-        if erros:
-            resultados.append({'Line': idx + 2, 'Field': col,
-                               'Error': ' | '.join(erros), 'Material': mat, 'Plant': plant})
-
+        if val != '':
+            resultados.append({
+                'Line': idx + 2,
+                'Field': col,
+                'Error': f"Field must be blank (current: '{val}')",
+                'Material': mat,
+                'Plant': plant
+            })
 
 def tn_validar_storage_location(df, mara_df, resultados):
-    """TN01: HALB/ROH -> T105; FERT -> T120. TN02: HALB/FERT -> T220."""
+    """
+    Issue Storage Location validation for Tunisia.
+
+    TN01, Material Types FERT/HALB/ROH:
+      - Plant Type FP     -> must be 'T120'
+      - Plant Type MP/PP  -> must be 'T105'
+
+    TN02:
+      - Issue Storage Location must be empty.
+    """
     col = 'Issue Storage Location'
-    if col not in df.columns:
+    required = {'Plant', 'Plant Type', col}
+    if not required.issubset(df.columns):
+        missing = sorted(required - set(df.columns))
+        print(f"⚠️ Missing columns for TN Issue Storage Location validation: {missing}")
         return
+
     mt_map = _mt_map_from_mara(mara_df)
+    valid_material_types = {'FERT', 'HALB', 'ROH'}
+    valid_plant_types = {'FP', 'MP', 'PP'}
+
     for idx, row in df.iterrows():
         erros = []
         plant = _norm_str(row.get('Plant')).upper()
-        mat   = _norm_str(row.get('Material'))
-        mt    = mt_map.get(mat, _norm_str(row.get('Material Type', ''))).upper()
-        val   = _norm_str(row.get(col))
-        if val == '':
-            erros.append('Mandatory field blank')
-        elif plant == 'TN01':
-            if mt in ('HALB', 'ROH') and val != 'T105':
-                erros.append(f"For TN01 + {mt}, must be 'T105' (current: '{val}')")
-            elif mt == 'FERT' and val != 'T120':
-                erros.append(f"For TN01 + FERT, must be 'T120' (current: '{val}')")
-        elif plant == 'TN02':
-            if mt in ('HALB', 'FERT') and val != 'T220':
-                erros.append(f"For TN02 + {mt}, must be 'T220' (current: '{val}')")
-        if erros:
-            resultados.append({'Line': idx + 2, 'Field': col,
-                               'Error': ' | '.join(erros), 'Material': mat, 'Plant': plant})
+        ptype = _norm_str(row.get('Plant Type')).upper()
+        mat = _norm_str(row.get('Material'))
+        mt = mt_map.get(mat, _norm_str(row.get('Material Type', ''))).upper()
+        val = _norm_str(row.get(col)).upper()
 
+        if plant == 'TN02':
+            if val != '':
+                erros.append(
+                    f"For TN02, Issue Storage Location must be empty (current: '{val}')"
+                )
+
+        elif plant == 'TN01':
+            # TN01 rules apply only to the explicitly defined material/plant types.
+            if mt not in valid_material_types or ptype not in valid_plant_types:
+                continue
+
+            expected = 'T120' if ptype == 'FP' else 'T105'
+            if val == '':
+                erros.append(
+                    f"Mandatory field blank (TN01 + Plant Type '{ptype}' requires '{expected}')"
+                )
+            elif val != expected:
+                erros.append(
+                    f"For TN01 + Material Type '{mt}' + Plant Type '{ptype}', "
+                    f"Issue Storage Location must be '{expected}' (current: '{val}')"
+                )
+
+        if erros:
+            resultados.append({
+                'Line': idx + 2,
+                'Field': col,
+                'Error': ' | '.join(erros),
+                'Material': mat,
+                'Plant': plant,
+            })
 
 def tn_validar_special_procurement_type(marc_df, zplm_marc_df, resultados):
     """TN02 FP -> must be 'Z3'."""
@@ -1216,91 +1085,107 @@ def tn_validar_account_assignment_group(mara_df, marc_df, mvke_df, resultados):
 
 def tn_validar_storage_location_ext_procurement(marc_df, zplm_marc_df, mara_df, resultados):
     """
-    Storage Location for Ext. Procurement:
+    Validate MARC 'Storage Location for Ext. Procurement' for Tunisia.
 
-    Base:
-    - PP → mandatory
-    - TN02 + FP → mandatory
+    Applies to Material Types FERT/HALB/ROH and Plant Types FP/MP/PP.
 
-    TN-specific values:
-    TN01:
-        ROH  → T100
-        HALB → T115
-        FERT → T120
+    TN01, for FERT/HALB/ROH:
+      FP -> T120, MP -> T115, PP -> T100
 
     TN02:
-        ROH  → must be empty
-        HALB → T220
-        FERT → T220
+      FERT: FP -> T220, MP -> T220, PP -> empty
+      HALB: FP -> T220, MP -> T220, PP -> empty
+      ROH:  FP -> T220, MP -> empty, PP -> empty
+
+    A dash in the rule matrix means that the actual MARC field must be empty;
+    a literal '-' in MARC is not accepted as an empty value.
     """
-
     col = 'Storage Location for Ext. Procurement'
+    required_marc = {'Material', 'Plant', col}
+    required_mara = {'Material', 'Material Type'}
 
-    if marc_df is None or col not in marc_df.columns:
+    if (
+        marc_df is None or mara_df is None
+        or marc_df.empty or mara_df.empty
+        or not required_marc.issubset(marc_df.columns)
+        or not required_mara.issubset(mara_df.columns)
+    ):
         return
 
     pt_map = _pt_map_from_zplm(zplm_marc_df)
     mt_map = _mt_map_from_mara(mara_df)
 
-    for idx, row in marc_df.iterrows():
-        erros = []
+    marc = marc_df.copy()
+    marc.columns = [str(c).strip() for c in marc.columns]
+    marc['Material'] = marc['Material'].astype(str).str.strip()
+    marc['Plant'] = marc['Plant'].astype(str).str.strip().str.upper()
+    marc = marc.drop_duplicates(subset=['Material', 'Plant'], keep='first')
 
+    tn01_by_plant_type = {
+        'FP': 'T120',
+        'MP': 'T115',
+        'PP': 'T100',
+    }
+    tn02_expected = {
+        ('FERT', 'FP'): 'T220',
+        ('FERT', 'MP'): 'T220',
+        ('FERT', 'PP'): '',
+        ('HALB', 'FP'): 'T220',
+        ('HALB', 'MP'): 'T220',
+        ('HALB', 'PP'): '',
+        ('ROH', 'FP'): 'T220',
+        ('ROH', 'MP'): '',
+        ('ROH', 'PP'): '',
+    }
+    valid_material_types = {'FERT', 'HALB', 'ROH'}
+    valid_plant_types = {'FP', 'MP', 'PP'}
+
+    for idx, row in marc.iterrows():
         plant = _norm_str(row.get('Plant')).upper()
-        mat   = _norm_str(row.get('Material'))
-        pt    = pt_map.get((mat, plant), '')
-        mt    = mt_map.get(mat, '')
-        val   = _norm_str(row.get(col))
+        material = _norm_str(row.get('Material'))
+        plant_type = pt_map.get((material, plant), '')
+        mt = mt_map.get(material, '')
+        value = _norm_str(row.get(col)).upper()
 
-        # --------------------------------------------------------
-        # ✅ BASE RULES
-        # --------------------------------------------------------
-        if pt == 'PP' and val == '':
-            erros.append("Mandatory field blank for Plant Type PP")
+        if mt not in valid_material_types or plant_type not in valid_plant_types:
+            continue
 
-        elif plant == 'TN02' and pt == 'FP' and val == '':
-            erros.append("Mandatory field blank for Plant Type FP in TN02")
+        if plant == 'TN01':
+            expected = tn01_by_plant_type[plant_type]
+        elif plant == 'TN02':
+            expected = tn02_expected[(mt, plant_type)]
+        else:
+            continue
 
-        # --------------------------------------------------------
-        # ✅ TN01 VALUE RULES
-        # --------------------------------------------------------
-        if plant == 'TN01' and mt in {'FERT', 'HALB', 'ROH'}:
-            expected_map = {
-                'ROH':  'T100',
-                'HALB': 'T115',
-                'FERT': 'T120',
-            }
+        if expected == '':
+            if value == '':
+                continue
+            error = (
+                f"Field must be empty for {plant} / Material Type '{mt}' / "
+                f"Plant Type '{plant_type}' (current: '{value}')"
+            )
+        else:
+            if value == '':
+                error = (
+                    f"Mandatory field blank (expected '{expected}' for {plant} / "
+                    f"Material Type '{mt}' / Plant Type '{plant_type}')"
+                )
+            elif value != expected:
+                error = (
+                    f"Invalid value: '{value}' (expected '{expected}' for {plant} / "
+                    f"Material Type '{mt}' / Plant Type '{plant_type}')"
+                )
+            else:
+                continue
 
-            expected = expected_map.get(mt)
-
-            if val == '':
-                erros.append(f"Mandatory field blank (should be '{expected}' for TN01 {mt})")
-            elif val != expected:
-                erros.append(f"Invalid value: '{val}' (should be '{expected}' for TN01 {mt})")
-
-        # --------------------------------------------------------
-        # ✅ TN02 VALUE RULES
-        # --------------------------------------------------------
-        if plant == 'TN02' and mt in {'FERT', 'HALB', 'ROH'}:
-
-            if mt == 'ROH':
-                if val != '':
-                    erros.append("Must be empty for TN02 ROH")
-
-            else:  # HALB / FERT
-                if val == '':
-                    erros.append("Mandatory field blank (should be 'T220')")
-                elif val != 'T220':
-                    erros.append(f"Invalid value: '{val}' (should be 'T220' for TN02 {mt})")
-
-        if erros:
-            resultados.append({
-                'Line': idx + 2,
-                'Field': col,
-                'Error': ' | '.join(erros),
-                'Material': mat,
-                'Plant': plant
-            })
-
+        resultados.append({
+            'Line': idx + 2,
+            'Field': col,
+            'Error': error,
+            'Material': material,
+            'Plant': plant,
+        })
+        
 def tn_validar_individual_collective_requirements(marc_df, mara_df, resultados):
     """FERT -> '1'. HALB/ROH -> '2'."""
     col = 'Individual/ Collective Requirements'
@@ -1355,17 +1240,33 @@ def tn_validar_production_supervisor(marc_df, mara_df, resultados):
 
 
 def tn_validar_advanced_planning_fields(marc_df, mara_df, resultados):
-    """TN01 FERT -> X; TN02 FERT/HALB -> X. Heuristic/PP Proc/Req Strategy same as Palmela."""
+    """
+    TN01 FERT -> Advanced Planning obrigatório
+    TN02 FERT/HALB -> Advanced Planning obrigatório
+
+    Advanced Planning:
+        Aceita X ou TRUE
+
+    Heuristic:
+        Obrigatório para FERT/HALB
+
+    PP Plng Procedure:
+        Deve ser 4
+
+    Proposed Strategy:
+        TN01/TN02 -> 20 ou Z1
+        Restantes -> 20
+    """
     if marc_df is None or mara_df is None:
         return
 
     def _pick(df, candidates):
         return next((c for c in candidates if c in df.columns), None)
 
-    col_adv  = _pick(marc_df, ['Advanced Planning'])
+    col_adv = _pick(marc_df, ['Advanced Planning'])
     col_heur = _pick(marc_df, ['Heuristic'])
-    col_pp   = _pick(marc_df, ['PP Plng Procedure'])
-    col_req  = _pick(marc_df, ['Requirement Strategy'])
+    col_pp = _pick(marc_df, ['PP Plng Procedure'])
+    col_req = _pick(marc_df, ['Requirement Strategy'])
 
     if any(c is None for c in [col_adv, col_heur, col_pp, col_req]):
         return
@@ -1376,38 +1277,88 @@ def tn_validar_advanced_planning_fields(marc_df, mara_df, resultados):
         return '' if pd.isna(x) else str(x).strip()
 
     for idx, row in marc_df.iterrows():
-        mat   = _s(row.get('Material'))
-        plant = _s(row.get('Plant'))
-        mt    = get_effective_material_type(mat, mt_map.get(mat, '').upper(),
-                                            'validar_advanced_planning_fields')
+        mat = _s(row.get('Material'))
+        plant = _s(row.get('Plant')).upper()
+
+        mt = get_effective_material_type(
+            mat,
+            mt_map.get(mat, '').upper(),
+            'validar_advanced_planning_fields'
+        )
+
         if mt not in {'FERT', 'HALB'}:
             continue
 
-        adv  = _s(row.get(col_adv)).upper()
+        adv = _s(row.get(col_adv)).upper()
         heur = _s(row.get(col_heur))
-        pp   = normalize_code(row.get(col_pp), as_int=True)
-        req  = normalize_code(row.get(col_req), as_int=True)
+        pp = normalize_code(row.get(col_pp), as_int=True)
+        req = normalize_code(row.get(col_req), as_int=True)
 
-        if (plant == 'TN01' and mt == 'FERT') or \
-           (plant == 'TN02' and mt in {'FERT', 'HALB'}):
-            if adv != 'true':
-                resultados.append({'Line': idx + 2, 'Field': 'Advanced Planning',
-                                   'Error': "Mandatory: must be 'X' for TN01 FERT or TN02 FERT/HALB",
-                                   'Material': mat, 'Plant': plant})
+        # --------------------------------------------------
+        # Advanced Planning
+        # TN01 FERT
+        # TN02 FERT/HALB
+        # Aceita X ou TRUE
+        # --------------------------------------------------
+        if (
+            (plant == 'TN01' and mt == 'FERT')
+            or
+            (plant == 'TN02' and mt in {'FERT', 'HALB'})
+        ):
+            if adv not in {'X', 'TRUE'}:
+                resultados.append({
+                    'Line': idx + 2,
+                    'Field': 'Advanced Planning',
+                    'Error': "Mandatory: must be 'X' or 'TRUE' for TN01 FERT or TN02 FERT/HALB",
+                    'Material': mat,
+                    'Plant': plant
+                })
 
+        # --------------------------------------------------
+        # Heuristic
+        # --------------------------------------------------
         if heur == '':
-            resultados.append({'Line': idx + 2, 'Field': 'Heuristic',
-                               'Error': "Mandatory: cannot be empty for FERT or HALB",
-                               'Material': mat, 'Plant': plant})
-        if pp != '4':
-            resultados.append({'Line': idx + 2, 'Field': 'PP Plng Procedure',
-                               'Error': "Invalid value: should be '4'",
-                               'Material': mat, 'Plant': plant})
-        if req != '20':
-            resultados.append({'Line': idx + 2, 'Field': 'Proposed Strategy',
-                               'Error': "Invalid value: should be '20'",
-                               'Material': mat, 'Plant': plant})
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'Heuristic',
+                'Error': "Mandatory: cannot be empty for FERT or HALB",
+                'Material': mat,
+                'Plant': plant
+            })
 
+        # --------------------------------------------------
+        # PP Planning Procedure
+        # --------------------------------------------------
+        if pp != '4':
+            resultados.append({
+                'Line': idx + 2,
+                'Field': 'PP Plng Procedure',
+                'Error': "Invalid value: should be '4'",
+                'Material': mat,
+                'Plant': plant
+            })
+
+        # --------------------------------------------------
+        # Proposed Strategy
+        # --------------------------------------------------
+        if plant in {'TN01', 'TN02'}:
+            if req not in {'20', 'Z1'}:
+                resultados.append({
+                    'Line': idx + 2,
+                    'Field': 'Proposed Strategy',
+                    'Error': f"Invalid value: '{req}' (should be '20' or 'Z1' for TN01/TN02)",
+                    'Material': mat,
+                    'Plant': plant
+                })
+        else:
+            if req != '20':
+                resultados.append({
+                    'Line': idx + 2,
+                    'Field': 'Proposed Strategy',
+                    'Error': "Invalid value: should be '20'",
+                    'Material': mat,
+                    'Plant': plant
+                })
 
 # =============================================================================
 # MAIN ORCHESTRATOR
@@ -1484,7 +1435,10 @@ def run_tn_validation(
         'automatic po': 'Automatic Purchase Order Allowed',
         'automatic purchase order': 'Automatic Purchase Order Allowed',
         'issue storage location': 'Issue Storage Location',
+        'production storage location': 'Issue Storage Location',
         'planning strategy group': 'Planning Strategy Group',
+        'mrp group': 'MRP Group',
+        'disgr': 'MRP Group',
         'plant-specific material status': 'Plant Specific Material Status',
     })
     mbew_df = _normalize_df_columns(mbew_df, {
@@ -1497,6 +1451,12 @@ def run_tn_validation(
         'valuation class': 'Valuation Class',
         'cost est. with qty structure': 'With Qty Structure',
     })
+    # ✅ 'Valuation Area' alias — validar_lifo_fifo_relevant_mbew() hard-requires
+    # a column literally named 'Valuation Area' (MBEW's own SAP field name),
+    # while everything else here was normalized to 'Plant'. Keep both.
+    if mbew_df is not None and 'Plant' in mbew_df.columns:
+        mbew_df['Valuation Area'] = mbew_df['Plant']
+
     zplm_marc_df = _normalize_df_columns(zplm_marc_df, {
         'plant': 'Plant',
         'werks': 'Plant',
@@ -1508,6 +1468,25 @@ def run_tn_validation(
         'ltb quantity': 'LTB Quantity',
         'ltb start date': 'LTB Start Date',
     })
+
+    # ✅ DEDUPLICATE ZPLM MARC to one row per (Material, Plant) — BEFORE any
+    # consumer touches it. See sap_validation_engine.py's run_full_validation
+    # for the full explanation: ZPLM MARC's change-history columns suggest
+    # it can hold multiple historical rows per (Material, Plant), which
+    # would otherwise multiply every validation that merges against it
+    # directly (validar_batch_management_plant_marc, validar_version_indicator_marc,
+    # validar_country_region_origin_fp, tn_validar_storage_location_ext_procurement).
+    if zplm_marc_df is not None and not zplm_marc_df.empty and {'Material', 'Plant'}.issubset(zplm_marc_df.columns):
+        _sort_col = next(
+            (c for c in ['Changed On', 'Change Number', 'Created On'] if c in zplm_marc_df.columns),
+            None
+        )
+        if _sort_col:
+            # Convert to string to handle mixed datetime/time types
+            zplm_marc_df[_sort_col] = zplm_marc_df[_sort_col].fillna('').astype(str)
+            zplm_marc_df = zplm_marc_df.sort_values(_sort_col, ascending=False, na_position='last')
+        zplm_marc_df = zplm_marc_df.drop_duplicates(subset=['Material', 'Plant'], keep='first')
+
     mvke_df = _normalize_df_columns(mvke_df, {'plant': 'Plant', 'werks': 'Plant', 'material': 'Material'})
     marm_df = _normalize_df_columns(marm_df, {'plant': 'Plant', 'werks': 'Plant', 'material': 'Material'})
 
@@ -1588,6 +1567,35 @@ def run_tn_validation(
 
     # aplicar também às tabelas usadas em validações diretas
     marc_tn = _filter_valid_material_types(marc_tn, mara_df)
+    marc_tn_full = marc_tn.copy()
+
+    exclude_mps99_pairs = _get_mps99_material_plant_pairs(marc_tn_full)
+    if exclude_mps99_pairs:
+        sap_like_df = _exclude_material_plant_status_99(sap_like_df, exclude_mps99_pairs)
+        marc_tn = _exclude_material_plant_status_99(marc_tn, exclude_mps99_pairs)
+        if zplm_marc_tn is not None:
+            zplm_marc_tn = _exclude_material_plant_status_99(
+                zplm_marc_tn,
+                exclude_mps99_pairs,
+            )
+        if mvke_df is not None:
+            mvke_df = _exclude_material_plant_status_99(
+                mvke_df,
+                exclude_mps99_pairs,
+            )
+        if mbew_df is not None:
+            if 'Plant' in mbew_df.columns:
+                mbew_df = _exclude_material_plant_status_99(
+                    mbew_df,
+                    exclude_mps99_pairs,
+                    plant_col='Plant',
+                )
+            elif 'Valuation Area' in mbew_df.columns:
+                mbew_df = _exclude_material_plant_status_99(
+                    mbew_df,
+                    exclude_mps99_pairs,
+                    plant_col='Valuation Area',
+                )
 
     if mvke_df is not None:
         mvke_df = _filter_valid_material_types(mvke_df, mara_df)
@@ -1640,15 +1648,21 @@ def run_tn_validation(
     validar_period_type(sap_like_df, resultados)
 
     _cb(29, "Validating Price Control, Price Unit...")
-    validar_price_control(sap_like_df, resultados)
-    validar_price_unit(sap_like_df, resultados)
+    # Only run MBEW-derived checks when there are rows in the selected TN scope.
+    # This avoids false "column not found" warnings when All Sites is selected
+    # but the uploaded files contain no TN01/TN02 records.
+    if sap_like_df is not None and not sap_like_df.empty:
+        validar_price_control(sap_like_df, resultados)
+        validar_price_unit(sap_like_df, resultados)
 
     _cb(30, "Validating Product Hierarchy...")
     validar_product_hierarchy(sap_like_df, resultados, mvke_df, mara_df)
+    validar_product_hierarchy_mvke(sap_like_df, resultados, mvke_df)
 
     _cb(31, "Validating Valuation Class, With Qty Structure...")
-    validar_valuation_class(sap_like_df, resultados)
-    validar_with_qty_structure(sap_like_df, resultados)
+    if sap_like_df is not None and not sap_like_df.empty:
+        validar_valuation_class(sap_like_df, resultados)
+        validar_with_qty_structure(sap_like_df, resultados)
 
     _cb(32, "Validating Product-Related Origin, MRP Controller, PSMS...")
     validar_product_related_origin(sap_like_df, resultados)
@@ -1688,6 +1702,9 @@ def run_tn_validation(
     tn_validar_mrp_type(sap_like_df, mara_df, resultados, zplm_marc_tn,
                          csr_item_df, csr_head_df)
 
+    _cb(47.5, "Validating MRP Group (TN02 FERT)...")
+    tn_validar_mrp_group(marc_tn, mara_df, resultados)
+
     _cb(48, "Validating Planning Calendar (TN)...")
     tn_validar_planning_calendar(sap_like_df, resultados)
 
@@ -1720,7 +1737,8 @@ def run_tn_validation(
     validar_consumption_per(marc_tn, mara_df, resultados)
 
     _cb(58, "Validating Per.Lot Sz.Plng Cal. (MARC)...")
-    validar_per_lot_sz_plng_cal(marc_tn, resultados, mara_df, matplsta_df)
+    if marc_tn is not None and not marc_tn.empty:
+        validar_per_lot_sz_plng_cal(marc_tn, resultados, mara_df, matplsta_df)
 
     _cb(59, "Validating Stock Determination Group (MARC)...")
     validar_stock_determination_group_marc(marc_tn, mara_df, resultados)
@@ -1728,9 +1746,8 @@ def run_tn_validation(
     _cb(60, "Validating Packaging Mat. Type (MARA)...")
     validar_packaging_material_type_mara(mara_df, resultados)
 
-    _cb(61, "Validating Batch Management Plant (MARC)...")
-    if zplm_marc_tn is not None:
-        validar_batch_management_plant_marc(marc_tn, zplm_marc_tn, mara_df, resultados)
+    # Batch Management per-plant check removed to avoid duplicate counting
+    # (Batch Management Required Ind. is validated earlier via validar_batch_management)
 
     _cb(62, "Validating Version Indicator (MARC)...")
     if zplm_marc_tn is not None:
@@ -1778,12 +1795,15 @@ def run_tn_validation(
     _cb(74, "Validating Safety Time (MARC)...")
     validar_safety_time_marc(marc_tn, mara_df, resultados)
 
-    _cb(74, "Validating Material Price Determination Control (MBEW)...")
+    _cb(74.2, "Validating GR processing time (TN02 MARC)...")
+    tn_validar_gr_processing_time(marc_tn, resultados)
+
+    _cb(74.4, "Validating Material Price Determination Control (MBEW)...")
     if mbew_df is not None:
         validar_material_price_determination_control(mbew_df, mara_df, resultados)
 
     _cb(75, "Validating Advanced Planning fields (TN)...")
-    tn_validar_advanced_planning_fields(marc_tn, mara_df, resultados)
+    tn_validar_advanced_planning_fields(marc_tn_full, mara_df, resultados)
 
     _cb(76, "Validating Neg. stocks in plant (MARC)...")
     neg_errors = validar_neg_stocks_in_plant(marc_tn, mara_df)
@@ -1793,6 +1813,14 @@ def run_tn_validation(
     # ── 5. Build errors DataFrame ─────────────────────────────────────────────
     _cb(78, "Building errors DataFrame...")
     errors_df = _coerce_df_for_display(pd.DataFrame(resultados))
+
+    # Keep a stable schema even when the selected site has zero errors/rows.
+    # Without this, pd.DataFrame([]) has no columns and the Roles check below
+    # raises KeyError: 'Field'.
+    _error_columns = ['Line', 'Field', 'Error', 'Material', 'Plant']
+    for _col in _error_columns:
+        if _col not in errors_df.columns:
+            errors_df[_col] = pd.Series(dtype='object')
 
     # ✅ Safety-net dedup: remove exact duplicates (same Material, Plant,
     # Field and Error). This is acceptable/expected to differ across
@@ -1815,7 +1843,9 @@ def run_tn_validation(
     roles_dict = load_xlsx_fast(roles_bytes, sheet_name=None)
     roles_df = roles_dict.get("Roles", None)
 
-    if roles_df is not None and not roles_df.empty:
+    if (roles_df is not None and not roles_df.empty
+            and not errors_df.empty and 'Field' in errors_df.columns
+            and 'Field' in roles_df.columns):
         errors_df['Field_clean'] = errors_df['Field'].astype(str).str.strip()
         roles_set = set(roles_df['Field'].astype(str).str.strip())
 
