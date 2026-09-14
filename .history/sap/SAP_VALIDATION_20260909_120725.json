@@ -1,0 +1,39 @@
+{
+  "run_type": "SAP_VALIDATION",
+  "timestamp": "2026-09-09T12:07:25",
+  "user": "RPITA",
+  "plant_filter": "PT",
+  "metrics": {
+    "total_errors": 19674,
+    "fields_with_error": 21,
+    "materials_with_error": 7131
+  },
+  "files": {
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "mvke": "MVKE.xlsx"
+  },
+  "top_fields": [
+    {
+      "Field": "PP Plng Procedure",
+      "Adjusted Nº of Errors": 5111
+    },
+    {
+      "Field": "Proposed Strategy",
+      "Adjusted Nº of Errors": 5109
+    },
+    {
+      "Field": "Per.Lot Sz.Plng Cal.",
+      "Adjusted Nº of Errors": 5105
+    },
+    {
+      "Field": "Advanced Planning",
+      "Adjusted Nº of Errors": 1311
+    },
+    {
+      "Field": "Batch Management Required Ind.",
+      "Adjusted Nº of Errors": 1034
+    }
+  ],
+  "report_path": "C:\\Users\\RPITA\\OneDrive - Visteon\\Desktop\\Rodrigo\\PLM_Web\\reports\\sap\\2026-09\\20260909_120725_SAP_Validation_PT.xlsx"
+}

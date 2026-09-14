@@ -805,33 +805,112 @@ def validar_automatic_purchase_order(df, resultados):
             })
 
 def validar_batch_management(df, resultados):
-    """PP / COI -> 'Yes' (1); all other Plant Types -> 'No' (0)."""
-    if 'Plant Type' not in df.columns or 'Batch Management Required Ind.' not in df.columns:
-        print("⚠️ Columns 'Plant Type' or 'Batch Management Required Ind.' not found.")
+    """
+    Rules:
+      - TN02: Batch Management Required Ind. must be empty.
+      - Outside TN02:
+          - PP / COI -> 'Yes' (1)
+          - All other Plant Types -> 'No' (0)
+
+    The TN02 rule takes precedence over the Plant Type rule.
+    """
+    col = 'Batch Management Required Ind.'
+
+    required_columns = {
+        'Plant',
+        'Plant Type',
+        col,
+    }
+
+    if not required_columns.issubset(df.columns):
+        missing_columns = sorted(
+            required_columns - set(df.columns)
+        )
+
+        print(
+            "⚠️ Missing columns for Batch Management validation: "
+            f"{missing_columns}"
+        )
         return
 
     for idx, row in df.iterrows():
         erros = []
-        plant_type = str(row['Plant Type']).strip()
-        batch_ind  = str(row['Batch Management Required Ind.']).strip()
 
-        if pd.isna(row['Batch Management Required Ind.']) or batch_ind == '':
-            erros.append('Mandatory field blank')
+        plant = str(
+            row.get('Plant', '')
+        ).strip().upper()
+
+        plant_type = str(
+            row.get('Plant Type', '')
+        ).strip().upper()
+
+        raw_batch_ind = row.get(col)
+
+        batch_ind = (
+            ''
+            if pd.isna(raw_batch_ind)
+            else str(raw_batch_ind).strip().upper()
+        )
+
+        # ========================================================
+        # RULE 1
+        # TN02 must always be empty.
+        #
+        # This rule takes precedence over the Plant Type rule.
+        # ========================================================
+        if plant == 'TN02':
+            if batch_ind != '':
+                erros.append(
+                    "For Plant 'TN02', should be blank "
+                    f"(Current: '{batch_ind}')"
+                )
+
+        # ========================================================
+        # RULE 2
+        # Outside TN02, PP and COI must have Yes (1).
+        #
+        # X is accepted as equivalent to 1.
+        # ========================================================
+        elif plant_type in ('PP', 'COI'):
+            if batch_ind == '':
+                erros.append(
+                    'Mandatory field blank'
+                )
+
+            elif batch_ind not in ('1', 'X'):
+                erros.append(
+                    f"For Plant Type '{plant_type}', "
+                    "should be 'Yes' "
+                    f"(Current: '{batch_ind}')"
+                )
+
+        # ========================================================
+        # RULE 3
+        # Outside TN02, all other Plant Types must have No (0).
+        # ========================================================
         else:
-            if plant_type in ('PP', 'COI') and batch_ind != '1':
-                erros.append(f"For Plant Type 'PP', should be 'Yes' (Current: '{batch_ind}')")
-            elif plant_type not in ('PP', 'COI') and batch_ind != '0':
-                erros.append(f"For Plant Type '{plant_type}', should be 'No' (Current: '{batch_ind}')")
+            if batch_ind == '':
+                erros.append(
+                    'Mandatory field blank'
+                )
+
+            elif batch_ind != '0':
+                erros.append(
+                    f"For Plant Type '{plant_type}', "
+                    "should be 'No' "
+                    f"(Current: '{batch_ind}')"
+                )
 
         if erros:
             resultados.append({
-                'Line':     idx + 2,
-                'Field':    'Batch Management Required Ind.',
-                'Error':    ' | '.join(erros),
-                'Material': str(row.get('Material', '')).strip(),
-                'Plant':    str(row.get('Plant', '')).strip(),
+                'Line': idx + 2,
+                'Field': col,
+                'Error': ' | '.join(erros),
+                'Material': str(
+                    row.get('Material', '')
+                ).strip(),
+                'Plant': plant,
             })
-
 
 def validar_consumption_mode(df, resultados):
     """FERT -> 0 or empty; all other Material Types -> 2 (mandatory)."""
@@ -1067,138 +1146,388 @@ def validar_loading_group(df, resultados):
 
 def validar_lot_sizing_procedure(df, resultados):
     """
-    Lot Sizing Procedure rules:
-    - Mandatory.
-    - EX: allowed only for FP or MP.
-    - ZK: allowed only for PP.
-    - Exception: MP material containing token '14K450' -> allows ZK or EX.
+    Lot Sizing Procedure validation.
+
+    Rules and precedence:
+
+    1. Any material in TN02:
+         Lot Sizing Procedure must be 'EX'.
+
+    2. Outside TN02:
+         - FP or MP: must be 'EX'.
+         - PP: must be 'ZK'.
+
+    3. Exception outside TN02:
+         - MP material containing the token '14K450':
+           allows either 'EX' or 'ZK'.
+
+    Notes:
+      - The TN02 rule has the highest precedence.
+      - Therefore, a TN02 PP material must have 'EX', not 'ZK'.
+      - The field is mandatory for all validated rows.
     """
-    if 'Material Type' not in df.columns or 'Lot Sizing Procedure' not in df.columns:
-        print("⚠️ Columns 'Material Type' or 'Lot Sizing Procedure' not found.")
+
+    if df is None or df.empty:
         return
 
-    token_pattern = re.compile(r'(?i)(?:^|[^A-Z0-9])14K450(?:[^A-Z0-9]|$)')
+    required_columns = {
+        'Material',
+        'Plant',
+        'Plant Type',
+        'Lot Sizing Procedure',
+    }
 
-    def has_14k450(mat):
-        return bool(token_pattern.search(str(mat).strip()))
+    if not required_columns.issubset(df.columns):
+        missing_columns = sorted(
+            required_columns - set(df.columns)
+        )
+
+        print(
+            "Missing columns for Lot Sizing Procedure validation: "
+            f"{missing_columns}"
+        )
+        return
+
+    token_pattern = re.compile(
+        r'(?i)(?:^|[^A-Z0-9])14K450(?:[^A-Z0-9]|$)'
+    )
+
+    def has_14k450(material):
+        return bool(
+            token_pattern.search(
+                str(material).strip()
+            )
+        )
 
     for idx, row in df.iterrows():
         erros = []
-        plant_type  = str(row['Plant Type']).strip()  if 'Plant Type' in df.columns else ''
-        lot_sizing  = '' if pd.isna(row['Lot Sizing Procedure']) else str(row['Lot Sizing Procedure']).strip()
-        material    = str(row.get('Material', '')).strip()
 
+        material = _norm_str(
+            row.get('Material')
+        )
+
+        plant = _norm_str(
+            row.get('Plant')
+        ).upper()
+
+        plant_type = _norm_str(
+            row.get('Plant Type')
+        ).upper()
+
+        lot_sizing = _norm_str(
+            row.get('Lot Sizing Procedure')
+        ).upper()
+
+        # ========================================================
+        # Mandatory field
+        # ========================================================
         if lot_sizing == '':
-            erros.append('Mandatory field blank')
+            if plant == 'TN02':
+                erros.append(
+                    "Mandatory field blank "
+                    "(all TN02 materials require "
+                    "Lot Sizing Procedure = 'EX')"
+                )
+            elif plant_type in {'FP', 'MP'}:
+                erros.append(
+                    f"Mandatory field blank "
+                    f"(Plant Type '{plant_type}' requires "
+                    "Lot Sizing Procedure = 'EX')"
+                )
+            elif plant_type == 'PP':
+                erros.append(
+                    "Mandatory field blank "
+                    "(Plant Type 'PP' requires "
+                    "Lot Sizing Procedure = 'ZK')"
+                )
+            else:
+                erros.append(
+                    "Mandatory field blank"
+                )
+
         else:
-            is_exception = (plant_type == 'MP' and has_14k450(material))
-            if is_exception:
+            # ====================================================
+            # RULE 1
+            # All TN02 materials must have EX.
+            #
+            # This rule takes precedence over:
+            #   - Plant Type rules
+            #   - MP + 14K450 exception
+            # ====================================================
+            if plant == 'TN02':
+                if lot_sizing != 'EX':
+                    erros.append(
+                        "All materials in TN02 require "
+                        "Lot Sizing Procedure = 'EX' "
+                        f"(current: '{lot_sizing}')"
+                    )
+
+            # ====================================================
+            # RULE 2
+            # MP + 14K450 exception outside TN02
+            # ====================================================
+            elif (
+                plant_type == 'MP'
+                and has_14k450(material)
+            ):
                 if lot_sizing not in {'EX', 'ZK'}:
                     erros.append(
-                        f"Invalid value: '{lot_sizing}' (for Plant Type MP with '14K450', allowed: ZK or EX)"
+                        f"Invalid value: '{lot_sizing}' "
+                        "for Plant Type 'MP' with material "
+                        "containing '14K450'. "
+                        "Allowed values: 'EX' or 'ZK'"
                     )
-            else:
-                if lot_sizing == 'EX' and plant_type not in ['FP', 'MP']:
-                    erros.append(f"Value 'EX' only allowed for Plant Type FP or MP (current: '{plant_type}')")
-                if lot_sizing == 'ZK' and plant_type != 'PP':
-                    erros.append(f"Value 'ZK' only allowed for Plant Type PP (current: '{plant_type}')")
+
+            # ====================================================
+            # RULE 3
+            # FP and MP outside TN02 must have EX.
+            # ====================================================
+            elif plant_type in {'FP', 'MP'}:
+                if lot_sizing != 'EX':
+                    erros.append(
+                        f"Plant Type '{plant_type}' requires "
+                        "Lot Sizing Procedure = 'EX' "
+                        f"(current: '{lot_sizing}')"
+                    )
+
+            # ====================================================
+            # RULE 4
+            # PP outside TN02 must have ZK.
+            # ====================================================
+            elif plant_type == 'PP':
+                if lot_sizing != 'ZK':
+                    erros.append(
+                        "Plant Type 'PP' requires "
+                        "Lot Sizing Procedure = 'ZK' "
+                        f"(current: '{lot_sizing}')"
+                    )
+
+            # ====================================================
+            # Unknown or unsupported Plant Type
+            # ====================================================
+            elif lot_sizing not in {'EX', 'ZK'}:
+                erros.append(
+                    f"Invalid Lot Sizing Procedure: "
+                    f"'{lot_sizing}'"
+                )
 
         if erros:
             resultados.append({
-                'Line': idx + 2, 'Field': 'Lot Sizing Procedure',
+                'Line': idx + 2,
+                'Field': 'Lot Sizing Procedure',
                 'Error': ' \n'.join(erros),
                 'Material': material,
-                'Plant':    str(row.get('Plant', '')).strip(),
+                'Plant': plant,
             })
 
 
-def validar_per_lot_sz_plng_cal(marc_df, resultados, mara_df, matplsta_df=None):
+def validar_per_lot_sz_plng_cal(
+    marc_df,
+    resultados,
+    mara_df=None,
+    matplsta_df=None
+):
     """
-    Per.Lot Sz.Plng Cal. validation — sourced from MARC.
+    Validate Per.Lot Sz.Plng Cal. by Plant Type, Planning Status,
+    Plant-Specific Material Status and Advanced Planning.
 
-    Rules (scoped to FERT, HALB, ROH only):
-      - FERT or HALB -> field is mandatory (must not be empty).
-      - ROH         -> field must be empty
-                       EXCEPTION: allowed when MATPLSTA has Planning Status = 9
-                                  for the same Material + Plant.
+    FP / MP:
+    - The field is mandatory only when:
+        - Advanced Planning is active;
+        - Planning Status is not 9;
+        - PSMS is not 25 or 75.
+
+    PP:
+    - Planning Status 1:
+        - The field must be empty.
+    - Planning Status 9 or blank:
+        - The field is not validated.
+    - Any other Planning Status:
+        - The field is not validated until a specific rule is defined.
+
+    mara_df is kept only for backward compatibility.
+    matplsta_df is used to obtain Planning Status by Material and Plant.
     """
+
     field = 'Per.Lot Sz.Plng Cal.'
 
-    if marc_df is None or marc_df.empty:
-        print("⚠️ MARC DataFrame is required for Per.Lot Sz.Plng Cal. validation but was not provided.")
+    if marc_df is None or marc_df.empty or field not in marc_df.columns:
         return
 
-    if field not in marc_df.columns:
-        print(f"⚠️ Column '{field}' not found in the MARC sheet.")
+    def _pick(candidates):
+        return next(
+            (column for column in candidates if column in marc_df.columns),
+            None
+        )
+
+    def _s(value):
+        return '' if pd.isna(value) else str(value).strip()
+
+    def is_true(value):
+        return _s(value).upper() in {
+            'TRUE',
+            'X',
+            '1',
+            'YES',
+            'Y',
+        }
+
+    # -------------------------------------------------------------------------
+    # Identify the required MARC columns
+    # -------------------------------------------------------------------------
+    pt_col = _pick([
+        'Plant Type',
+        'Material Plant Type',
+    ])
+
+    advanced_col = _pick([
+        'Advanced Planning',
+    ])
+
+    psms_col = _pick([
+        'Plant-Specific Material Status',
+        'Plant Specific Material Status',
+    ])
+
+    if pt_col is None or advanced_col is None or psms_col is None:
         return
 
-    if mara_df is None or mara_df.empty:
-        print("⚠️ MARA DataFrame is required for Per.Lot Sz.Plng Cal. validation but was not provided.")
-        return
+    # -------------------------------------------------------------------------
+    # Build Material + Plant -> Planning Status mapping
+    # -------------------------------------------------------------------------
+    planning_status_map = {}
 
-    if 'Material' not in mara_df.columns or 'Material Type' not in mara_df.columns:
-        print("⚠️ MARA is missing 'Material' or 'Material Type' columns required for Per.Lot Sz.Plng Cal. validation.")
-        return
-
-    # --- Material → Material Type map (igual ao original)
-    mt_map = dict(zip(
-        mara_df['Material'].astype(str).str.strip(),
-        mara_df['Material Type'].astype(str).str.strip().str.upper()
-    ))
-
-    # --- NOVO: construir set de exceções ROH com Planning Status = 9
-    roh_status_9 = set()
     if matplsta_df is not None and not matplsta_df.empty:
-        matplsta_df = matplsta_df.copy()
-        matplsta_df.columns = matplsta_df.columns.astype(str).str.strip()
+        mps = matplsta_df.copy()
+        mps.columns = mps.columns.astype(str).str.strip()
 
-        required_cols = {'Product Number', 'Location', 'Planning Status'}
-        if required_cols.issubset(matplsta_df.columns):
-            for _, r in matplsta_df.iterrows():
-                if str(r['Planning Status']).strip() == '9':
-                    roh_status_9.add((
-                        str(r['Product Number']).strip(),
-                        str(r['Location']).strip()
-                    ))
+        required_matplsta_columns = {
+            'Product Number',
+            'Location',
+            'Planning Status',
+        }
 
-    in_scope_types  = {'FERT', 'HALB', 'ROH'}
-    mandatory_types = {'FERT', 'HALB'}
+        if required_matplsta_columns.issubset(mps.columns):
+            for _, source_row in mps.iterrows():
+                material_key = _s(
+                    source_row.get('Product Number')
+                )
 
+                plant_key = _s(
+                    source_row.get('Location')
+                ).upper()
+
+                planning_status_map[(material_key, plant_key)] = (
+                    normalize_code(
+                        source_row.get('Planning Status'),
+                        as_int=True
+                    )
+                )
+
+    # -------------------------------------------------------------------------
+    # Validate each MARC row
+    # -------------------------------------------------------------------------
     for idx, row in marc_df.iterrows():
-        material = str(row.get('Material', '')).strip()
-        plant    = str(row.get('Plant', '')).strip()
-        raw      = row[field]
-        val      = '' if pd.isna(raw) else str(raw).strip()
+        material = _s(
+            row.get('Material')
+        )
 
-        mt = mt_map.get(material, '')
+        plant = _s(
+            row.get('Plant')
+        ).upper()
 
-        if mt not in in_scope_types:
-            continue
+        plant_type = _s(
+            row.get(pt_col)
+        ).upper()
 
-        # --- FERT / HALB (IGUAL ao original)
-        if mt in mandatory_types:
-            if val == '':
+        raw_value = row.get(field)
+        value = _s(raw_value)
+
+        advanced = row.get(advanced_col)
+
+        psms = normalize_code(
+            row.get(psms_col),
+            as_int=True
+        )
+
+        planning_status = planning_status_map.get(
+            (material, plant),
+            ''
+        )
+
+        # =====================================================================
+        # PLANT TYPE PP
+        # =====================================================================
+        if plant_type == 'PP':
+
+            # PP with Planning Status 9 or blank:
+            # Per.Lot Sz.Plng Cal. is outside the validation scope.
+            if planning_status in {'', '9'}:
+                continue
+
+            # PP with Planning Status 1:
+            # the field must be empty.
+            if planning_status == '1' and value != '':
                 resultados.append({
-                    'Line':     idx + 2,
-                    'Field':    field,
-                    'Error':    f"Mandatory field blank for Material Type '{mt}' (FERT and HALB require a value)",
+                    'Line': idx + 2,
+                    'Field': field,
+                    'Error': (
+                        "Field must be empty for Plant Type 'PP' "
+                        "with Planning Status 1 "
+                        f"(current: '{value}')"
+                    ),
                     'Material': material,
-                    'Plant':    plant,
+                    'Plant': plant,
                 })
 
-        # --- ROH (alteração mínima e correta)
-        else:  # ROH
-            if val != '':
-                # 👉 SÓ AQUI se consulta a MATPLSTA
-                if (material, plant) not in roh_status_9:
-                    resultados.append({
-                        'Line':     idx + 2,
-                        'Field':    field,
-                        'Error':    f"Field must be empty for Material Type 'ROH' (current: '{val}')",
-                        'Material': material,
-                        'Plant':    plant,
-                    })
+            # PP does not enter the FP/MP validation rules.
+            continue
 
+        # =====================================================================
+        # PLANT TYPES FP AND MP
+        # =====================================================================
+        if plant_type not in {'FP', 'MP'}:
+            continue
+
+        # ---------------------------------------------------------------------
+        # Exception 1:
+        # Planning Status 9 does not require Per.Lot Sz.Plng Cal.
+        # ---------------------------------------------------------------------
+        if planning_status == '9':
+            continue
+
+        # ---------------------------------------------------------------------
+        # Exception 2:
+        # PSMS 25 or 75 does not require Per.Lot Sz.Plng Cal.
+        # ---------------------------------------------------------------------
+        if psms in {'25', '75'}:
+            continue
+
+        # ---------------------------------------------------------------------
+        # Exception 3:
+        # Per.Lot Sz.Plng Cal. is not mandatory when
+        # Advanced Planning is inactive.
+        # ---------------------------------------------------------------------
+        if not is_true(advanced):
+            continue
+
+        # ---------------------------------------------------------------------
+        # FP/MP:
+        # The field is mandatory when none of the exceptions above applies.
+        # ---------------------------------------------------------------------
+        if value == '':
+            resultados.append({
+                'Line': idx + 2,
+                'Field': field,
+                'Error': (
+                    f"Mandatory field blank for Plant Type '{plant_type}' "
+                    "when Advanced Planning is active, "
+                    "Planning Status is not 9, "
+                    "and PSMS is not 25 or 75"
+                ),
+                'Material': material,
+                'Plant': plant,
+            })
 
 def validar_material_group(df, resultados):
     """Material Group is mandatory. Certain values are enforced per Material Type."""
@@ -3442,30 +3771,66 @@ def validar_production_supervisor_marc(marc_df, mara_df, resultados):
                 "Plant": plant,
             })
 
-def validar_batch_management_plant_marc(marc_df, zplm_marc_df, mara_df, resultados):
+def validar_batch_management_plant_marc(
+    marc_df,
+    zplm_marc_df,
+    mara_df,
+    resultados
+):
     """
-    MARC:
-    Batch Management (Plant) rules:
-    - If Plant Type ∈ {PP, COI} → must be 'X'
-    - It may be 'X' ONLY if Batch Management = 'X'
-    - ONLY for Material Types: FERT, HALB, ROH
-    Validation per (Material, Plant).
+    Validate MARC field 'Batch Management(Plant)'.
+
+    Scope:
+      - Material Types FERT, HALB and ROH only.
+      - Validation is performed per Material + Plant.
+
+    Rules and precedence:
+
+    1. Any material in TN02:
+         Batch Management(Plant) must be empty.
+
+    2. Outside TN02:
+         - Plant Type PP or COI:
+             Batch Management(Plant) must be active.
+             Accepted values: '1' or 'X'.
+
+         - Other Plant Types:
+             Batch Management(Plant) must not be active.
+             Therefore, it must not contain '1' or 'X'.
+
+    3. Dependency rule outside TN02:
+         If Batch Management(Plant) is active,
+         then MARA Batch Management must also be active.
+
+         Values '1' and 'X' are considered equivalent.
+
+    Notes:
+      - The TN02 rule has the highest precedence.
+      - Therefore, TN02 materials with Plant Type PP or COI
+        must still have Batch Management(Plant) empty.
+      - The dependency rule is not applied to TN02 because
+        Batch Management(Plant) must always be empty there.
     """
 
-    required_marc = {
-        "Material",
-        "Plant",
-        "Batch Management(Plant)",
+    marc_field = 'Batch Management(Plant)'
+    mara_field = 'Batch Management'
+
+    required_marc_columns = {
+        'Material',
+        'Plant',
+        marc_field,
     }
-    required_zplm = {
-        "Material",
-        "Plant",
-        "Plant Type",
+
+    required_zplm_columns = {
+        'Material',
+        'Plant',
+        'Plant Type',
     }
-    required_mara = {
-        "Material",
-        "Material Type",
-        "Batch Management",
+
+    required_mara_columns = {
+        'Material',
+        'Material Type',
+        mara_field,
     }
 
     if (
@@ -3475,56 +3840,273 @@ def validar_batch_management_plant_marc(marc_df, zplm_marc_df, mara_df, resultad
         or marc_df.empty
         or zplm_marc_df.empty
         or mara_df.empty
-        or not required_marc.issubset(marc_df.columns)
-        or not required_zplm.issubset(zplm_marc_df.columns)
-        or not required_mara.issubset(mara_df.columns)
     ):
         return
 
-    # ✅ Join com Plant Type + Material Type
-    df = marc_df.merge(
-        zplm_marc_df[["Material", "Plant", "Plant Type"]],
-        on=["Material", "Plant"],
-        how="left",
-    ).merge(
-        mara_df[["Material", "Material Type"]],
-        on="Material",
-        how="left",
+    if not required_marc_columns.issubset(marc_df.columns):
+        missing_columns = sorted(
+            required_marc_columns - set(marc_df.columns)
+        )
+
+        print(
+            "Missing MARC columns for Batch Management(Plant) "
+            f"validation: {missing_columns}"
+        )
+        return
+
+    if not required_zplm_columns.issubset(zplm_marc_df.columns):
+        missing_columns = sorted(
+            required_zplm_columns - set(zplm_marc_df.columns)
+        )
+
+        print(
+            "Missing ZPLM MARC columns for Batch Management(Plant) "
+            f"validation: {missing_columns}"
+        )
+        return
+
+    if not required_mara_columns.issubset(mara_df.columns):
+        missing_columns = sorted(
+            required_mara_columns - set(mara_df.columns)
+        )
+
+        print(
+            "Missing MARA columns for Batch Management(Plant) "
+            f"validation: {missing_columns}"
+        )
+        return
+
+    # ------------------------------------------------------------
+    # Create local copies
+    # ------------------------------------------------------------
+    marc = marc_df.copy()
+    zplm_marc = zplm_marc_df.copy()
+    mara = mara_df.copy()
+
+    marc.columns = marc.columns.astype(str).str.strip()
+    zplm_marc.columns = (
+        zplm_marc.columns
+        .astype(str)
+        .str.strip()
+    )
+    mara.columns = mara.columns.astype(str).str.strip()
+
+    # ------------------------------------------------------------
+    # Normalize key columns
+    # ------------------------------------------------------------
+    marc['Material'] = (
+        marc['Material']
+        .fillna('')
+        .astype(str)
+        .str.strip()
     )
 
+    marc['Plant'] = (
+        marc['Plant']
+        .fillna('')
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    zplm_marc['Material'] = (
+        zplm_marc['Material']
+        .fillna('')
+        .astype(str)
+        .str.strip()
+    )
+
+    zplm_marc['Plant'] = (
+        zplm_marc['Plant']
+        .fillna('')
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    mara['Material'] = (
+        mara['Material']
+        .fillna('')
+        .astype(str)
+        .str.strip()
+    )
+
+    # ------------------------------------------------------------
+    # Avoid duplicate validations caused by duplicate source rows
+    # ------------------------------------------------------------
+    marc = marc.drop_duplicates(
+        subset=['Material', 'Plant'],
+        keep='first'
+    )
+
+    zplm_marc = zplm_marc.drop_duplicates(
+        subset=['Material', 'Plant'],
+        keep='first'
+    )
+
+    mara = mara.drop_duplicates(
+        subset=['Material'],
+        keep='first'
+    )
+
+    # ------------------------------------------------------------
+    # Merge:
+    #   - Plant Type from ZPLM MARC
+    #   - Material Type and Batch Management from MARA
+    # ------------------------------------------------------------
+    df = (
+        marc.merge(
+            zplm_marc[
+                [
+                    'Material',
+                    'Plant',
+                    'Plant Type',
+                ]
+            ],
+            on=['Material', 'Plant'],
+            how='left',
+        )
+        .merge(
+            mara[
+                [
+                    'Material',
+                    'Material Type',
+                    mara_field,
+                ]
+            ],
+            on='Material',
+            how='left',
+        )
+    )
+
+    valid_material_types = {
+        'FERT',
+        'HALB',
+        'ROH',
+    }
+
+    # ------------------------------------------------------------
+    # Validate each Material + Plant
+    # ------------------------------------------------------------
     for idx, row in df.iterrows():
-        material = str(row.get("Material", "")).strip()
-        plant = str(row.get("Plant", "")).strip()
-        plant_type = str(row.get("Plant Type", "")).strip().upper()
-        mt = str(row.get("Material Type", "")).strip().upper()
-
-        # ✅ Só FERT / HALB / ROH
-        if mt not in {"FERT", "HALB", "ROH"}:
-            continue
-
-        bmp = _norm_str(row.get("Batch Management(Plant)")).upper()
-        bm  = _norm_str(row.get("Batch Management")).upper()
-
         erros = []
 
-        if plant_type in {"PP", "COI"}:
-            if bmp != "X":
-                erros.append("Mandatory for Plant Type PP/COI (should be 'X')")
-        else:
-            if bmp == "X":
-                erros.append(f"Not allowed for Plant Type '{plant_type}'")
+        material = _norm_str(
+            row.get('Material')
+        )
 
-        # Dependency rule
-        if bmp == "X" and bm != "X":
-            erros.append("Cannot be 'X' when Batch Management is not 'X'")
+        plant = _norm_str(
+            row.get('Plant')
+        ).upper()
+
+        plant_type = _norm_str(
+            row.get('Plant Type')
+        ).upper()
+
+        material_type = _norm_str(
+            row.get('Material Type')
+        ).upper()
+
+        batch_management_plant = _norm_str(
+            row.get(marc_field)
+        ).upper()
+
+        batch_management_mara = _norm_str(
+            row.get(mara_field)
+        ).upper()
+
+        # Treat values read numerically from Excel as equivalent
+        if batch_management_plant == '1.0':
+            batch_management_plant = '1'
+
+        if batch_management_mara == '1.0':
+            batch_management_mara = '1'
+
+        # X and 1 represent the same active indicator
+        active_values = {'1', 'X'}
+
+        # Only validate FERT, HALB and ROH
+        if material_type not in valid_material_types:
+            continue
+
+        # ========================================================
+        # RULE 1
+        # Any material in TN02 must have
+        # Batch Management(Plant) empty.
+        #
+        # This takes precedence over the Plant Type rules.
+        # ========================================================
+        if plant == 'TN02':
+            if batch_management_plant != '':
+                erros.append(
+                    "Batch Management(Plant) must be empty "
+                    "for all TN02 materials "
+                    f"(current: '{batch_management_plant}')"
+                )
+
+        # ========================================================
+        # RULE 2
+        # Outside TN02, PP and COI must have an active value.
+        #
+        # Both 1 and X are accepted.
+        # ========================================================
+        elif plant_type in {'PP', 'COI'}:
+            if batch_management_plant == '':
+                erros.append(
+                    "Mandatory field blank "
+                    f"(Plant Type '{plant_type}' requires "
+                    "Batch Management(Plant) = '1' or 'X')"
+                )
+
+            elif batch_management_plant not in active_values:
+                erros.append(
+                    f"For Plant Type '{plant_type}', "
+                    "Batch Management(Plant) should be 'Yes' "
+                    f"(Current: '{batch_management_plant}')"
+                )
+
+        # ========================================================
+        # RULE 3
+        # Outside TN02, other Plant Types must not have an
+        # active value.
+        #
+        # Both 1 and X are considered active.
+        # ========================================================
+        else:
+            if batch_management_plant in active_values:
+                erros.append(
+                    "Batch Management(Plant) should be 'No' "
+                    f"for Plant Type '{plant_type}' "
+                    f"(Current: '{batch_management_plant}')"
+                )
+
+        # ========================================================
+        # DEPENDENCY RULE
+        #
+        # Outside TN02, if Batch Management(Plant) is active,
+        # MARA Batch Management must also be active.
+        #
+        # Both 1 and X are accepted in both fields.
+        # ========================================================
+        if (
+            plant != 'TN02'
+            and batch_management_plant in active_values
+            and batch_management_mara not in active_values
+        ):
+            erros.append(
+                "Batch Management(Plant) cannot be '1' or 'X' "
+                "when MARA Batch Management is not '1' or 'X' "
+                f"(current MARA value: "
+                f"'{batch_management_mara or 'blank'}')"
+            )
 
         if erros:
             resultados.append({
-                "Line": idx + 2,
-                "Field": "Batch Management(Plant)",
-                "Error": " | ".join(erros),
-                "Material": material,
-                "Plant": plant,
+                'Line': idx + 2,
+                'Field': marc_field,
+                'Error': ' | '.join(erros),
+                'Material': material,
+                'Plant': plant,
             })
 
 def validar_version_indicator_marc(
@@ -4837,90 +5419,257 @@ def validar_neg_stocks_in_plant(marc_df, mara_df):
     """
     MARC + MARA: Neg. stocks in plant validation.
 
-    Rule:
-    - Validate ONLY for: FERT, HALB, ROH
-    - Must be marked ONLY for: ROH and HALB
-    - Must NOT be marked for FERT
-    - If blank for ROH/HALB → mandatory error
+    Scope:
+      - Validate only Material Types FERT, HALB and ROH.
+
+    Rules:
+      - TN02:
+          - The field must always be blank for FERT, HALB and ROH.
+
+      - All other plants:
+          - ROH and HALB:
+              - The field must be marked.
+          - FERT:
+              - The field must not be marked.
+
+    Accepted marked values:
+      - X
+      - 1
+      - 1.0
+      - YES
+      - Y
+      - TRUE
+
+    Accepted blank/inactive values:
+      - Blank
+      - 0
+      - 0.0
+      - NO
+      - N
+      - FALSE
     """
 
-    if marc_df is None or marc_df.empty or mara_df is None or mara_df.empty:
+    if (
+        marc_df is None
+        or marc_df.empty
+        or mara_df is None
+        or mara_df.empty
+    ):
         return []
 
-    needed_marc = {'Material', 'Plant', 'Neg. stocks in plant'}
-    needed_mara = {'Material', 'Material Type'}
+    required_marc_columns = {
+        'Material',
+        'Plant',
+        'Neg. stocks in plant',
+    }
 
-    if not needed_marc.issubset(marc_df.columns) or not needed_mara.issubset(mara_df.columns):
+    required_mara_columns = {
+        'Material',
+        'Material Type',
+    }
+
+    if (
+        not required_marc_columns.issubset(marc_df.columns)
+        or not required_mara_columns.issubset(mara_df.columns)
+    ):
         return []
 
-    # Map Material → Material Type
-    mt_map = dict(
+    # ------------------------------------------------------------
+    # Build Material -> Material Type mapping
+    # ------------------------------------------------------------
+    material_type_map = dict(
         zip(
-            mara_df['Material'].astype(str).str.strip(),
-            mara_df['Material Type'].astype(str).str.strip().str.upper()
+            mara_df['Material']
+            .fillna('')
+            .astype(str)
+            .str.strip(),
+
+            mara_df['Material Type']
+            .fillna('')
+            .astype(str)
+            .str.strip()
+            .str.upper()
         )
     )
 
-    def _s(x):
-        return '' if pd.isna(x) else str(x).strip()
+    # ------------------------------------------------------------
+    # Normalization helpers
+    # ------------------------------------------------------------
+    def _normalize_string(value):
+        if value is None or pd.isna(value):
+            return ''
 
-    def _is_blank(x):
-        return _s(x) == ''
+        return str(value).strip()
 
-    def _is_marked(x):
-        return _s(x).upper() in {'X', '1', 'YES', 'Y', 'TRUE'}
+    def _normalize_checkbox(value):
+        """
+        Normalize the checkbox value.
 
-    erros = []
+        Returns:
+          - 'X' when marked
+          - '' when blank or inactive
+          - 'INVALID' for an unrecognized non-empty value
+        """
 
+        normalized_value = _normalize_string(value).upper()
+
+        if normalized_value in {
+            'X',
+            '1',
+            '1.0',
+            'YES',
+            'Y',
+            'TRUE',
+        }:
+            return 'X'
+
+        if normalized_value in {
+            '',
+            '0',
+            '0.0',
+            'NO',
+            'N',
+            'FALSE',
+        }:
+            return ''
+
+        return 'INVALID'
+
+    errors = []
+
+    # ------------------------------------------------------------
+    # Validate each MARC record
+    # ------------------------------------------------------------
     for idx, row in marc_df.iterrows():
-        material = _s(row.get('Material'))
-        plant    = _s(row.get('Plant'))
-        mt       = mt_map.get(material, '')
+        material = _normalize_string(
+            row.get('Material')
+        )
 
-        # ✅ NOVO: filtrar apenas tipos relevantes
-        if mt not in {'FERT', 'HALB', 'ROH'}:
+        plant = _normalize_string(
+            row.get('Plant')
+        ).upper()
+
+        material_type = material_type_map.get(
+            material,
+            ''
+        )
+
+        # Validate only FERT, HALB and ROH
+        if material_type not in {'FERT', 'HALB', 'ROH'}:
             continue
 
-        neg_raw = row.get('Neg. stocks in plant')
-        blank   = _is_blank(neg_raw)
-        marked  = _is_marked(neg_raw)
+        raw_value = _normalize_string(
+            row.get('Neg. stocks in plant')
+        ).upper()
 
-        must_mark = mt in {'ROH', 'HALB'}
+        normalized_value = _normalize_checkbox(
+            row.get('Neg. stocks in plant')
+        )
 
-        # -----------------------------
-        # ROH / HALB → obrigatório marcado
-        # -----------------------------
-        if must_mark and blank:
-            erros.append({
-                'Line': idx + 2,
-                'Field': 'Neg. stocks in plant',
-                'Error': f"Mandatory field blank — must be marked for Material Type {mt}",
-                'Material': material,
-                'Plant': plant
-            })
+        current_value = (
+            raw_value
+            if raw_value != ''
+            else 'blank'
+        )
 
-        elif must_mark and not marked:
-            erros.append({
-                'Line': idx + 2,
-                'Field': 'Neg. stocks in plant',
-                'Error': f"Must be marked for Material Type {mt}",
-                'Material': material,
-                'Plant': plant
-            })
+        # ========================================================
+        # TN02 override
+        #
+        # For TN02, the field must always be blank, regardless of
+        # whether the Material Type is FERT, HALB or ROH.
+        # ========================================================
+        if plant == 'TN02':
+            if normalized_value == 'X':
+                errors.append({
+                    'Line': idx + 2,
+                    'Field': 'Neg. stocks in plant',
+                    'Error': (
+                        "Field must be blank for TN02 "
+                        f"(Material Type: {material_type}, "
+                        f"current: '{current_value}')"
+                    ),
+                    'Material': material,
+                    'Plant': plant,
+                })
 
-        # -----------------------------
-        # FERT → NÃO pode estar marcado
-        # -----------------------------
-        elif mt == 'FERT' and marked:
-            erros.append({
-                'Line': idx + 2,
-                'Field': 'Neg. stocks in plant',
-                'Error': "Invalid marking — not allowed for Material Type FERT",
-                'Material': material,
-                'Plant': plant
-            })
+            elif normalized_value == 'INVALID':
+                errors.append({
+                    'Line': idx + 2,
+                    'Field': 'Neg. stocks in plant',
+                    'Error': (
+                        f"Invalid value: '{current_value}'. "
+                        "Field must be blank for TN02 "
+                        f"(Material Type: {material_type})"
+                    ),
+                    'Material': material,
+                    'Plant': plant,
+                })
 
-    return erros
+            # TN02 must not enter the standard ROH/HALB/FERT rules.
+            continue
+
+        # ========================================================
+        # All plants except TN02
+        # ========================================================
+
+        # --------------------------------------------------------
+        # ROH / HALB: field must be marked
+        # --------------------------------------------------------
+        if material_type in {'ROH', 'HALB'}:
+            if normalized_value == '':
+                errors.append({
+                    'Line': idx + 2,
+                    'Field': 'Neg. stocks in plant',
+                    'Error': (
+                        "Mandatory field blank: must be marked "
+                        f"for Material Type {material_type}"
+                    ),
+                    'Material': material,
+                    'Plant': plant,
+                })
+
+            elif normalized_value == 'INVALID':
+                errors.append({
+                    'Line': idx + 2,
+                    'Field': 'Neg. stocks in plant',
+                    'Error': (
+                        f"Invalid value: '{current_value}'. "
+                        f"Field must be marked for Material Type "
+                        f"{material_type}"
+                    ),
+                    'Material': material,
+                    'Plant': plant,
+                })
+
+        # --------------------------------------------------------
+        # FERT: field must be blank
+        # --------------------------------------------------------
+        elif material_type == 'FERT':
+            if normalized_value == 'X':
+                errors.append({
+                    'Line': idx + 2,
+                    'Field': 'Neg. stocks in plant',
+                    'Error': (
+                        "Field must be blank for Material Type FERT "
+                        f"(current: '{current_value}')"
+                    ),
+                    'Material': material,
+                    'Plant': plant,
+                })
+
+            elif normalized_value == 'INVALID':
+                errors.append({
+                    'Line': idx + 2,
+                    'Field': 'Neg. stocks in plant',
+                    'Error': (
+                        f"Invalid value: '{current_value}'. "
+                        "Field must be blank for Material Type FERT"
+                    ),
+                    'Material': material,
+                    'Plant': plant,
+                })
+
+    return errors
 
 # =============================================================================
 # SAP VALIDATION ENGINE — PART 3: ORCHESTRATION & WORKFLOWS
@@ -5551,6 +6300,7 @@ def run_full_validation(
     # ✅ GLOBAL FILTER — ONLY FERT / HALB / ROH (Indirect Materials — ERSA,
     # HIBE, VERP — are handled by the separate Indirect Materials engine)
     sap_like_df = _filter_valid_material_types(sap_like_df, mara_df)
+    advanced_planning_df = sap_like_df.copy()
 
     # Exclude Material Plant Status 99 rows from all validations except
     # Advanced Planning.
@@ -5631,7 +6381,7 @@ def run_full_validation(
         (42, lambda: validar_jit_delivery_sched(sap_like_df, resultados)),
         (44, lambda: validar_loading_group(sap_like_df, resultados)),
         (46, lambda: validar_lot_sizing_procedure(sap_like_df, resultados)),
-        (47, lambda: validar_per_lot_sz_plng_cal(marc_df, resultados, mara_df, matplsta_df)),
+        (47, lambda: validar_per_lot_sz_plng_cal(advanced_planning_df, resultados, mara_df, matplsta_df)),
         (48, lambda: validar_material_group(sap_like_df, resultados)),
         (50, lambda: validar_mrp_type(sap_like_df, resultados, zplm_marc_df, csr_item_df, csr_head_df)),
         (51, lambda: validar_individual_collective_requirements_marc(marc_df, mara_df, resultados)),
@@ -5688,7 +6438,7 @@ def run_full_validation(
 
     _cb(96, "Validating Advanced Planning fields (MARC)...")
     validar_advanced_planning_fields(
-        marc_df=marc_df_full,
+        marc_df=advanced_planning_df,
         mara_df=mara_df,
         resultados=resultados,
         matplsta_df=matplsta_df,
@@ -6632,185 +7382,386 @@ def validar_advanced_planning_fields(
     resultados,
     matplsta_df=None
 ):
+    """
+    Validate Advanced Planning fields exclusively by Plant Type.
 
-    if marc_df is None or marc_df.empty or mara_df is None or mara_df.empty:
+    PP rules:
+    - Planning Status 1:
+        - Heuristic must be empty.
+        - PP Plng Procedure must be empty.
+        - Proposed Strategy must be empty.
+        - Advanced Planning must be OFF.
+    - Planning Status 9 or blank:
+        - Advanced Planning-related fields are not validated.
+
+    PSMS rules:
+    - PSMS 25/75:
+        - Advanced Planning may be OFF.
+        - Advanced Planning may only be ON when Planning Status is 9.
+
+    FP/MP rules:
+    - Planning Status 9 is not allowed unless PSMS is 25 or 75.
+    - Remaining existing validation rules are preserved.
+    """
+    if marc_df is None or marc_df.empty:
         return
 
-    def _pick(df, candidates):
-        return next((c for c in candidates if c in df.columns), None)
+    def _pick(candidates):
+        return next(
+            (column for column in candidates if column in marc_df.columns),
+            None
+        )
 
-    col_adv  = _pick(marc_df, ['Advanced Planning'])
-    col_heur = _pick(marc_df, ['Heuristic'])
-    col_pp   = _pick(marc_df, ['PP Plng Procedure'])
-    col_req  = _pick(marc_df, ['Requirement Strategy'])
-    col_psms = _pick(marc_df, ['Plant-Specific Material Status', 'Plant Specific Material Status'])
+    col_adv = _pick([
+        'Advanced Planning'
+    ])
 
-    if any(c is None for c in [col_adv, col_heur, col_pp, col_req, col_psms]):
+    col_heur = _pick([
+        'Heuristic',
+        'Product Heuristic'
+    ])
+
+    col_pp = _pick([
+        'PP Plng Procedure',
+        'PP Planning Procedure'
+    ])
+
+    col_req = _pick([
+        'Requirement Strategy',
+        'Proposed Strategy'
+    ])
+
+    col_psms = _pick([
+        'Plant-Specific Material Status',
+        'Plant Specific Material Status'
+    ])
+
+    col_pt = _pick([
+        'Plant Type',
+        'Material Plant Type'
+    ])
+
+    required_columns = [
+        col_adv,
+        col_heur,
+        col_pp,
+        col_req,
+        col_psms,
+        col_pt
+    ]
+
+    if any(column is None for column in required_columns):
         return
 
-    if not {'Material', 'Material Type'}.issubset(mara_df.columns):
-        return
+    def _s(value):
+        return '' if pd.isna(value) else str(value).strip()
 
-    mt_map = dict(zip(
-        mara_df['Material'].astype(str).str.strip(),
-        mara_df['Material Type'].astype(str).str.strip().str.upper()
-    ))
+    def is_true(value):
+        return _s(value).upper() in {
+            'TRUE',
+            'X',
+            '1',
+            'YES',
+            'Y'
+        }
 
-    matplsta_map = {}
+    def is_false(value):
+        return _s(value).upper() in {
+            'FALSE',
+            '',
+            '0',
+            'NO',
+            'N'
+        }
+
+    def add_error(idx, field, error, material, plant):
+        resultados.append({
+            'Line': idx + 2,
+            'Field': field,
+            'Error': error,
+            'Material': material,
+            'Plant': plant,
+        })
+
+    # -------------------------------------------------------------------------
+    # Build Material + Plant -> Planning Status mapping
+    # -------------------------------------------------------------------------
+    planning_status_map = {}
 
     if matplsta_df is not None and not matplsta_df.empty:
-        matplsta_df = matplsta_df.copy()
-        matplsta_df.columns = matplsta_df.columns.astype(str).str.strip()
+        mps = matplsta_df.copy()
+        mps.columns = mps.columns.astype(str).str.strip()
 
-        if {'Product Number', 'Location', 'Planning Status'}.issubset(matplsta_df.columns):
-            for _, r in matplsta_df.iterrows():
-                matplsta_map[(
-                    str(r['Product Number']).strip(),
-                    str(r['Location']).strip()
-                )] = str(r['Planning Status']).strip()
+        required_matplsta_columns = {
+            'Product Number',
+            'Location',
+            'Planning Status'
+        }
 
-    def _s(x):
-        return '' if pd.isna(x) else str(x).strip()
+        if required_matplsta_columns.issubset(mps.columns):
+            for _, source_row in mps.iterrows():
+                key = (
+                    _s(source_row['Product Number']),
+                    _s(source_row['Location']).upper()
+                )
 
-    def is_true(x):
-        return _s(x).upper() in {'TRUE', 'X', '1'}
+                planning_status_map[key] = normalize_code(
+                    source_row['Planning Status'],
+                    as_int=True
+                )
 
-    def is_false(x):
-        return _s(x).upper() in {'FALSE', '', '0'}
-
+    # -------------------------------------------------------------------------
+    # Validate each MARC row
+    # -------------------------------------------------------------------------
     for idx, row in marc_df.iterrows():
         material = _s(row.get('Material'))
-        plant    = _s(row.get('Plant'))
-        real_mt  = mt_map.get(material, '').upper()
+        plant = _s(row.get('Plant')).upper()
+        plant_type = _s(row.get(col_pt)).upper()
 
-        mt = get_effective_material_type(
-            material,
-            real_mt,
-            'validar_advanced_planning_fields',
-        )
-
-        if mt not in {'FERT', 'HALB', 'ROH'}:
+        if plant_type not in {'FP', 'MP', 'PP'}:
             continue
 
-        adv_raw = row.get(col_adv)
-        heur    = _s(row.get(col_heur))
-        pp      = normalize_code(row.get(col_pp), as_int=True)
-        req     = normalize_code(row.get(col_req), as_int=True)
-        psms    = normalize_code(row.get(col_psms), as_int=True)
+        advanced = row.get(col_adv)
+        heuristic = _s(row.get(col_heur))
 
-        planning_status = matplsta_map.get((material, plant))
+        procedure = normalize_code(
+            row.get(col_pp),
+            as_int=True
+        )
 
-        # --------------------------------------------------------
-        # ✅ PSMS 25 / 75 (PRIORIDADE MÁXIMA)
-        # --------------------------------------------------------
+        strategy = normalize_code(
+            row.get(col_req),
+            as_int=True
+        )
+
+        psms = normalize_code(
+            row.get(col_psms),
+            as_int=True
+        )
+
+        planning_status = planning_status_map.get(
+            (material, plant),
+            ''
+        )
+
+        # =====================================================================
+        # PLANT TYPE PP
+        # =====================================================================
+        if plant_type == 'PP':
+
+            # PP with Planning Status 9 or blank:
+            # do not validate Advanced Planning, Heuristic,
+            # PP Plng Procedure or Proposed Strategy.
+            if planning_status in {'', '9'}:
+                continue
+
+            # PP with Planning Status 1:
+            # dependent fields must be empty and Advanced Planning must be OFF.
+            if planning_status == '1':
+
+                if heuristic != '':
+                    add_error(
+                        idx,
+                        'Heuristic',
+                        (
+                            "Must be empty for Plant Type 'PP' with "
+                            f"Planning Status 1 (current: '{heuristic}')"
+                        ),
+                        material,
+                        plant
+                    )
+
+                if procedure != '':
+                    add_error(
+                        idx,
+                        'PP Plng Procedure',
+                        (
+                            "Must be empty for Plant Type 'PP' with "
+                            f"Planning Status 1 (current: '{procedure}')"
+                        ),
+                        material,
+                        plant
+                    )
+
+                if strategy != '':
+                    add_error(
+                        idx,
+                        'Proposed Strategy',
+                        (
+                            "Must be empty for Plant Type 'PP' with "
+                            f"Planning Status 1 (current: '{strategy}')"
+                        ),
+                        material,
+                        plant
+                    )
+
+                if is_true(advanced):
+                    add_error(
+                        idx,
+                        'Advanced Planning',
+                        (
+                            "Plant Type 'PP' with Planning Status 1 "
+                            "must have Advanced Planning OFF"
+                        ),
+                        material,
+                        plant
+                    )
+
+                continue
+
+            # PP with any other Planning Status is outside
+            # the currently defined validation rules.
+            continue
+
+        # =====================================================================
+        # PLANT TYPES FP AND MP
+        # =====================================================================
+
+        # ---------------------------------------------------------------------
+        # PSMS 25/75 precedence
+        #
+        # Advanced Planning may be:
+        # - OFF, regardless of Planning Status.
+        # - ON, but only when Planning Status is 9.
+        # ---------------------------------------------------------------------
         if psms in {'25', '75'}:
+            advanced_is_allowed = (
+                is_false(advanced)
+                or (
+                    is_true(advanced)
+                    and planning_status == '9'
+                )
+            )
 
-            # AP OFF → OK
-            if is_false(adv_raw):
-                pass
+            if not advanced_is_allowed:
+                add_error(
+                    idx,
+                    'Advanced Planning',
+                    (
+                        "PSMS 25/75: Advanced Planning must be OFF, "
+                        "or may only be ON when Planning Status is 9"
+                    ),
+                    material,
+                    plant
+                )
 
-            # AP ON → só permitido com status 9
-            elif is_true(adv_raw) and planning_status == '9':
-                pass
-
-            # Caso contrário → erro
-            else:
-                resultados.append({
-                    'Line': idx + 2,
-                    'Field': 'Advanced Planning',
-                    'Error': "PSMS 25/75: must be OFF or only allowed with Planning Status 9",
-                    'Material': material,
-                    'Plant': plant,
-                })
                 continue
 
-        # --------------------------------------------------------
-        # ✅ STATUS 1 RESTRICTIONS
-        # --------------------------------------------------------
-        if planning_status == '1':
-            if (mt in {'ROH', 'HALB'} and plant == 'PT01') or \
-               (mt == 'ROH' and plant == 'PT02'):
-                resultados.append({
-                    'Line': idx + 2,
-                    'Field': 'Advanced Planning',
-                    'Error': "Planning Status 1 not allowed",
-                    'Material': material,
-                    'Plant': plant,
-                })
-                continue
+        # ---------------------------------------------------------------------
+        # Existing restriction for MP in PT01 with Planning Status 1
+        # ---------------------------------------------------------------------
+        if (
+            plant_type == 'MP'
+            and plant == 'PT01'
+            and planning_status == '1'
+        ):
+            add_error(
+                idx,
+                'Advanced Planning',
+                (
+                    "Planning Status 1 not allowed for "
+                    "Plant Type 'MP' in PT01"
+                ),
+                material,
+                plant
+            )
 
-        # --------------------------------------------------------
-        # ✅ STATUS 9 RULES
-        # --------------------------------------------------------
-        if mt == 'ROH' and planning_status == '9':
             continue
 
-        if mt == 'HALB' and plant == 'PT01' and planning_status == '9' and is_true(adv_raw):
+        # ---------------------------------------------------------------------
+        # MP in PT01 with Planning Status 9 and Advanced Planning ON is allowed.
+        # ---------------------------------------------------------------------
+        if (
+            plant_type == 'MP'
+            and plant == 'PT01'
+            and planning_status == '9'
+            and is_true(advanced)
+        ):
             continue
 
-        if mt in {'FERT', 'HALB'} and planning_status == '9':
-            resultados.append({
-                'Line': idx + 2,
-                'Field': 'Advanced Planning',
-                'Error': "Planning Status 9 not allowed",
-                'Material': material,
-                'Plant': plant,
-            })
+        # ---------------------------------------------------------------------
+        # Planning Status 9 is not allowed for FP/MP unless PSMS is 25 or 75.
+        #
+        # This condition prevents a conflict with the PSMS 25/75 rule above.
+        # ---------------------------------------------------------------------
+        if (
+            plant_type in {'FP', 'MP'}
+            and planning_status == '9'
+            and psms not in {'25', '75'}
+        ):
+            add_error(
+                idx,
+                'Advanced Planning',
+                (
+                    "Planning Status 9 not allowed for Plant Type 'FP/MP' "
+                    "unless PSMS is 25 or 75"
+                ),
+                material,
+                plant
+            )
+
             continue
 
-        # --------------------------------------------------------
-        # ✅ ADVANCED PLANNING obrigatório
-        # --------------------------------------------------------
-        is_required_adv = (
-            (plant == 'PT01' and mt == 'FERT') or
-            (plant == 'PT02' and mt in {'FERT', 'HALB'})
+        # ---------------------------------------------------------------------
+        # Determine where Advanced Planning is mandatory
+        # ---------------------------------------------------------------------
+        required_advanced = (
+            (
+                plant == 'PT01'
+                and plant_type == 'FP'
+            )
+            or (
+                plant == 'PT02'
+                and plant_type in {'FP', 'MP'}
+            )
         )
 
-        if is_required_adv and not is_true(adv_raw):
-            resultados.append({
-                'Line': idx + 2,
-                'Field': 'Advanced Planning',
-                'Error': "Mandatory: must be TRUE/X",
-                'Material': material,
-                'Plant': plant,
-            })
+        if required_advanced and not is_true(advanced):
+            add_error(
+                idx,
+                'Advanced Planning',
+                'Mandatory: must be TRUE/X',
+                material,
+                plant
+            )
+
             continue
 
-        # --------------------------------------------------------
-        # ✅ AP OFF
-        # --------------------------------------------------------
-        if is_false(adv_raw):
+        # ---------------------------------------------------------------------
+        # Do not validate dependent fields when Advanced Planning is OFF.
+        # ---------------------------------------------------------------------
+        if is_false(advanced):
             continue
 
-        # --------------------------------------------------------
-        # Dependent fields
-        # --------------------------------------------------------
-        if mt in {'FERT', 'HALB'} and heur == '':
-            resultados.append({
-                'Line': idx + 2,
-                'Field': 'Heuristic',
-                'Error': "Mandatory",
-                'Material': material,
-                'Plant': plant,
-            })
+        # ---------------------------------------------------------------------
+        # FP/MP dependent fields
+        # ---------------------------------------------------------------------
+        if heuristic == '':
+            add_error(
+                idx,
+                'Heuristic',
+                'Mandatory',
+                material,
+                plant
+            )
 
-        if mt in {'FERT', 'HALB'} and pp != '4':
-            resultados.append({
-                'Line': idx + 2,
-                'Field': 'PP Plng Procedure',
-                'Error': "Should be '4'",
-                'Material': material,
-                'Plant': plant,
-            })
+        if procedure != '4':
+            add_error(
+                idx,
+                'PP Plng Procedure',
+                "Should be '4'",
+                material,
+                plant
+            )
 
-        if mt in {'FERT', 'HALB'} and req != '20':
-            resultados.append({
-                'Line': idx + 2,
-                'Field': 'Proposed Strategy',
-                'Error': "Should be '20'",
-                'Material': material,
-                'Plant': plant,
-            })
+        if strategy != '20':
+            add_error(
+                idx,
+                'Proposed Strategy',
+                "Should be '20'",
+                material,
+                plant
+            )
 
 
 # -----------------------------------------------------------------------------

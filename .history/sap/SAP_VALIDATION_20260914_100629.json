@@ -1,0 +1,39 @@
+{
+  "run_type": "SAP_VALIDATION",
+  "timestamp": "2026-09-14T10:06:29",
+  "user": "RPITA",
+  "plant_filter": "PT",
+  "metrics": {
+    "total_errors": 3415,
+    "fields_with_error": 24,
+    "materials_with_error": 2507
+  },
+  "files": {
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "mvke": "MVKE.xlsx"
+  },
+  "top_fields": [
+    {
+      "Field": "Batch Management Required Ind.",
+      "Adjusted Nº of Errors": 1057
+    },
+    {
+      "Field": "Individual/ Collective Requirements",
+      "Adjusted Nº of Errors": 864
+    },
+    {
+      "Field": "MRP Type",
+      "Adjusted Nº of Errors": 307
+    },
+    {
+      "Field": "Purchasing Group (DXX)",
+      "Adjusted Nº of Errors": 232
+    },
+    {
+      "Field": "MRP Controller",
+      "Adjusted Nº of Errors": 231
+    }
+  ],
+  "report_path": "C:\\Users\\RPITA\\OneDrive - Visteon\\Desktop\\Rodrigo\\PLM_Web\\reports\\sap\\2026-09\\20260914_100629_SAP_Validation_PT.xlsx"
+}
