@@ -2763,6 +2763,7 @@ def run_tn_validation(
     csr_item_file=None,
     csr_head_file=None,
     matplsta_file=None,
+    mard_file=None,
     # Optional pre-loaded DataFrames — if provided, skips file loading for those
     _mara_df=None,
     _marc_df=None,
@@ -2774,6 +2775,7 @@ def run_tn_validation(
     _csr_item_df=None,
     _csr_head_df=None,
     _matplsta_df=None,
+    _mard_df=None,
 ):
     """
     Runs the complete Tunisia validation pipeline.
@@ -2800,6 +2802,7 @@ def run_tn_validation(
     matplsta_df = _matplsta_df if _matplsta_df is not None else (load_xlsx_fast(matplsta_file, sheet_name=0) if matplsta_file else None)
     marm_df     = _marm_df if _marm_df is not None else (load_xlsx_fast(marm_file, sheet_name=0) if marm_file else None)
     mbew_df     = _mbew_df if _mbew_df is not None else (load_xlsx_fast(mbew_file, sheet_name=0) if mbew_file else None)
+    mard_df     = _mard_df if _mard_df is not None else (load_xlsx_fast(mard_file, sheet_name=0) if mard_file else None)
 
     if mara_df is None:
         raise ValueError("MARA.xlsx not loaded.")
@@ -2874,6 +2877,7 @@ def run_tn_validation(
 
     mvke_df = _normalize_df_columns(mvke_df, {'plant': 'Plant', 'werks': 'Plant', 'material': 'Material'})
     marm_df = _normalize_df_columns(marm_df, {'plant': 'Plant', 'werks': 'Plant', 'material': 'Material'})
+    mard_df = _normalize_df_columns(mard_df, {'plant': 'Plant', 'werks': 'Plant', 'material': 'Material'})
 
     rolesviews_dict = load_xlsx_fast(get_rolesviews_bytesio(), sheet_name=None)
     if "Roles" not in rolesviews_dict or "Views" not in rolesviews_dict:
@@ -2895,6 +2899,7 @@ def run_tn_validation(
 
     marc_tn      = _ftn(marc_df)
     zplm_marc_tn = _ftn(zplm_marc_df) if zplm_marc_df is not None else None
+    mard_tn      = _ftn(mard_df) if mard_df is not None else None
     marc_tn      = ensure_basic_data_k(marc_tn)
 
     tn_materials = set(
@@ -3052,7 +3057,7 @@ def run_tn_validation(
 
     _cb(32, "Validating Product-Related Origin, MRP Controller, PSMS...")
     validar_product_related_origin(sap_like_df, resultados)
-    validar_mrp_controller(sap_like_df, resultados)
+    validar_mrp_controller(sap_like_df, resultados, mard_tn)
     validar_plant_specific_material_status(sap_like_df, resultados)
 
     _cb(33, "Validating Enterproj Number, Purchasing Group DXX...")

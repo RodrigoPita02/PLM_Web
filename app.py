@@ -859,6 +859,7 @@ elif main_choice == "📦 SAP Material Validation":
         <tr><td style="padding:3px 8px">📄 <strong>MBEW</strong></td><td style="color:var(--app-fg-muted)">SAP table SE16 → MBEW (valuation data)</td></tr>
         <tr><td style="padding:3px 8px; color:var(--color-ok)">🔓 <strong>CSR Item / Head</strong></td><td style="color:var(--app-fg-muted)">Optional — enables CSR exemption rules for MRP Type</td></tr>
         <tr><td style="padding:3px 8px; color:var(--color-ok)">🔓 <strong>MATPLSTA</strong></td><td style="color:var(--app-fg-muted)">Optional — enables Planning Status = 9 exemption for ROH Per.Lot Sz.Plng Cal. rule</td></tr>
+        <tr><td style="padding:3px 8px; color:var(--color-ok)">🔓 <strong>MARD</strong></td><td style="color:var(--app-fg-muted)">Optional — enables stock-aware MRP Controller rule (PSMS 70/75 only require OB1/OB2 when there's no stock)</td></tr>
         </table>
         </div>
         """, unsafe_allow_html=True)
@@ -876,7 +877,7 @@ elif main_choice == "📦 SAP Material Validation":
 
         persisted = st.session_state.get("sap_files_persisted") or {}
         show_file_status(required_keys, files, persisted,
-                         optional_keys=["csr_item", "csr_head", "matplsta"])
+                         optional_keys=["csr_item", "csr_head", "matplsta", "mard"])
 
         # Quick column validation
         _col_errs_sap = validate_uploaded_files(persisted, required_keys)
@@ -997,6 +998,7 @@ elif main_choice == "📦 SAP Material Validation":
         <div style="margin-top:8px;font-size:0.8rem;color:var(--app-fg-muted)">Files loaded: <strong>{_n_files} required{"  +  " + str(len(_optional3)) + " optional" if _optional3 else ""}</strong></div>
         {"<div style='margin-top:6px;font-size:0.8rem;color:var(--color-ok)'>🔓 CSR exemption rules <strong>enabled</strong> — active CSRs will exempt FP materials from MRP = ND errors.</div>" if _optional3 else "<div style='margin-top:6px;font-size:0.8rem;color:var(--app-fg-muted)'>🔓 CSR files not uploaded — CSR exemption rules disabled.</div>"}
         {"<div style='margin-top:4px;font-size:0.8rem;color:var(--color-ok)'>🔓 MATPLSTA loaded — ROH Planning Status = 9 exemption <strong>enabled</strong>.</div>" if "matplsta" in _persisted3 else "<div style='margin-top:4px;font-size:0.8rem;color:var(--app-fg-muted)'>🔓 MATPLSTA not uploaded — all ROH with Per.Lot Sz.Plng Cal. filled will be flagged.</div>"}
+        {"<div style='margin-top:4px;font-size:0.8rem;color:var(--color-ok)'>🔓 MARD loaded — MRP Controller rule is <strong>stock-aware</strong> (PSMS 70/75 only require OB1/OB2 when there's no stock).</div>" if "mard" in _persisted3 else "<div style='margin-top:4px;font-size:0.8rem;color:var(--app-fg-muted)'>🔓 MARD not uploaded — MRP Controller rule uses the legacy behaviour (PSMS 70 always requires OB1, PSMS 75 always requires OB2).</div>"}
         {"<div style='margin-top:6px;font-size:0.8rem;color:var(--accent)'>⚠️ Both Sites mode runs the Palmela engine (PT01/PT02) + Tunisia engine (TN01/TN02), both sourced from MARC/MARA/MVKE tables, and merges results.</div>" if _is_both else ""}
         </div>
         """, unsafe_allow_html=True)
@@ -1013,6 +1015,7 @@ elif main_choice == "📦 SAP Material Validation":
             csr_item  = files.get("csr_item")
             csr_head  = files.get("csr_head")
             matplsta  = files.get("matplsta")
+            mard_file = files.get("mard")
 
             plant_filter_export = st.session_state.get(
                 "sap_selected_plant_filter_export",
@@ -1048,7 +1051,7 @@ elif main_choice == "📦 SAP Material Validation":
                         plant_filter=plant_filter_display,
                         progress_callback=update_progress,
                         csr_item_file=csr_item, csr_head_file=csr_head,
-                        matplsta_file=matplsta,
+                        matplsta_file=matplsta, mard_file=mard_file,
                     )
                     excel_export = excel_display
 
@@ -1066,6 +1069,7 @@ elif main_choice == "📦 SAP Material Validation":
                         progress_callback=lambda p, m: update_progress(int(p * 0.45), m),
                         csr_item_file=csr_item, csr_head_file=csr_head,
                         matplsta_file=matplsta, mbew_file=mbew_file,
+                        mard_file=mard_file,
                     )
 
                     # Re-use files already parsed by Palmela engine via cache
@@ -1082,6 +1086,7 @@ elif main_choice == "📦 SAP Material Validation":
                         _csr_item_df  = _lxf2(csr_item,   sheet_name=0) if csr_item   else None,
                         _csr_head_df  = _lxf2(csr_head,   sheet_name=0) if csr_head   else None,
                         _matplsta_df  = _lxf2(matplsta,   sheet_name=0) if matplsta   else None,
+                        _mard_df      = _lxf2(mard_file,  sheet_name=0) if mard_file  else None,
                     )
 
                     _tn_filter = plant_filter_export if plant_filter_export in ("TN01", "TN02") else None
@@ -1245,6 +1250,7 @@ elif main_choice == "📦 SAP Material Validation":
                         progress_callback=update_progress,
                         csr_item_file=csr_item, csr_head_file=csr_head,
                         matplsta_file=matplsta, mbew_file=mbew_file,
+                        mard_file=mard_file,
                     )
 
                     try:
@@ -2377,7 +2383,7 @@ elif main_choice == "📋 SSA Validation":
     render_wizard(st.session_state.ssa_step, WIZARD_STEPS_DEFAULT)
 
     ssa_required = ["vbak", "vbap", "vbkd", "kna1"]
-    ssa_optional = ["marc", "vbpa", "vbfa"]
+    ssa_optional = ["marc", "vbpa", "vbfa", "mvke"]
 
     if st.session_state.ssa_step == 1:
         st.markdown("### 📂 Step 1 — Load Files")
@@ -2392,17 +2398,18 @@ elif main_choice == "📋 SSA Validation":
         <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>MARC</strong></td><td style="color:var(--app-fg-muted)">Optional — Material Status 70/75/99, MRP Type checks</td></tr>
         <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>VBPA</strong></td><td style="color:var(--app-fg-muted)">Optional — Partner country override for DDP+GB rule, Unloading Point</td></tr>
         <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>VBFA</strong></td><td style="color:var(--app-fg-muted)">Optional — Sales Document Flow, gates the Weights rule on OBD existence</td></tr>
+        <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>MVKE</strong></td><td style="color:var(--app-fg-muted)">Optional — Acct Assmt Grp Mat. lookup for S-materials in Mandatory Fields</td></tr>
         </table>
         </div>
         """, unsafe_allow_html=True)
 
         uploads = st.file_uploader(
-            "Drop VBAK, VBAP, VBKD, KNA1 + optional MARC, VBPA and VBFA",
+            "Drop VBAK, VBAP, VBKD, KNA1 + optional MARC, VBPA, VBFA and MVKE",
             type="xlsx", accept_multiple_files=True, key="ssa_uploader",
         )
 
         def classify_ssa_files(files):
-            mapping = {k: None for k in ["vbak","vbap","vbkd","vbpa","kna1","marc","vbfa"]}
+            mapping = {k: None for k in ["vbak","vbap","vbkd","vbpa","kna1","marc","vbfa","mvke"]}
             for f in (files or []):
                 name = f.name.lower()
                 if "vbak" in name:   mapping["vbak"] = f
@@ -2412,6 +2419,7 @@ elif main_choice == "📋 SSA Validation":
                 elif "kna1" in name: mapping["kna1"] = f
                 elif "marc" in name: mapping["marc"] = f
                 elif "vbfa" in name: mapping["vbfa"] = f
+                elif "mvke" in name: mapping["mvke"] = f
             return mapping
 
         files_map = classify_ssa_files(uploads)
@@ -2425,9 +2433,9 @@ elif main_choice == "📋 SSA Validation":
                 "vbak": "VBAK.xlsx", "vbap": "VBAP.xlsx",
                 "vbkd": "VBKD.xlsx", "kna1": "KNA1.xlsx",
                 "marc": "MARC.xlsx (optional)", "vbpa": "VBPA.xlsx (optional)",
-                "vbfa": "VBFA.xlsx (optional)"
+                "vbfa": "VBFA.xlsx (optional)", "mvke": "MVKE.xlsx (optional)"
             }
-            for key in ["vbak","vbap","vbkd","kna1","marc","vbpa","vbfa"]:
+            for key in ["vbak","vbap","vbkd","kna1","marc","vbpa","vbfa","mvke"]:
                 in_up   = files_map.get(key) is not None
                 in_pers = key in persisted
                 if in_up:
@@ -2478,6 +2486,7 @@ elif main_choice == "📋 SSA Validation":
         _has_marc  = "marc" in _pers_ssa
         _has_vbpa  = "vbpa" in _pers_ssa
         _has_vbfa  = "vbfa" in _pers_ssa
+        _has_mvke  = "mvke" in _pers_ssa
 
         st.markdown(f"""
         <div style="background:var(--app-bg-secondary);border:1px solid var(--app-border);border-radius:10px;padding:16px 20px;margin-bottom:16px">
@@ -2487,10 +2496,10 @@ elif main_choice == "📋 SSA Validation":
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:0.87rem;color:var(--app-fg)">
             <div><span style="color:var(--app-fg-muted)">Executor</span><br><strong>{_exec_ssa}</strong></div>
             <div><span style="color:var(--app-fg-muted)">Scope</span><br><strong>{_scope_ssa}</strong></div>
-            <div><span style="color:var(--app-fg-muted)">Optional files</span><br><strong>{"MARC ✅" if _has_marc else "MARC ⬜"} &nbsp; {"VBPA ✅" if _has_vbpa else "VBPA ⬜"} &nbsp; {"VBFA ✅" if _has_vbfa else "VBFA ⬜"}</strong></div>
+            <div><span style="color:var(--app-fg-muted)">Optional files</span><br><strong>{"MARC ✅" if _has_marc else "MARC ⬜"} &nbsp; {"VBPA ✅" if _has_vbpa else "VBPA ⬜"} &nbsp; {"VBFA ✅" if _has_vbfa else "VBFA ⬜"} &nbsp; {"MVKE ✅" if _has_mvke else "MVKE ⬜"}</strong></div>
         </div>
         <div style="margin-top:10px;font-size:0.8rem;color:var(--app-fg-muted)">
-            Rules: Mandatory Fields · Incoterms · Incompletion Log · Terms of Payment · Shipping Point ·
+            Rules: Mandatory Fields{" (S-material Acct Assmt Grp Mat. checked against MVKE)" if _has_mvke else ""} · Incoterms · Incompletion Log · Terms of Payment · Shipping Point ·
             Unloading Point Consistency · Customer Reference · Weights{" (OBD-gated via VBFA)" if _has_vbfa else ""} ·
             Order Without Items · Customer Material{"· Rejected Status 70/75/99 · MRP Type" if _has_marc else ""}
         </div>
@@ -2508,6 +2517,7 @@ elif main_choice == "📋 SSA Validation":
                     marc_file=files.get("marc"),
                     vbpa_file=files.get("vbpa"),
                     vbfa_file=files.get("vbfa"),
+                    mvke_file=files.get("mvke"),
                     plant_filter=st.session_state.get("ssa_plant_filter"),
                     apply_styles=False,
                 )
