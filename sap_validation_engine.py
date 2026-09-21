@@ -10575,6 +10575,58 @@ def _ssa_filter_docs(df, allowed_docs, doc_candidates):
     ].copy()
 
 
+def _ssa_build_doc_plant_map(vbap_df):
+    """
+    Builds a Sales Document -> Plant lookup from VBAP, keeping the first
+    non-blank Plant found for each Sales Document. Used to backfill the
+    'Plant' column in the final error report for rules that do not report
+    Plant themselves (e.g. header-level checks).
+    """
+    if vbap_df is None or vbap_df.empty:
+        return {}
+
+    work = _ssa_load(vbap_df)
+    doc_col = _ssa_pick(work, ["Sales Document", "VBELN"])
+    plt_col = _ssa_pick(work, ["Plant", "WERKS"])
+
+    if doc_col is None or plt_col is None:
+        return {}
+
+    doc_plant_map = {}
+    for doc, plant in zip(
+        work[doc_col].map(_ssa_norm),
+        work[plt_col].map(_ssa_norm),
+    ):
+        if doc == "" or plant == "":
+            continue
+        doc_plant_map.setdefault(doc, plant)
+
+    return doc_plant_map
+
+
+def _ssa_fill_missing_plant(errors_df, doc_plant_map):
+    """
+    Fills blank 'Plant' values in errors_df using the Sales Document ->
+    Plant lookup built from VBAP via _ssa_build_doc_plant_map. Rows whose
+    Sales Document has no match in VBAP, or that already carry a Plant
+    value, are left unchanged.
+    """
+    if errors_df is None or errors_df.empty or not doc_plant_map:
+        return errors_df
+    if "Plant" not in errors_df.columns or "Sales Document" not in errors_df.columns:
+        return errors_df
+
+    errors_df = errors_df.copy()
+    blank_mask = errors_df["Plant"].map(_ssa_norm) == ""
+    errors_df.loc[blank_mask, "Plant"] = (
+        errors_df.loc[blank_mask, "Sales Document"]
+        .map(_ssa_norm)
+        .map(doc_plant_map)
+        .fillna("")
+    )
+    return errors_df
+
+
 def _ssa_filter_non_s_items(vbap_df):
     """Exclude materials whose number starts with 'S-' (case-insensitive)."""
     if vbap_df is None or vbap_df.empty:
@@ -10661,25 +10713,19 @@ def _ssa_add_order_type_column(df):
 
 
 def _ssa_fully_rejected_docs(vbap_df):
-    """
-    Return the set of Sales Documents where every VBAP item has Reason for
-    Rejection filled in (i.e. the whole document is rejected). Used to
-    exclude fully-rejected documents from header-level checks that don't
-    otherwise have a per-item rejection concept (e.g. Incoterms).
-    """
+    """Return documents for which every VBAP item has Overall Status C."""
     if vbap_df is None or vbap_df.empty:
         return set()
     vbap = _ssa_load(vbap_df)
     doc_col = _ssa_pick(vbap, ["Sales Document", "VBELN"])
-    rej_col = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
-    if not doc_col or not rej_col:
+    status_col = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
+    if not doc_col or not status_col:
         return set()
-    fully_rejected = set()
-    for doc, grp in vbap.groupby(vbap[doc_col].astype(str).str.strip()):
-        if grp[rej_col].apply(lambda x: _ssa_norm(x) != '').all():
-            fully_rejected.add(doc)
-    return fully_rejected
-
+    closed = set()
+    for doc, grp in vbap.groupby(vbap[doc_col].map(_ssa_norm)):
+        if doc and grp[status_col].apply(lambda x: _ssa_norm(x).upper() == "C").all():
+            closed.add(doc)
+    return closed
 
 def _ssa_build_obd_set(vbfa_df):
     """
@@ -11523,13 +11569,13 @@ def ssa_validar_shipping_point(vbap_df):
     mat_col  = _ssa_pick(vbap, ["Material", "MATNR"])
     plt_col  = _ssa_pick(vbap, ["Plant", "WERKS"])
     shp_col  = _ssa_pick(vbap, ["Shipping Point/Receiving Pt", "Shipping Point", "VSTEL"])
-    rej_col  = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
+    status_col = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
 
-    if not all([doc_col, item_col, mat_col, plt_col, shp_col]):
+    if not all([doc_col, item_col, mat_col, plt_col, shp_col, status_col]):
         return pd.DataFrame(columns=empty_cols)
 
     for _, row in vbap.iterrows():
-        if rej_col and _ssa_norm(row[rej_col]) != '':
+        if _ssa_norm(row[status_col]).upper() == 'C':
             continue
 
         doc = _ssa_norm(row[doc_col])
@@ -11658,7 +11704,7 @@ def ssa_validar_customer_reference(vbap_df, vbkd_df, vbak_df=None):
     ap_item = _ssa_pick(vbap, ["Sales Document Item", "Item (SD)", "POSNR"])
     ap_mat = _ssa_pick(vbap, ["Material", "MATNR"])
     ap_plant = _ssa_pick(vbap, ["Plant", "WERKS"])
-    ap_rej = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
+    ap_status = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
 
     kd_doc = _ssa_pick(vbkd, ["SD Document", "Sales Document", "VBELN"])
     kd_item = _ssa_pick(vbkd, ["Item (SD)", "Sales Document Item", "POSNR"])
@@ -11667,7 +11713,7 @@ def ssa_validar_customer_reference(vbap_df, vbkd_df, vbak_df=None):
         "Customer PO Number", "Cust. Reference", "BSTKD",
     ])
 
-    if not all([ap_doc, ap_item, kd_doc, kd_ref]):
+    if not all([ap_doc, ap_item, ap_status, kd_doc, kd_ref]):
         return pd.DataFrame(columns=empty_cols)
 
     def norm_item(value):
@@ -11697,7 +11743,7 @@ def ssa_validar_customer_reference(vbap_df, vbkd_df, vbak_df=None):
             target[key] = reference
 
     for _, row in vbap.iterrows():
-        if ap_rej and _ssa_norm(row[ap_rej]) != "":
+        if _ssa_norm(row[ap_status]).upper() == "C":
             continue
 
         doc = _ssa_norm(row[ap_doc])
@@ -11760,13 +11806,13 @@ def ssa_validar_weights(vbap_df, vbfa_df=None):
     plt_col  = _ssa_pick(vbap, ["Plant", "WERKS"])
     gwt_col  = _ssa_pick(vbap, ["Gross Weight"])
     nwt_col  = _ssa_pick(vbap, ["Net Weight"])
-    rej_col  = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
+    status_col = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
 
-    if not all([doc_col, item_col, mat_col, plt_col, gwt_col, nwt_col]):
+    if not all([doc_col, item_col, mat_col, plt_col, gwt_col, nwt_col, status_col]):
         return pd.DataFrame(columns=empty_cols)
 
     for _, row in vbap.iterrows():
-        if rej_col and _ssa_norm(row[rej_col]) != '':
+        if _ssa_norm(row[status_col]).upper() == 'C':
             continue
 
         doc = _ssa_norm(row[doc_col])
@@ -11839,7 +11885,7 @@ def ssa_validar_incoterms_ddp_gb(vbak_df, vbkd_df, kna1_df, vbpa_df=None, vbap_d
       Optional: VBPA (Partner Function = 'SP') → Country/Region Key
 
     Exclude Rejected Documents — if vbap_df is supplied, Sales Documents
-    where EVERY VBAP item has Reason for Rejection filled in are skipped
+    where EVERY VBAP item has Overall Status = C are skipped
     entirely (neither the Incoterms-blank check nor the DDP+GB check apply).
     """
     errors = []
@@ -11960,6 +12006,7 @@ def ssa_validar_incompletion_log(vbak_df, vbap_df):
     B) VBAP Item (JC) must not be 'A'
     """
     errors = []
+    completed_docs = _ssa_fully_rejected_docs(vbap_df)
 
     # ── VBAK header check ─────────────────────────────────────────────────────
     if vbak_df is not None and not vbak_df.empty:
@@ -11969,6 +12016,9 @@ def ssa_validar_incompletion_log(vbak_df, vbap_df):
 
         if oh_col:
             for _, row in vbak.iterrows():
+                doc = _ssa_norm(row[doc_col]) if doc_col else ''
+                if doc in completed_docs:
+                    continue
                 val = _ssa_norm(row[oh_col]).upper()
                 if val == 'A':
                     errors.append({
@@ -11987,7 +12037,7 @@ def ssa_validar_incompletion_log(vbak_df, vbap_df):
         item_col = _ssa_pick(vbap, ["Sales Document Item", "POSNR"])
         mat_col  = _ssa_pick(vbap, ["Material", "MATNR"])
         plt_col  = _ssa_pick(vbap, ["Plant", "WERKS"])
-        rej_col  = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
+        status_col = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
         itm_col = _ssa_pick(
             vbap,
             [
@@ -11997,9 +12047,9 @@ def ssa_validar_incompletion_log(vbak_df, vbap_df):
             ],
         )
 
-        if itm_col:
+        if itm_col and status_col:
             for _, row in vbap.iterrows():
-                if rej_col and _ssa_norm(row[rej_col]) != '':
+                if _ssa_norm(row[status_col]).upper() == 'C':
                     continue  # rejected items are skipped
 
                 val = _ssa_norm(row[itm_col]).upper()
@@ -12024,129 +12074,56 @@ def ssa_validar_incompletion_log(vbak_df, vbap_df):
 # Rule 4 — Rejected items with Material Status 70/75/99
 # -----------------------------------------------------------------------------
 def ssa_validar_rejected_material_status(vbak_df, vbap_df, marc_df):
-    """
-    Only for Sales Document Types in SSA_ORDER_TYPES_ZLZ_OR_ZTAM_GROUP that
-    are not closed (best-effort — the "closed" check is applied only if a
-    recognisable overall-status column is present in VBAK; otherwise this
-    sub-filter is skipped and all documents are treated the same way).
-
-    If Reason for Rejection is NOT filled AND Material+Plant has
-    Material Status (MARC) = 70, 75 or 99 → report as error.
-    """
+    """Report status 70/75/99 items whose VBAP Overall Status is not C."""
     errors = []
-    empty_cols = ["Table", "Sales Document", "Item", "Material",
-                  "Plant", "Field", "Value", "Error"]
-
+    empty_cols = ["Table", "Sales Document", "Item", "Material", "Plant", "Field", "Value", "Error"]
     if vbap_df is None or vbap_df.empty or marc_df is None or marc_df.empty:
         return pd.DataFrame(columns=empty_cols)
-
     vbap = _ssa_load(vbap_df)
     marc = _ssa_load(marc_df)
-
-    doc_col  = _ssa_pick(vbap, ["Sales Document", "VBELN"])
-    item_col = _ssa_pick(vbap, ["Sales Document Item", "POSNR"])
-    mat_col  = _ssa_pick(vbap, ["Material", "MATNR"])
-    plt_col  = _ssa_pick(vbap, ["Plant", "WERKS"])
-    rej_col  = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
-
-    marc_mat  = _ssa_pick(marc, ["Material", "MATNR"])
-    marc_plt  = _ssa_pick(marc, ["Plant", "WERKS"])
-    marc_psms = _ssa_pick(
-        marc,
-        [
-            "Plant-Specific Material Status",
-            "Plant Specific Material Status",
-            "MTSTB"
-        ]
-    )
-
-    if not all([doc_col, mat_col, plt_col, rej_col,
-                marc_mat, marc_plt, marc_psms]):
+    doc_col = _ssa_pick(vbap, ["Sales Document", "VBELN"])
+    item_col = _ssa_pick(vbap, ["Sales Document Item", "Item (SD)", "POSNR"])
+    mat_col = _ssa_pick(vbap, ["Material", "MATNR"])
+    plt_col = _ssa_pick(vbap, ["Plant", "WERKS"])
+    overall_status_col = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
+    marc_mat = _ssa_pick(marc, ["Material", "MATNR"])
+    marc_plt = _ssa_pick(marc, ["Plant", "WERKS"])
+    marc_psms = _ssa_pick(marc, ["Plant-Specific Material Status", "Plant Specific Material Status", "MTSTB"])
+    if not all([doc_col, mat_col, plt_col, overall_status_col, marc_mat, marc_plt, marc_psms]):
         return pd.DataFrame(columns=empty_cols)
-
-    # Not-closed check (best effort)
-    closed_docs = set()
-
-    if vbak_df is not None and not vbak_df.empty:
-        vbak = _ssa_load(vbak_df)
-
-        vbak_doc_col = _ssa_pick(vbak, ["Sales Document", "VBELN"])
-        status_col = _ssa_pick(
-            vbak,
-            [
-                "Overall SD Status",
-                "Overall Processing Status",
-                "Overall Status",
-                "GBSTK"
-            ]
-        )
-
-        if vbak_doc_col and status_col:
-            for _, r in vbak.iterrows():
-                if _ssa_norm(r[status_col]).upper() == "C":
-                    closed_docs.add(_ssa_norm(r[vbak_doc_col]))
-
-    # Build MARC status map: (material, plant) -> status
-    def _norm_status(x):
-        if pd.isna(x) or str(x).strip() == "":
+    def norm_psms(value):
+        value = _ssa_norm(value)
+        if not value:
             return ""
-
         try:
-            return str(int(float(str(x).strip())))
-        except Exception:
-            return str(x).strip()
-
+            return str(int(float(value.replace(",", "."))))
+        except (TypeError, ValueError):
+            return value.upper()
     marc_map = {}
-
     for _, r in marc.iterrows():
-        key = (
-            _ssa_norm(r[marc_mat]),
-            _ssa_norm(r[marc_plt]).upper()
-        )
-        marc_map[key] = _norm_status(r[marc_psms])
-
+        marc_map[(_ssa_norm(r[marc_mat]), _ssa_norm(r[marc_plt]).upper())] = norm_psms(r[marc_psms])
     for _, row in vbap.iterrows():
-
-        rej = _ssa_norm(row[rej_col])
-
-        # Only process items where Reason for Rejection is blank
-        if rej != "":
-            continue
-
-        doc = _ssa_norm(row[doc_col]) if doc_col else ""
-
+        doc = _ssa_norm(row[doc_col])
         if not _ssa_doc_type_in(doc, SSA_ORDER_TYPES_ZLZ_OR_ZTAM_GROUP):
             continue
-
-        if doc in closed_docs:
+        overall_status = _ssa_norm(row[overall_status_col]).upper()
+        if overall_status == "C":
             continue
-
-        mat = _ssa_norm(row[mat_col])
+        material = _ssa_norm(row[mat_col])
         plant = _ssa_norm(row[plt_col]).upper()
-
-        status = marc_map.get((mat, plant), "")
-
-        if status in {"70", "75", "99"}:
-            errors.append({
-                "Table": "VBAP",
-                "Sales Document": doc,
-                "Item": _ssa_norm(row[item_col]) if item_col else "",
-                "Material": mat,
-                "Plant": plant,
-                "Field": "Reason for Rejection",
-                "Value": rej,
-                "Error": (
-                    f"Material Status {status} found for "
-                    f"Material={mat}, Plant={plant}, "
-                    f"but Reason for Rejection is blank"
-                ),
-            })
-
-    return (
-        pd.DataFrame(errors, columns=empty_cols)
-        if not errors
-        else pd.DataFrame(errors)
-    )
+        material_status = marc_map.get((material, plant), "")
+        if material_status not in {"70", "75", "99"}:
+            continue
+        errors.append({
+            "Table": "VBAP", "Sales Document": doc,
+            "Item": _ssa_norm(row[item_col]) if item_col else "",
+            "Material": material, "Plant": plant, "Field": "Overall Status",
+            "Value": overall_status,
+            "Error": (f"Order is active: Material Status {material_status} found for "
+                      f"Material={material}, Plant={plant}, but Overall Status is "
+                      f"'{overall_status or '[blank]'}' instead of 'C'"),
+        })
+    return pd.DataFrame(errors, columns=empty_cols) if not errors else pd.DataFrame(errors)
 
 # -----------------------------------------------------------------------------
 # Rule 10 — Sales Document without items in VBAP
@@ -12209,13 +12186,13 @@ def ssa_validar_customer_material(vbap_df):
     mat_col  = _ssa_pick(vbap, ["Material", "MATNR"])
     plt_col  = _ssa_pick(vbap, ["Plant", "WERKS"])
     cmat_col = _ssa_pick(vbap, ["Customer Material Number", "Material by Customer", "KDMAT"])
-    rej_col  = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
+    status_col = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
 
-    if not all([doc_col, item_col, mat_col, plt_col, cmat_col]):
+    if not all([doc_col, item_col, mat_col, plt_col, cmat_col, status_col]):
         return pd.DataFrame(columns=empty_cols)
 
     for _, row in vbap.iterrows():
-        if rej_col and _ssa_norm(row[rej_col]) != '':
+        if _ssa_norm(row[status_col]).upper() == 'C':
             continue
 
         if _ssa_norm(row[cmat_col]) == '':
@@ -12284,7 +12261,7 @@ def run_ssa_validation(
     Business rules implemented here:
       1. Rule applicability is based on Sales Document Type (AUART), not on
          Sales Document number ranges.
-      2. A document is closed when every VBAP item has Reason for Rejection.
+      2. A document is closed when every VBAP item has Overall Status = C.
          Closed documents are excluded from all validations except the
          Material Status 70/75/99 rule.
       3. S-* materials are considered only by Mandatory Fields, Terms of
@@ -12412,6 +12389,12 @@ def run_ssa_validation(
             "Plant", "Field", "Value", "Error",
         ])
     )
+
+    # Backfill blank Plant values using the Sales Document -> Plant
+    # relationship in VBAP, so 'Field With Error' always shows Plant when
+    # it can be derived, even for header-level rules that don't report it.
+    doc_plant_map = _ssa_build_doc_plant_map(vbap)
+    all_errors_df = _ssa_fill_missing_plant(all_errors_df, doc_plant_map)
 
     rule_names = [
         "Mandatory Fields",
