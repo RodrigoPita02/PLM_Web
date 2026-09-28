@@ -5229,6 +5229,70 @@ def validar_mard_total_stock(mard, marc, mara):
     return df_errors.sort_values(["Plant", "Material"])
 
 
+def validar_fp_existence_zplm_ta_ifs(zplm_marc_df, zplm_ta_ifs_df, marc_df):
+    """Cleanup only: report active FP Material+Plant pairs missing in ZPLM_TA_IFS.
+
+    ZPLM_TA_IFS is treated as a material-level interface table. The output remains
+    plant-specific because FP classification and Part Status are plant-specific.
+    PSMS 75/99 rows are expected to have been removed by the cleanup orchestrator.
+
+    FP Material+Plant pairs marked for transfer in ZPLM MARC (field
+    'Material Transfer' = X, see build_material_transfer_map) are skipped
+    and not reported by this rule.
+    """
+    cols = ["Material", "Plant", "Material Plant Type", "Part Status", "Error", "Rule"]
+    if any(df is None or df.empty for df in (zplm_marc_df, zplm_ta_ifs_df, marc_df)):
+        return pd.DataFrame(columns=cols)
+
+    def prep(df):
+        out = df.copy()
+        out.columns = [str(c).strip().upper() for c in out.columns]
+        return out
+
+    z = prep(zplm_marc_df)
+    i = prep(zplm_ta_ifs_df)
+    m = prep(marc_df)
+    pick = lambda df, candidates: next((c for c in candidates if c in df.columns), None)
+    zmat = pick(z, ["MATERIAL", "MATNR"])
+    zplant = pick(z, ["PLANT", "WERKS"])
+    ztype = pick(z, ["MATERIAL PLANT TYPE", "PLANT TYPE", "MATERIAL-PLANT TYPE"])
+    imat = pick(i, ["MATERIAL", "MATNR", "MATERIAL NUMBER", "PRODUCT", "PRODUCT NUMBER"])
+    mmat = pick(m, ["MATERIAL", "MATNR"])
+    mplant = pick(m, ["PLANT", "WERKS"])
+    mstatus = pick(m, ["PLANT-SPECIFIC MATERIAL STATUS", "PLANT SPECIFIC MATERIAL STATUS", "MTSTB"])
+    if not all([zmat, zplant, ztype, imat, mmat, mplant, mstatus]):
+        return pd.DataFrame(columns=cols)
+
+    z[zmat] = z[zmat].map(_normalize_code_as_str_basic).str.strip()
+    z[zplant] = z[zplant].astype(str).str.strip().str.upper()
+    z[ztype] = z[ztype].astype(str).str.strip().str.upper()
+    i[imat] = i[imat].map(_normalize_code_as_str_basic).str.strip()
+    m[mmat] = m[mmat].map(_normalize_code_as_str_basic).str.strip()
+    m[mplant] = m[mplant].astype(str).str.strip().str.upper()
+    m[mstatus] = m[mstatus].map(_normalize_code_as_str_basic)
+
+    ifs_materials = set(i.loc[i[imat] != "", imat])
+    status_map = (m.drop_duplicates([mmat, mplant])
+                    .set_index([mmat, mplant])[mstatus].to_dict())
+    transfer_map = build_material_transfer_map(zplm_marc_df)
+    fp = z[z[ztype].eq("FP")].drop_duplicates([zmat, zplant])
+    rows = []
+    for _, row in fp.iterrows():
+        material = row[zmat]
+        plant = row[zplant]
+        if transfer_map.get((material, plant), False):
+            continue  # FP marked for transfer in ZPLM MARC — not counted
+        if material and material not in ifs_materials:
+            rows.append({
+                "Material": material,
+                "Plant": plant,
+                "Material Plant Type": "FP",
+                "Part Status": status_map.get((material, plant), ""),
+                "Error": "FP material does not exist in ZPLM_TA_IFS",
+                "Rule": "FP existence in ZPLM_TA_IFS",
+            })
+    return pd.DataFrame(rows, columns=cols)
+
 # =============================================================================
 # D) CROSS-EXISTENCE VALIDATIONS (MARA ↔ ZPLM MARA, MARC ↔ ZPLM MARC)
 # =============================================================================
@@ -7277,7 +7341,7 @@ def run_fp_status_validation(mara_file, marc_file, zplm_marc_file,
 
 def run_data_cleanups_validation(
     mara_file, marc_file, zplm_marc_file, zplm_mara_file,
-    mbew_file, ekpo_file, mard_file, plant_filter=None,
+    mbew_file, ekpo_file, mard_file, zplm_ta_ifs_file=None, plant_filter=None,
 ):
     """
     Data Cleanup validation engine:
@@ -7296,12 +7360,13 @@ def run_data_cleanups_validation(
     marc      = load_xlsx_fast(marc_file,      sheet_name=0)
     zplm_marc = load_xlsx_fast(zplm_marc_file, sheet_name=0)
     zplm_mara = load_xlsx_fast(zplm_mara_file, sheet_name=0)
+    zplm_ta_ifs = load_xlsx_fast(zplm_ta_ifs_file, sheet_name=0) if zplm_ta_ifs_file else None
     mbew      = load_xlsx_fast(mbew_file,      sheet_name=0)
     ekpo      = load_xlsx_fast(ekpo_file,      sheet_name=0)
     mard      = load_xlsx_fast(mard_file,      sheet_name=0)
 
-    if mara is None or marc is None or zplm_marc is None:
-        raise ValueError("Missing required files for Data Cleanups (MARA, MARC, ZPLM MARC).")
+    if mara is None or marc is None or zplm_marc is None or zplm_ta_ifs is None:
+        raise ValueError("Missing required files for Data Cleanups (MARA, MARC, ZPLM MARC, ZPLM_TA_IFS).")
 
     # ===============================================================
     # ✅ Fix #1 — When filtering by plant, DO NOT REMOVE materials
@@ -7326,17 +7391,76 @@ def run_data_cleanups_validation(
         mard      = filter_preserving_noPlant(mard,      _pf)
 
     # ===============================================================
+    # CLEANUP GLOBAL EXCLUSION: ignore PSMS 75 and 99 in every cleanup rule.
+    # The exclusion is applied per Material+Plant, preserving other plants of
+    # the same material when their Part Status is different.
+    # ===============================================================
+    def _cleanup_status_context(marc_df):
+        work = marc_df.copy()
+        work.columns = [str(c).strip().upper() for c in work.columns]
+        pick = lambda candidates: next((c for c in candidates if c in work.columns), None)
+        mat = pick(["MATERIAL", "MATNR"])
+        plant = pick(["PLANT", "WERKS"])
+        status = pick(["PLANT-SPECIFIC MATERIAL STATUS", "PLANT SPECIFIC MATERIAL STATUS", "MTSTB"])
+        if not all([mat, plant, status]):
+            raise ValueError("MARC must contain Material, Plant and Plant-Specific Material Status for Cleanup validation.")
+        work[mat] = work[mat].map(_normalize_code_as_str_basic).str.strip()
+        work[plant] = work[plant].astype(str).str.strip().str.upper()
+        work[status] = work[status].map(_normalize_code_as_str_basic)
+        status_map = work.drop_duplicates([mat, plant]).set_index([mat, plant])[status].to_dict()
+        ignored_pairs = {key for key, value in status_map.items() if value in {"75", "99"}}
+        active_pairs = set(status_map) - ignored_pairs
+        active_materials = {material for material, _ in active_pairs}
+        return status_map, ignored_pairs, active_materials
+
+    part_status_map, ignored_pairs, active_materials = _cleanup_status_context(marc)
+
+    def _filter_pairs(df, plant_candidates=("Plant", "WERKS", "Valuation Area", "BWKEY")):
+        if df is None or df.empty:
+            return df
+        out = df.copy()
+        out.columns = [str(c).strip() for c in out.columns]
+        upper = {str(c).strip().upper(): c for c in out.columns}
+        mat_col = next((upper[c] for c in ("MATERIAL", "MATNR") if c in upper), None)
+        plant_col = next((upper[c.upper()] for c in plant_candidates if c.upper() in upper), None)
+        if mat_col is None:
+            return out
+        mats = out[mat_col].map(_normalize_code_as_str_basic).str.strip()
+        if plant_col is None:
+            return out[mats.isin(active_materials)].copy()
+        plants = out[plant_col].astype(str).str.strip().str.upper()
+        keep = [((m, p) not in ignored_pairs) for m, p in zip(mats, plants)]
+        return out.loc[keep].copy()
+
+    marc = _filter_pairs(marc)
+    zplm_marc = _filter_pairs(zplm_marc)
+    mbew = _filter_pairs(mbew)
+    ekpo = _filter_pairs(ekpo)
+    mard = _filter_pairs(mard)
+    mara = _filter_pairs(mara)
+    zplm_mara = _filter_pairs(zplm_mara)
+    # ===============================================================
     # VALIDATIONS
     # ===============================================================
     results = {}
 
     # FP Status
+    def _df_to_xlsx_bytes(df):
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False)
+        buf.seek(0)
+        return buf
+
     df_fp, kpi_fp = run_fp_status_validation(
-        mara_file=mara_file, marc_file=marc_file,
-        zplm_marc_file=zplm_marc_file, zplm_mara_file=zplm_mara_file,
+        mara_file=_df_to_xlsx_bytes(mara),
+        marc_file=_df_to_xlsx_bytes(marc),
+        zplm_marc_file=_df_to_xlsx_bytes(zplm_marc),
+        zplm_mara_file=_df_to_xlsx_bytes(zplm_mara),
         plant_filter=plant_filter
     )
     results["FP Level Status"] = df_fp
+    results["FP missing in ZPLM_TA_IFS"] = validar_fp_existence_zplm_ta_ifs(zplm_marc, zplm_ta_ifs, marc)
 
     results["FP in PT02"]                   = validar_fp_pt01_pt02_status55(zplm_marc, marc)
     results["EOPvsSL (Blank or Swapped)"]   = validar_fp55_eop_vs_service_liability(zplm_marc, marc)
@@ -7351,6 +7475,34 @@ def run_data_cleanups_validation(
     results["PO's to Close"]                = validar_ekpo_delivery_completion(marc, mara, zplm_marc, ekpo)
     results["OBSOLETE with No Stock"]       = validar_mard_total_stock(mard, marc, mara)
 
+    # Add plant-specific Part Status to every final cleanup dataset.
+    def _add_part_status(df):
+        if df is None or df.empty or "Material" not in df.columns:
+            return df
+        out = df.copy()
+        if "Part Status" in out.columns:
+            return out
+        materials = out["Material"].map(_normalize_code_as_str_basic).str.strip()
+        if "Plant" in out.columns:
+            plants = out["Plant"].fillna("").astype(str).str.strip().str.upper()
+            out["Part Status"] = [part_status_map.get((m, p), "") for m, p in zip(materials, plants)]
+        else:
+            statuses_by_material = {}
+            for (material, plant), status in part_status_map.items():
+                if (material, plant) in ignored_pairs:
+                    continue
+                statuses_by_material.setdefault(material, set()).add(status)
+            out["Part Status"] = materials.map(
+                lambda material: ", ".join(sorted(s for s in statuses_by_material.get(material, set()) if s))
+            )
+        # Keep Part Status close to Plant for readability.
+        column = out.pop("Part Status")
+        insert_at = out.columns.get_loc("Plant") + 1 if "Plant" in out.columns else min(1, len(out.columns))
+        out.insert(insert_at, "Part Status", column)
+        return out
+
+    for result_name in list(results):
+        results[result_name] = _add_part_status(results[result_name])
     # ===============================================================
     # Strip datetime (remove time component)
     # ===============================================================
@@ -9135,6 +9287,7 @@ __all__ = [
     "validar_ltb_fields",
     "validar_ekpo_delivery_completion",
     "validar_mard_total_stock",
+    "validar_fp_existence_zplm_ta_ifs",
 
     # --- Part 2: Cross-existence validations ---
     "validar_mara_vs_zplm_mara_existence",
@@ -10526,6 +10679,9 @@ SSA_ORDER_TYPES_ZMD_GROUP = {"ZMD", "ZDSD", "ZDID", "ZMD2"}
 # and ZTAM/ZOR/... Sales Document Types.
 SSA_ORDER_TYPES_ZLZ_OR_ZTAM_GROUP = SSA_ORDER_TYPES_ZLZ_GROUP | SSA_ORDER_TYPES_ZTAM_GROUP
 
+# Sales Document Types for which Customer Group 2 is mandatory.
+SSA_ORDER_TYPES_CUSTOMER_GROUP_2 = {"ZLZ", "ZLZM", "ZOR", "ZTAM"}
+
 # Every Sales Document Type known to the SSA engine.
 SSA_ORDER_TYPES_ALL = (
     SSA_ORDER_TYPES_ZLZ_GROUP
@@ -10712,18 +10868,38 @@ def _ssa_add_order_type_column(df):
     return df[cols]
 
 
+def _ssa_item_is_done(row, status_col, rej_col):
+    """
+    Return True when a VBAP item is 'done' for SSA validation purposes,
+    and can therefore be skipped by every rule in the SSA report:
+      - Overall Status = 'C' (complete), OR
+      - Reason for Rejection (VBAP-ABGRU) is filled.
+    Either condition on its own is enough to skip the item.
+    """
+    if status_col and _ssa_norm(row[status_col]).upper() == "C":
+        return True
+    if rej_col and _ssa_norm(row[rej_col]) != "":
+        return True
+    return False
+
+
 def _ssa_fully_rejected_docs(vbap_df):
-    """Return documents for which every VBAP item has Overall Status C."""
+    """
+    Return documents for which every VBAP item is 'done': Overall Status
+    = 'C', or Reason for Rejection (VBAP-ABGRU) filled (see
+    _ssa_item_is_done).
+    """
     if vbap_df is None or vbap_df.empty:
         return set()
     vbap = _ssa_load(vbap_df)
     doc_col = _ssa_pick(vbap, ["Sales Document", "VBELN"])
     status_col = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
+    rej_col = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
     if not doc_col or not status_col:
         return set()
     closed = set()
     for doc, grp in vbap.groupby(vbap[doc_col].map(_ssa_norm)):
-        if doc and grp[status_col].apply(lambda x: _ssa_norm(x).upper() == "C").all():
+        if doc and grp.apply(lambda r: _ssa_item_is_done(r, status_col, rej_col), axis=1).all():
             closed.add(doc)
     return closed
 
@@ -10856,8 +11032,8 @@ def ssa_validar_mandatory_fields(vbak_df, vbap_df, marc_df=None, mvke_df=None):
             ZDIC/ZMC/ZRE/ZDSC/ZRE2/ZMC2, ZMD/ZDSD/ZDID/ZMD2).
 
       - Customer Group 2:
-            Mandatory for Sales Document Types in
-            SSA_ORDER_TYPES_ZLZ_OR_ZTAM_GROUP.
+            Mandatory only for Sales Document Types ZLZ, ZLZM, ZOR, ZTAM
+            (SSA_ORDER_TYPES_CUSTOMER_GROUP_2).
 
       - Customer Group 3:
             Mandatory for Sales Document Types in SSA_ORDER_TYPES_ZLZ_GROUP,
@@ -10881,7 +11057,8 @@ def ssa_validar_mandatory_fields(vbak_df, vbap_df, marc_df=None, mvke_df=None):
             Mandatory for Sales Document Types in
             SSA_ORDER_TYPES_ZLZ_OR_ZTAM_GROUP when Sales Document Type
             is one of:
-                ZOR, ZPRO, ZTAM, ZORA
+                ZOR, ZTAM, ZORA
+            (ZPRO is explicitly excluded from this check.)
 
       - Plant:
             Mandatory for Sales Document Types in
@@ -10945,7 +11122,7 @@ def ssa_validar_mandatory_fields(vbak_df, vbap_df, marc_df=None, mvke_df=None):
         # Customer Group 1 / Customer Group 2
         field_order_types = {
             "Customer Group 1": SSA_ORDER_TYPES_ALL,
-            "Customer Group 2": SSA_ORDER_TYPES_ZLZ_OR_ZTAM_GROUP,
+            "Customer Group 2": SSA_ORDER_TYPES_CUSTOMER_GROUP_2,
         }
 
         for field, allowed_types in field_order_types.items():
@@ -11034,13 +11211,15 @@ def ssa_validar_mandatory_fields(vbak_df, vbap_df, marc_df=None, mvke_df=None):
             vbap,
             ["Reason for Rejection", "ABGRU"],
         )
+        status_col = _ssa_pick(
+            vbap,
+            ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"],
+        )
 
-        # Rejected items are excluded from all mandatory-field checks.
+        # Items that are complete (Overall Status = 'C') or rejected
+        # (VBAP-ABGRU filled) are excluded from all mandatory-field checks.
         def is_rejected(row):
-            if rej_col is None:
-                return False
-
-            return _ssa_norm(row[rej_col]) != ""
+            return _ssa_item_is_done(row, status_col, rej_col)
 
         # ── Route ─────────────────────────────────────────────────────────────
         route_col = _ssa_pick(
@@ -11129,9 +11308,9 @@ def ssa_validar_mandatory_fields(vbak_df, vbap_df, marc_df=None, mvke_df=None):
         )
 
         if sup_col:
+            # ZPRO is excluded from the Supplier_code check.
             supplier_allowed_types = {
                 "ZOR",
-                "ZPRO",
                 "ZTAM",
                 "ZORA",
             }
@@ -11570,12 +11749,13 @@ def ssa_validar_shipping_point(vbap_df):
     plt_col  = _ssa_pick(vbap, ["Plant", "WERKS"])
     shp_col  = _ssa_pick(vbap, ["Shipping Point/Receiving Pt", "Shipping Point", "VSTEL"])
     status_col = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
+    rej_col = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
 
     if not all([doc_col, item_col, mat_col, plt_col, shp_col, status_col]):
         return pd.DataFrame(columns=empty_cols)
 
     for _, row in vbap.iterrows():
-        if _ssa_norm(row[status_col]).upper() == 'C':
+        if _ssa_item_is_done(row, status_col, rej_col):
             continue
 
         doc = _ssa_norm(row[doc_col])
@@ -11705,6 +11885,7 @@ def ssa_validar_customer_reference(vbap_df, vbkd_df, vbak_df=None):
     ap_mat = _ssa_pick(vbap, ["Material", "MATNR"])
     ap_plant = _ssa_pick(vbap, ["Plant", "WERKS"])
     ap_status = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
+    ap_rej = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
 
     kd_doc = _ssa_pick(vbkd, ["SD Document", "Sales Document", "VBELN"])
     kd_item = _ssa_pick(vbkd, ["Item (SD)", "Sales Document Item", "POSNR"])
@@ -11743,7 +11924,7 @@ def ssa_validar_customer_reference(vbap_df, vbkd_df, vbak_df=None):
             target[key] = reference
 
     for _, row in vbap.iterrows():
-        if _ssa_norm(row[ap_status]).upper() == "C":
+        if _ssa_item_is_done(row, ap_status, ap_rej):
             continue
 
         doc = _ssa_norm(row[ap_doc])
@@ -11807,12 +11988,13 @@ def ssa_validar_weights(vbap_df, vbfa_df=None):
     gwt_col  = _ssa_pick(vbap, ["Gross Weight"])
     nwt_col  = _ssa_pick(vbap, ["Net Weight"])
     status_col = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
+    rej_col = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
 
     if not all([doc_col, item_col, mat_col, plt_col, gwt_col, nwt_col, status_col]):
         return pd.DataFrame(columns=empty_cols)
 
     for _, row in vbap.iterrows():
-        if _ssa_norm(row[status_col]).upper() == 'C':
+        if _ssa_item_is_done(row, status_col, rej_col):
             continue
 
         doc = _ssa_norm(row[doc_col])
@@ -11885,8 +12067,9 @@ def ssa_validar_incoterms_ddp_gb(vbak_df, vbkd_df, kna1_df, vbpa_df=None, vbap_d
       Optional: VBPA (Partner Function = 'SP') → Country/Region Key
 
     Exclude Rejected Documents — if vbap_df is supplied, Sales Documents
-    where EVERY VBAP item has Overall Status = C are skipped
-    entirely (neither the Incoterms-blank check nor the DDP+GB check apply).
+    where EVERY VBAP item is 'done' (Overall Status = C, or Reason for
+    Rejection/VBAP-ABGRU filled) are skipped entirely (neither the
+    Incoterms-blank check nor the DDP+GB check apply).
     """
     errors = []
     empty_cols = ["Table", "Sales Document", "Item", "Material", "Plant",
@@ -12038,6 +12221,7 @@ def ssa_validar_incompletion_log(vbak_df, vbap_df):
         mat_col  = _ssa_pick(vbap, ["Material", "MATNR"])
         plt_col  = _ssa_pick(vbap, ["Plant", "WERKS"])
         status_col = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
+        rej_col = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
         itm_col = _ssa_pick(
             vbap,
             [
@@ -12049,8 +12233,8 @@ def ssa_validar_incompletion_log(vbak_df, vbap_df):
 
         if itm_col and status_col:
             for _, row in vbap.iterrows():
-                if _ssa_norm(row[status_col]).upper() == 'C':
-                    continue  # rejected items are skipped
+                if _ssa_item_is_done(row, status_col, rej_col):
+                    continue  # completed or rejected items are skipped
 
                 val = _ssa_norm(row[itm_col]).upper()
                 if val != 'A':
@@ -12074,7 +12258,11 @@ def ssa_validar_incompletion_log(vbak_df, vbap_df):
 # Rule 4 — Rejected items with Material Status 70/75/99
 # -----------------------------------------------------------------------------
 def ssa_validar_rejected_material_status(vbak_df, vbap_df, marc_df):
-    """Report status 70/75/99 items whose VBAP Overall Status is not C."""
+    """
+    Report status 70/75/99 items whose VBAP Overall Status is not C.
+    Items that are complete (Overall Status = 'C') or rejected
+    (VBAP-ABGRU filled) are skipped.
+    """
     errors = []
     empty_cols = ["Table", "Sales Document", "Item", "Material", "Plant", "Field", "Value", "Error"]
     if vbap_df is None or vbap_df.empty or marc_df is None or marc_df.empty:
@@ -12086,6 +12274,7 @@ def ssa_validar_rejected_material_status(vbak_df, vbap_df, marc_df):
     mat_col = _ssa_pick(vbap, ["Material", "MATNR"])
     plt_col = _ssa_pick(vbap, ["Plant", "WERKS"])
     overall_status_col = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
+    rej_col = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
     marc_mat = _ssa_pick(marc, ["Material", "MATNR"])
     marc_plt = _ssa_pick(marc, ["Plant", "WERKS"])
     marc_psms = _ssa_pick(marc, ["Plant-Specific Material Status", "Plant Specific Material Status", "MTSTB"])
@@ -12106,9 +12295,9 @@ def ssa_validar_rejected_material_status(vbak_df, vbap_df, marc_df):
         doc = _ssa_norm(row[doc_col])
         if not _ssa_doc_type_in(doc, SSA_ORDER_TYPES_ZLZ_OR_ZTAM_GROUP):
             continue
-        overall_status = _ssa_norm(row[overall_status_col]).upper()
-        if overall_status == "C":
+        if _ssa_item_is_done(row, overall_status_col, rej_col):
             continue
+        overall_status = _ssa_norm(row[overall_status_col]).upper()
         material = _ssa_norm(row[mat_col])
         plant = _ssa_norm(row[plt_col]).upper()
         material_status = marc_map.get((material, plant), "")
@@ -12187,12 +12376,13 @@ def ssa_validar_customer_material(vbap_df):
     plt_col  = _ssa_pick(vbap, ["Plant", "WERKS"])
     cmat_col = _ssa_pick(vbap, ["Customer Material Number", "Material by Customer", "KDMAT"])
     status_col = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
+    rej_col = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
 
     if not all([doc_col, item_col, mat_col, plt_col, cmat_col, status_col]):
         return pd.DataFrame(columns=empty_cols)
 
     for _, row in vbap.iterrows():
-        if _ssa_norm(row[status_col]).upper() == 'C':
+        if _ssa_item_is_done(row, status_col, rej_col):
             continue
 
         if _ssa_norm(row[cmat_col]) == '':
@@ -12253,7 +12443,7 @@ def run_ssa_validation(
     vbak_file, vbap_file, vbkd_file, kna1_file,
     marc_file=None, vbpa_file=None, vbfa_file=None, mvke_file=None,
     plant_filter=None,
-    apply_styles=False,
+    apply_styles=True,
 ):
     """
     Run all SSA validations and return (excel_bytes, results_dict, summary_df).
@@ -12261,9 +12451,13 @@ def run_ssa_validation(
     Business rules implemented here:
       1. Rule applicability is based on Sales Document Type (AUART), not on
          Sales Document number ranges.
-      2. A document is closed when every VBAP item has Overall Status = C.
-         Closed documents are excluded from all validations except the
-         Material Status 70/75/99 rule.
+      2. A document is closed when every VBAP item is 'done': Overall
+         Status = C, or Reason for Rejection (VBAP-ABGRU) filled. Closed
+         documents are excluded from all validations except the Material
+         Status 70/75/99 rule. Within that rule (and every other
+         item-level VBAP check), individual items that are complete
+         (Overall Status = C) or rejected (VBAP-ABGRU filled) are always
+         skipped, even inside otherwise-active documents.
       3. S-* materials are considered only by Mandatory Fields, Terms of
          Payment, Customer Reference and Incompletion Log. They are excluded
          from all other validations.

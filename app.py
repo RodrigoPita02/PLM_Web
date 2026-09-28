@@ -133,6 +133,7 @@ WIZARD_STEPS_PROGRESS = ["Mode", "Files", "Validate", "Results"]
 # Avaliadas em ordem — first match wins por ficheiro.
 _CLASSIFY_RULES: list[tuple[str, object]] = [
     # ZPLM primeiro (mais específico)
+    ("zplm_ta_ifs", lambda n: "zplm_ta_ifs" in n or ("zplm" in n and "ta" in n and "ifs" in n)),
     ("zplm_marc",   lambda n: "zplm" in n and "marc" in n),
     ("zplm_mara",   lambda n: "zplm" in n and "mara" in n),
     ("csr_item",    lambda n: "csr" in n and "item" in n),
@@ -184,6 +185,7 @@ LABELS_PT = {
     "mvke":      "MVKE.xlsx",
     "zplm_marc": "ZPLM MARC.xlsx",
     "zplm_mara": "ZPLM MARA.xlsx",
+    "zplm_ta_ifs": "ZPLM_TA_IFS.xlsx",
     "mbew":      "MBEW.xlsx",
     "ekpo":      "EKPO.xlsx",
     "mard":      "MARD.xlsx",
@@ -209,6 +211,7 @@ FILE_EXPECTED_COLS: dict[str, list[list[str]]] = {
     "mvke":      [["Material", "Sales Organization"]],
     "zplm_marc": [["Material", "Plant", "Material Plant Type"]],
     "zplm_mara": [["Material", "Enterproj Number"]],
+    "zplm_ta_ifs": [["Material"], ["MATNR"]],
     "mbew":      [["Material", "LIFO/FIFO-relevant"]],
     "ekpo":      [["Material"]],
     "mard":      [["Material", "Plant"]],
@@ -275,7 +278,7 @@ REQUIRED_KEYS: dict[str, list[str]] = {
     "📦 Indirect Materials Report":         ["mara", "marc", "mvke", "mbew"],
     "Automotive + Timing Letter (A & TL)":["auto", "plm", "timing"],
     "📊 SAP Validation Progress": [],   # gerido pelo modo Auto/Manual
-    "🧹 Data Cleanups":                   ["mara", "marc", "zplm_marc", "zplm_mara", "mbew", "ekpo", "mard"],
+    "🧹 Data Cleanups":                   ["mara", "marc", "zplm_marc", "zplm_mara", "zplm_ta_ifs", "mbew", "ekpo", "mard"],
 }
 
 # ==========================================================
@@ -1912,12 +1915,13 @@ elif main_choice == "🧹 Data Cleanups":
         st.markdown("### 📂 Step 1 — Load Files")
         st.markdown("""
         <div style="background:var(--app-bg-secondary);border-left:4px solid var(--accent);border-radius:6px;padding:12px 16px;margin-bottom:12px;font-size:0.85rem;color:var(--app-fg)">
-        <strong>📋 What files do you need? (all 7 required)</strong><br><br>
+        <strong>📋 What files do you need? (all 8 required)</strong><br><br>
         <table style="border-collapse:collapse;width:100%">
         <tr><td style="padding:3px 8px">📄 <strong>MARA</strong></td><td style="color:var(--app-fg-muted)">General material data — Material Type, Old Material Number</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>MARC</strong></td><td style="color:var(--app-fg-muted)">Plant-level data — PSMS status, Production Storage Location</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>ZPLM MARC</strong></td><td style="color:var(--app-fg-muted)">PLM plant data — Material Plant Type, EOP Date, Service Liability Date, LTB fields</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>ZPLM MARA</strong></td><td style="color:var(--app-fg-muted)">PLM general data — Enterproj Number, Product Hierarchy</td></tr>
+        <tr><td style="padding:3px 8px">📄 <strong>ZPLM_TA_IFS</strong></td><td style="color:var(--app-fg-muted)">IFS interface table — validates that every FP exists in the table</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>MBEW</strong></td><td style="color:var(--app-fg-muted)">Valuation data — Standard Price per plant</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>EKPO</strong></td><td style="color:var(--app-fg-muted)">Purchase order items — open POs to close validation</td></tr>
         <tr><td style="padding:3px 8px">📄 <strong>MARD</strong></td><td style="color:var(--app-fg-muted)">Storage location stock — obsolete materials with no stock</td></tr>
@@ -1925,7 +1929,7 @@ elif main_choice == "🧹 Data Cleanups":
         </div>
         """, unsafe_allow_html=True)
 
-        uploads = st.file_uploader("Drop all 7 Excel files here",
+        uploads = st.file_uploader("Drop all 8 Excel files here",
                                    type=["xlsx"], accept_multiple_files=True, key="dc_multi_uploader")
         files = classify_uploaded_files(uploads)
         if uploads:
@@ -1985,11 +1989,11 @@ elif main_choice == "🧹 Data Cleanups":
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:0.87rem;color:var(--app-fg)">
             <div><span style="color:var(--app-fg-muted)">Executor</span><br><strong>{_exec_dc}</strong></div>
             <div><span style="color:var(--app-fg-muted)">Scope</span><br><strong>{_scope_dc}</strong></div>
-            <div><span style="color:var(--app-fg-muted)">Files loaded</span><br><strong>{len(_pers_dc)} of 7</strong></div>
+            <div><span style="color:var(--app-fg-muted)">Files loaded</span><br><strong>{len(_pers_dc)} of 8</strong></div>
         </div>
         <div style="margin-top:10px;font-size:0.8rem;color:var(--app-fg-muted)">
             Will run: FP Level Status · EOP vs Service Liability · Standard Cost · LTB fields ·
-            EKPO open POs · MARD stock · Cross-existence MARA/MARC ↔ ZPLM
+            EKPO open POs · MARD stock · Cross-existence MARA/MARC ↔ ZPLM · FP existence in ZPLM_TA_IFS · PSMS 75/99 excluded
         </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1999,6 +2003,7 @@ elif main_choice == "🧹 Data Cleanups":
         marc_file      = files.get("marc")
         zplm_marc_file = files.get("zplm_marc")
         zplm_mara_file = files.get("zplm_mara")
+        zplm_ta_ifs_file = files.get("zplm_ta_ifs")
         mbew_file      = files.get("mbew")
         ekpo_file      = files.get("ekpo")
         mard_file      = files.get("mard")
@@ -2011,6 +2016,7 @@ elif main_choice == "🧹 Data Cleanups":
                 excel_bytes, results_dict, kpis = run_data_cleanups_validation(
                     mara_file=mara_file, marc_file=marc_file,
                     zplm_marc_file=zplm_marc_file, zplm_mara_file=zplm_mara_file,
+                    zplm_ta_ifs_file=zplm_ta_ifs_file,
                     mbew_file=mbew_file, ekpo_file=ekpo_file, mard_file=mard_file,
                     plant_filter=plant_filter_display,
                 )
