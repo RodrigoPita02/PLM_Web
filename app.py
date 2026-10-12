@@ -2389,7 +2389,7 @@ elif main_choice == "📋 SSA Validation":
     render_wizard(st.session_state.ssa_step, WIZARD_STEPS_DEFAULT)
 
     ssa_required = ["vbak", "vbap", "vbkd", "kna1"]
-    ssa_optional = ["marc", "vbpa", "vbfa", "mvke"]
+    ssa_optional = ["marc", "vbpa", "vbfa", "vbep", "mvke"]
 
     if st.session_state.ssa_step == 1:
         st.markdown("### 📂 Step 1 — Load Files")
@@ -2403,19 +2403,20 @@ elif main_choice == "📋 SSA Validation":
         <tr><td style="padding:3px 8px">📄 <strong>KNA1</strong></td><td style="color:var(--app-fg-muted)">Customer master — Country (GB check)</td></tr>
         <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>MARC</strong></td><td style="color:var(--app-fg-muted)">Optional — Material Status 70/75/99, MRP Type checks</td></tr>
         <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>VBPA</strong></td><td style="color:var(--app-fg-muted)">Optional — Partner country override for DDP+GB rule, Unloading Point</td></tr>
-        <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>VBFA</strong></td><td style="color:var(--app-fg-muted)">Optional — Sales Document Flow, gates the Weights rule on OBD existence</td></tr>
+        <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>VBFA</strong></td><td style="color:var(--app-fg-muted)">Optional — Sales Document Flow, gates the Weights rule on OBD existence for non-ZLZ/ZLZM documents</td></tr>
+        <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>VBEP</strong></td><td style="color:var(--app-fg-muted)">Optional — Schedule lines, validates active demand for ZLZ/ZLZM using Release Type = 1</td></tr>
         <tr><td style="padding:3px 8px;color:var(--color-ok)">🔓 <strong>MVKE</strong></td><td style="color:var(--app-fg-muted)">Optional — Acct Assmt Grp Mat. lookup for S-materials in Mandatory Fields</td></tr>
         </table>
         </div>
         """, unsafe_allow_html=True)
 
         uploads = st.file_uploader(
-            "Drop VBAK, VBAP, VBKD, KNA1 + optional MARC, VBPA, VBFA and MVKE",
+            "Drop VBAK, VBAP, VBKD, KNA1 + optional MARC, VBPA, VBFA, VBEP and MVKE",
             type="xlsx", accept_multiple_files=True, key="ssa_uploader",
         )
 
         def classify_ssa_files(files):
-            mapping = {k: None for k in ["vbak","vbap","vbkd","vbpa","kna1","marc","vbfa","mvke"]}
+            mapping = {k: None for k in ["vbak","vbap","vbkd","vbpa","kna1","marc","vbfa","vbep","mvke"]}
             for f in (files or []):
                 name = f.name.lower()
                 if "vbak" in name:   mapping["vbak"] = f
@@ -2425,6 +2426,7 @@ elif main_choice == "📋 SSA Validation":
                 elif "kna1" in name: mapping["kna1"] = f
                 elif "marc" in name: mapping["marc"] = f
                 elif "vbfa" in name: mapping["vbfa"] = f
+                elif "vbep" in name: mapping["vbep"] = f
                 elif "mvke" in name: mapping["mvke"] = f
             return mapping
 
@@ -2439,9 +2441,10 @@ elif main_choice == "📋 SSA Validation":
                 "vbak": "VBAK.xlsx", "vbap": "VBAP.xlsx",
                 "vbkd": "VBKD.xlsx", "kna1": "KNA1.xlsx",
                 "marc": "MARC.xlsx (optional)", "vbpa": "VBPA.xlsx (optional)",
-                "vbfa": "VBFA.xlsx (optional)", "mvke": "MVKE.xlsx (optional)"
+                "vbfa": "VBFA.xlsx (optional)", "vbep": "VBEP.xlsx (optional)",
+                "mvke": "MVKE.xlsx (optional)"
             }
-            for key in ["vbak","vbap","vbkd","kna1","marc","vbpa","vbfa","mvke"]:
+            for key in ["vbak","vbap","vbkd","kna1","marc","vbpa","vbfa","vbep","mvke"]:
                 in_up   = files_map.get(key) is not None
                 in_pers = key in persisted
                 if in_up:
@@ -2492,6 +2495,7 @@ elif main_choice == "📋 SSA Validation":
         _has_marc  = "marc" in _pers_ssa
         _has_vbpa  = "vbpa" in _pers_ssa
         _has_vbfa  = "vbfa" in _pers_ssa
+        _has_vbep  = "vbep" in _pers_ssa
         _has_mvke  = "mvke" in _pers_ssa
 
         st.markdown(f"""
@@ -2502,11 +2506,11 @@ elif main_choice == "📋 SSA Validation":
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:0.87rem;color:var(--app-fg)">
             <div><span style="color:var(--app-fg-muted)">Executor</span><br><strong>{_exec_ssa}</strong></div>
             <div><span style="color:var(--app-fg-muted)">Scope</span><br><strong>{_scope_ssa}</strong></div>
-            <div><span style="color:var(--app-fg-muted)">Optional files</span><br><strong>{"MARC ✅" if _has_marc else "MARC ⬜"} &nbsp; {"VBPA ✅" if _has_vbpa else "VBPA ⬜"} &nbsp; {"VBFA ✅" if _has_vbfa else "VBFA ⬜"} &nbsp; {"MVKE ✅" if _has_mvke else "MVKE ⬜"}</strong></div>
+            <div><span style="color:var(--app-fg-muted)">Optional files</span><br><strong>{"MARC ✅" if _has_marc else "MARC ⬜"} &nbsp; {"VBPA ✅" if _has_vbpa else "VBPA ⬜"} &nbsp; {"VBFA ✅" if _has_vbfa else "VBFA ⬜"} &nbsp; {"VBEP ✅" if _has_vbep else "VBEP ⬜"} &nbsp; {"MVKE ✅" if _has_mvke else "MVKE ⬜"}</strong></div>
         </div>
         <div style="margin-top:10px;font-size:0.8rem;color:var(--app-fg-muted)">
             Rules: Mandatory Fields{" (S-material Acct Assmt Grp Mat. checked against MVKE)" if _has_mvke else ""} · Incoterms · Incompletion Log · Terms of Payment · Shipping Point ·
-            Unloading Point Consistency · Customer Reference · Weights{" (OBD-gated via VBFA)" if _has_vbfa else ""} ·
+            Unloading Point Consistency · Customer Reference · Weights{" (ZLZ/ZLZM demand-gated via VBEP Release Type = 1)" if _has_vbep else " (ZLZ/ZLZM skipped without usable VBEP)"}{"; other types OBD-gated via VBFA" if _has_vbfa else ""} ·
             Order Without Items · Customer Material{"· Rejected Status 70/75/99 · MRP Type" if _has_marc else ""}
         </div>
         </div>
@@ -2523,6 +2527,7 @@ elif main_choice == "📋 SSA Validation":
                     marc_file=files.get("marc"),
                     vbpa_file=files.get("vbpa"),
                     vbfa_file=files.get("vbfa"),
+                    vbep_file=files.get("vbep"),
                     mvke_file=files.get("mvke"),
                     plant_filter=st.session_state.get("ssa_plant_filter"),
                     apply_styles=False,

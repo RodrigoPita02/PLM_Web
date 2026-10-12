@@ -5020,73 +5020,376 @@ def validar_fppp70_standard_price_mbew(zplm_marc_df, marc_df, mbew_df):
 
 def validar_ltb_fields(zplm_marc, marc, mara):
     """
-    LTB fields validation (Data Cleanups):
-    Only FP + MT∈{FERT,HALB,ROH} + Status∈{55,70,99} may have LTB values.
-    Any other material with LTB values -> Type A error.
+    LTB fields validation (Data Cleanups).
+
+    Only materials meeting all the following conditions may have LTB values:
+        - Material Plant Type = FP
+        - Material Type in {FERT, HALB, ROH}
+        - Plant-Specific Material Status in {55, 70, 99}
+
+    Any other material with at least one populated LTB field generates
+    a Type A error.
+
+    LTB fields validated from ZPLM MARC:
+        - LTB Qty - Quarter Calculation
+        - LTB Original Qty Date
+        - LTB Open Quantity
+        - LTB Open Qty Update
+        - LTB Original Qty
     """
+
     z = zplm_marc.copy()
     m = marc.copy()
     a = mara.copy()
 
-    req_z = {'Material', 'Plant', 'Material Plant Type', 'LTB Quantity', 'LTB Start Date'}
-    req_m = {'Material', 'Plant', 'Plant-Specific Material Status'}
-    req_a = {'Material', 'Material Type'}
+    # ------------------------------------------------------------------
+    # LTB fields from ZPLM MARC
+    # ------------------------------------------------------------------
+    ltb_fields = [
+        'LTB Qty - Quarter Calculation',
+        'LTB Original Qty Date',
+        'LTB Open Quantity',
+        'LTB Open Qty Update',
+        'LTB Original Qty'
+    ]
+
+    ltb_quantity_fields = [
+        'LTB Qty - Quarter Calculation',
+        'LTB Open Quantity',
+        'LTB Original Qty'
+    ]
+
+    ltb_date_fields = [
+        'LTB Original Qty Date',
+        'LTB Open Qty Update'
+    ]
+
+    # ------------------------------------------------------------------
+    # Required columns
+    # ------------------------------------------------------------------
+    req_z = {
+        'Material',
+        'Plant',
+        'Material Plant Type',
+        *ltb_fields
+    }
+
+    req_m = {
+        'Material',
+        'Plant',
+        'Plant-Specific Material Status'
+    }
+
+    req_a = {
+        'Material',
+        'Material Type'
+    }
 
     missing = []
-    if not req_z.issubset(z.columns): missing.append(f"ZPLM_MARC: {sorted(req_z - set(z.columns))}")
-    if not req_m.issubset(m.columns): missing.append(f"MARC: {sorted(req_m - set(m.columns))}")
-    if not req_a.issubset(a.columns): missing.append(f"MARA: {sorted(req_a - set(a.columns))}")
 
-    cols = ['Material', 'Plant', 'Material Plant Type', 'Material Type',
-            'Plant-Specific Material Status', 'LTB Quantity', 'LTB Start Date', 'Field', 'Error']
+    if not req_z.issubset(z.columns):
+        missing.append(
+            f"ZPLM_MARC: {sorted(req_z - set(z.columns))}"
+        )
+
+    if not req_m.issubset(m.columns):
+        missing.append(
+            f"MARC: {sorted(req_m - set(m.columns))}"
+        )
+
+    if not req_a.issubset(a.columns):
+        missing.append(
+            f"MARA: {sorted(req_a - set(a.columns))}"
+        )
+
+    # ------------------------------------------------------------------
+    # Output columns
+    # ------------------------------------------------------------------
+    cols = [
+        'Material',
+        'Plant',
+        'Material Plant Type',
+        'Material Type',
+        'Plant-Specific Material Status',
+        *ltb_fields,
+        'Field',
+        'Error'
+    ]
 
     if missing:
         return pd.DataFrame(columns=cols)
 
-    a_use = a[['Material', 'Material Type']].copy()
-    a_use['Material'] = a_use['Material'].astype(str).str.strip()
-    a_use['Material Type'] = a_use['Material Type'].astype(str).str.strip().str.upper()
+    # ------------------------------------------------------------------
+    # Prepare MARA
+    # ------------------------------------------------------------------
+    a_use = a[
+        [
+            'Material',
+            'Material Type'
+        ]
+    ].copy()
 
-    m_use = m[['Material', 'Plant', 'Plant-Specific Material Status']].copy()
-    m_use['Material'] = m_use['Material'].astype(str).str.strip()
-    m_use['Plant'] = m_use['Plant'].astype(str).str.strip()
-    status_num = pd.to_numeric(m_use['Plant-Specific Material Status'], errors='coerce')
-    m_use['Plant-Specific Material Status'] = (
-        status_num.astype('Int64').astype(str).str.replace('<NA>', '', regex=False).str.strip()
+    a_use['Material'] = (
+        a_use['Material']
+        .astype(str)
+        .str.strip()
     )
 
-    z['Material'] = z['Material'].astype(str).str.strip()
-    z['Plant'] = z['Plant'].astype(str).str.strip()
-    z = z.merge(a_use, on='Material', how='left').merge(m_use, on=['Material', 'Plant'], how='left')
+    a_use['Material Type'] = (
+        a_use['Material Type']
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
 
+    # ------------------------------------------------------------------
+    # Prepare MARC
+    # ------------------------------------------------------------------
+    m_use = m[
+        [
+            'Material',
+            'Plant',
+            'Plant-Specific Material Status'
+        ]
+    ].copy()
+
+    m_use['Material'] = (
+        m_use['Material']
+        .astype(str)
+        .str.strip()
+    )
+
+    m_use['Plant'] = (
+        m_use['Plant']
+        .astype(str)
+        .str.strip()
+    )
+
+    status_num = pd.to_numeric(
+        m_use['Plant-Specific Material Status'],
+        errors='coerce'
+    )
+
+    m_use['Plant-Specific Material Status'] = (
+        status_num
+        .astype('Int64')
+        .astype(str)
+        .str.replace('<NA>', '', regex=False)
+        .str.strip()
+    )
+
+    # ------------------------------------------------------------------
+    # Prepare ZPLM MARC
+    # ------------------------------------------------------------------
+    z['Material'] = (
+        z['Material']
+        .astype(str)
+        .str.strip()
+    )
+
+    z['Plant'] = (
+        z['Plant']
+        .astype(str)
+        .str.strip()
+    )
+
+    z['Material Plant Type'] = (
+        z['Material Plant Type']
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    # ------------------------------------------------------------------
+    # Merge reference data
+    # ------------------------------------------------------------------
+    z = (
+        z
+        .merge(
+            a_use,
+            on='Material',
+            how='left'
+        )
+        .merge(
+            m_use,
+            on=['Material', 'Plant'],
+            how='left'
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Authorization rules
+    # ------------------------------------------------------------------
     valid_mtypes = {'FERT', 'HALB', 'ROH'}
     valid_status = {'55', '70', '99'}
 
-    is_fp       = z['Material Plant Type'].astype(str).str.upper().eq('FP')
-    is_valid_mt = z['Material Type'].astype(str).str.upper().isin(valid_mtypes)
-    is_valid_st = z['Plant-Specific Material Status'].astype(str).isin(valid_status)
-
-    ltb_qty_raw = z['LTB Quantity']
-    ltb_qty_num = pd.to_numeric(ltb_qty_raw, errors='coerce')
-    is_qty_empty = ltb_qty_raw.isna() | ltb_qty_raw.astype(str).str.strip().isin(["", "0", "0.0"]) | (ltb_qty_num.fillna(0) == 0)
-
-    ltb_date_raw = z['LTB Start Date']
-    ltb_date_dt  = pd.to_datetime(ltb_date_raw, errors='coerce')
-    is_date_empty = ltb_date_raw.isna() | ltb_date_raw.astype(str).str.strip().isin(["", "0", "0.0"]) | ltb_date_dt.isna()
-
-    authorized = is_fp & is_valid_mt & is_valid_st
-    mask_A = (~authorized) & (~is_qty_empty | ~is_date_empty)
-
-    df_A = z.loc[mask_A, ['Material', 'Plant', 'Material Plant Type', 'Material Type',
-                           'Plant-Specific Material Status', 'LTB Quantity', 'LTB Start Date']].copy()
-    df_A['Field'] = 'LTB Quantity / LTB Start Date'
-    df_A['Error'] = (
-        "Material not authorized to have LTB values "
-        "(requires FP + MT∈{FERT/HALB/ROH} + Status∈{55,70,99})"
+    is_fp = (
+        z['Material Plant Type']
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .eq('FP')
     )
 
-    if not df_A.empty:
-        df_A.sort_values(by=['Plant', 'Material'], inplace=True)
+    is_valid_mt = (
+        z['Material Type']
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .isin(valid_mtypes)
+    )
+
+    is_valid_st = (
+        z['Plant-Specific Material Status']
+        .astype(str)
+        .str.strip()
+        .isin(valid_status)
+    )
+
+    authorized = (
+        is_fp
+        & is_valid_mt
+        & is_valid_st
+    )
+
+    # ------------------------------------------------------------------
+    # Check whether each LTB field contains a value
+    # ------------------------------------------------------------------
+    field_has_value = pd.DataFrame(
+        index=z.index
+    )
+
+    # Quantity fields:
+    # NaN, blank and zero are considered empty.
+    for field in ltb_quantity_fields:
+        raw_value = z[field]
+
+        cleaned_value = (
+            raw_value
+            .astype(str)
+            .str.strip()
+        )
+
+        numeric_value = pd.to_numeric(
+            raw_value,
+            errors='coerce'
+        )
+
+        is_empty = (
+            raw_value.isna()
+            | cleaned_value.isin(
+                [
+                    '',
+                    '0',
+                    '0.0',
+                    'nan',
+                    'None',
+                    '<NA>'
+                ]
+            )
+            | numeric_value.fillna(0).eq(0)
+        )
+
+        field_has_value[field] = ~is_empty
+
+    # Date fields:
+    # NaN, blank, zero and invalid dates are considered empty.
+    for field in ltb_date_fields:
+        raw_value = z[field]
+
+        cleaned_value = (
+            raw_value
+            .astype(str)
+            .str.strip()
+        )
+
+        date_value = pd.to_datetime(
+            raw_value,
+            errors='coerce'
+        )
+
+        is_empty = (
+            raw_value.isna()
+            | cleaned_value.isin(
+                [
+                    '',
+                    '0',
+                    '0.0',
+                    'nan',
+                    'None',
+                    '<NA>'
+                ]
+            )
+            | date_value.isna()
+        )
+
+        field_has_value[field] = ~is_empty
+
+    # Material has an LTB value if at least one of the five fields
+    # contains a valid non-empty value.
+    has_any_ltb_value = field_has_value.any(axis=1)
+
+    # ------------------------------------------------------------------
+    # Type A error
+    # ------------------------------------------------------------------
+    mask_A = (
+        ~authorized
+        & has_any_ltb_value
+    )
+
+    output_fields = [
+        'Material',
+        'Plant',
+        'Material Plant Type',
+        'Material Type',
+        'Plant-Specific Material Status',
+        *ltb_fields
+    ]
+
+    df_A = z.loc[
+        mask_A,
+        output_fields
+    ].copy()
+
+    if df_A.empty:
+        return pd.DataFrame(columns=cols)
+
+    # ------------------------------------------------------------------
+    # Identify exactly which LTB fields contain values
+    # ------------------------------------------------------------------
+    df_A['Field'] = field_has_value.loc[
+        mask_A,
+        ltb_fields
+    ].apply(
+        lambda row: ' / '.join(
+            field
+            for field, has_value in row.items()
+            if has_value
+        ),
+        axis=1
+    )
+
+    df_A['Error'] = (
+        "Material not authorized to have LTB values "
+        "(requires FP + MT∈{FERT/HALB/ROH} "
+        "+ Status∈{55,70,99})"
+    )
+
+    # ------------------------------------------------------------------
+    # Final organization
+    # ------------------------------------------------------------------
+    df_A = df_A[cols]
+
+    df_A.sort_values(
+        by=['Plant', 'Material'],
+        inplace=True,
+        kind='stable'
+    )
+
+    df_A.reset_index(
+        drop=True,
+        inplace=True
+    )
 
     return df_A
 
@@ -10345,7 +10648,7 @@ def _ssa_diag_check(df, rule, check, table, fields, source_required=True):
     return rows
 
 
-def _ssa_run_input_diagnostics(vbak, vbap, vbkd, kna1, marc=None, vbpa=None, vbfa=None, mvke=None):
+def _ssa_run_input_diagnostics(vbak, vbap, vbkd, kna1, marc=None, vbpa=None, vbfa=None, vbep=None, mvke=None):
     """Validate all table/field dependencies used by the current SSA engine."""
     diagnostics = []
 
@@ -10378,6 +10681,11 @@ def _ssa_run_input_diagnostics(vbak, vbap, vbkd, kna1, marc=None, vbpa=None, vbf
     ]:
         fields = {
             "Sales Document": {"candidates": ["Sales Document", "VBELN"]},
+            "Overall Header": {
+                "candidates": ["Overall Header", "UVALL"],
+                "required": False,
+                "impact": "Completed VBAK documents with Overall Header='C' cannot be skipped.",
+            },
             field: {"candidates": [field], "impact": f"Mandatory check for {field} ({groups}) is skipped."},
         }
         if field == "Customer Group 3":
@@ -10471,6 +10779,14 @@ def _ssa_run_input_diagnostics(vbak, vbap, vbkd, kna1, marc=None, vbpa=None, vbf
         },
     }, source_required=False)
 
+    add(vbep, "Weights", "Active demand gating", "VBEP", {
+        "Sales Document": {"candidates": ["Sales Document", "SD Document", "VBELN"],
+                           "impact": "ZLZ/ZLZM active demand cannot be matched to VBAP."},
+        "Sales Document Item": {"candidates": ["Sales Document Item", "Item (SD)", "POSNR"],
+                                "impact": "ZLZ/ZLZM active demand cannot be matched at item level."},
+        "Release Type": {"candidates": ["Release Type", "ABART"],
+                         "impact": "ZLZ/ZLZM active demand cannot be identified; weight checks are skipped for those document types."},
+    }, source_required=False)
     add(vbak, "Incoterms", "DDP + GB header checks", "VBAK", {
         "Sales Document": {"candidates": ["Sales Document", "VBELN"]},
         "Sold-to Party": {"candidates": ["Sold-to Party", "KUNNR"]},
@@ -11026,6 +11342,9 @@ def ssa_validar_mandatory_fields(vbak_df, vbap_df, marc_df=None, mvke_df=None):
     Document number is never inspected.
 
     VBAK:
+      Customer Group checks are skipped when VBAK Overall Header (UVALL)
+      is equal to "C".
+
       - Customer Group 1:
             Mandatory for Sales Document Types in SSA_ORDER_TYPES_ALL
             (ZLZ/ZLZM, ZTAM/ZOR/ZPRO/ZFD/ZINI/ZORA/ZFD2/ZORM,
@@ -11114,12 +11433,28 @@ def ssa_validar_mandatory_fields(vbak_df, vbap_df, marc_df=None, mvke_df=None):
             vbak,
             ["Sales Document", "VBELN"],
         )
+
         abdis_col = _ssa_pick(
             vbak,
             ["MRP for DlvSchType", "MRPforDS", "ABDIS"],
         )
 
-        # Customer Group 1 / Customer Group 2
+        header_status_col = _ssa_pick(
+            vbak,
+            [
+                "Overall Header",
+                "UVALL",
+            ],
+        )
+
+        def is_completed_document(row):
+            """Skip Customer Group checks when VBAK Overall Header = 'C'."""
+            if header_status_col is None:
+                return False
+
+            return _ssa_norm(row[header_status_col]).upper() == "C"
+
+        # ── Customer Group 1 / Customer Group 2 ───────────────────────────────
         field_order_types = {
             "Customer Group 1": SSA_ORDER_TYPES_ALL,
             "Customer Group 2": SSA_ORDER_TYPES_CUSTOMER_GROUP_2,
@@ -11128,15 +11463,27 @@ def ssa_validar_mandatory_fields(vbak_df, vbap_df, marc_df=None, mvke_df=None):
         for field, allowed_types in field_order_types.items():
             col = _ssa_pick(vbak, [field])
 
+            # If the column does not exist in the input file,
+            # this specific validation cannot be performed.
             if col is None:
                 continue
 
             for _, row in vbak.iterrows():
-                doc = _ssa_norm(row[doc_col]) if doc_col else ""
+                # Skip completed sales documents.
+                if is_completed_document(row):
+                    continue
 
+                doc = (
+                    _ssa_norm(row[doc_col])
+                    if doc_col
+                    else ""
+                )
+
+                # Skip document types outside the scope of the field.
                 if not _ssa_doc_type_in(doc, allowed_types):
                     continue
 
+                # Generate an error when the applicable field is blank.
                 if _ssa_norm(row[col]) == "":
                     errors.append({
                         "Table": "VBAK",
@@ -11146,17 +11493,34 @@ def ssa_validar_mandatory_fields(vbak_df, vbap_df, marc_df=None, mvke_df=None):
                         "Plant": "",
                         "Field": field,
                         "Value": "",
-                        "Error": f"Mandatory field blank: '{field}'",
+                        "Error": (
+                            f"Mandatory field blank: '{field}'"
+                        ),
                     })
 
-        # Customer Group 3
-        cg3_col = _ssa_pick(vbak, ["Customer Group 3"])
+        # ── Customer Group 3 ──────────────────────────────────────────────────
+        cg3_col = _ssa_pick(
+            vbak,
+            ["Customer Group 3"],
+        )
 
         if cg3_col:
             for _, row in vbak.iterrows():
-                doc = _ssa_norm(row[doc_col]) if doc_col else ""
+                # Skip completed sales documents.
+                if is_completed_document(row):
+                    continue
 
-                if not _ssa_doc_type_in(doc, SSA_ORDER_TYPES_ZLZ_GROUP):
+                doc = (
+                    _ssa_norm(row[doc_col])
+                    if doc_col
+                    else ""
+                )
+
+                # Customer Group 3 applies only to the ZLZ document-type group.
+                if not _ssa_doc_type_in(
+                    doc,
+                    SSA_ORDER_TYPES_ZLZ_GROUP,
+                ):
                     continue
 
                 doc_type = doc_type_map.get(doc, "").upper()
@@ -11183,7 +11547,8 @@ def ssa_validar_mandatory_fields(vbak_df, vbap_df, marc_df=None, mvke_df=None):
                         "Field": "Customer Group 3",
                         "Value": "",
                         "Error": (
-                            "Mandatory field blank: 'Customer Group 3'"
+                            "Mandatory field blank: "
+                            "'Customer Group 3'"
                         ),
                     })
 
@@ -11959,18 +12324,81 @@ def ssa_validar_customer_reference(vbap_df, vbkd_df, vbak_df=None):
 
     return pd.DataFrame(errors, columns=empty_cols)
 
-def ssa_validar_weights(vbap_df, vbfa_df=None):
-    """
-    Item-level (only for Sales Document Types in SSA_ORDER_TYPES_ZLZ_OR_ZTAM_GROUP):
-    - Gross Weight and Net Weight must not be blank or zero
-    - Gross Weight must equal Net Weight
+def _ssa_item_key(value):
+    """Normalize SAP item numbers so 10, 10.0 and 000010 match."""
+    raw = _ssa_norm(value)
+    if raw == "":
+        return ""
+    try:
+        number = float(raw.replace(",", "."))
+        if number.is_integer():
+            return str(int(number))
+    except (TypeError, ValueError):
+        pass
+    stripped = raw.lstrip("0")
+    return stripped if stripped else "0"
 
-    OBD gating: if VBFA (Sales Document Flow) data is supplied and usable,
-    the weight checks only apply once an Outbound Delivery (OBD) has already
-    been generated for the item — i.e. VBFA has a row with Preceding
-    Document = this Sales Document (Item), Subsequent Doc. Cat. = 'J' and a
-    Preceding Document value. If VBFA is not supplied (or its columns are
-    not recognised), weights are validated unconditionally.
+
+def _ssa_build_active_demand_set(vbep_df):
+    """
+    Build {(Sales Document, Item)} for VBEP rows with Release Type = '1'.
+
+    VBAP and VBEP are matched by VBELN + POSNR. Item numbers are normalized
+    so Excel representations such as 10, 10.0 and 000010 resolve to the same
+    key. A VBEP item is considered to have active demand when at least one
+    matching row has Release Type/ABART equal to '1'.
+
+    Returns (active_demand, ready):
+      active_demand: set of normalized (document, item) pairs.
+      ready: True only when VBEP and all required columns are available.
+    """
+    if vbep_df is None or vbep_df.empty:
+        return set(), False
+
+    vbep = _ssa_load(vbep_df)
+    doc_col = _ssa_pick(vbep, ["Sales Document", "SD Document", "VBELN"])
+    item_col = _ssa_pick(vbep, ["Sales Document Item", "Item (SD)", "POSNR"])
+    release_col = _ssa_pick(vbep, ["Release Type", "ABART"])
+
+    if not all([doc_col, item_col, release_col]):
+        return set(), False
+
+    active_demand = set()
+    for _, row in vbep.iterrows():
+        if _ssa_norm(row[release_col]).upper() != "1":
+            continue
+        doc = _ssa_norm(row[doc_col])
+        item = _ssa_item_key(row[item_col])
+        if doc and item:
+            active_demand.add((doc, item))
+
+    return active_demand, True
+
+
+def ssa_validar_weights(vbap_df, vbfa_df=None, vbep_df=None):
+    """
+    Item-level weight validation for document types in
+    SSA_ORDER_TYPES_ZLZ_OR_ZTAM_GROUP.
+
+    Weight checks:
+      - Gross Weight and Net Weight must not be blank or zero.
+      - Gross Weight must equal Net Weight when both values are present.
+
+    Demand gating for ZLZ/ZLZM:
+      - Match VBAP to VBEP by Sales Document (VBELN) and Item (POSNR).
+      - Validate weights only when at least one matching VBEP row has
+        Release Type/ABART = '1'.
+      - If no matching VBEP row exists, or all matching rows carry another
+        Release Type, active demand is absent and weight validation is skipped.
+      - If VBEP is not supplied or its required columns are unavailable, the
+        ZLZ/ZLZM weight check is skipped and the dependency is exposed in the
+        Field Diagnostics output.
+
+    OBD gating for the remaining applicable document types:
+      - If usable VBFA data is supplied, validate weights only after an
+        Outbound Delivery exists for the item.
+      - VBFA does not add an additional gate to ZLZ/ZLZM because those types
+        are gated by active demand in VBEP.
     """
     errors = []
     empty_cols = ["Table", "Sales Document", "Item", "Material", "Plant", "Field", "Value", "Error"]
@@ -11980,14 +12408,18 @@ def ssa_validar_weights(vbap_df, vbfa_df=None):
 
     vbap = _ssa_load(vbap_df)
     obd_map, gate_on_obd = _ssa_build_obd_set(vbfa_df)
+    active_demand, vbep_ready = _ssa_build_active_demand_set(vbep_df)
 
     doc_col = _ssa_pick(vbap, ["Sales Document", "VBELN"])
-    item_col = _ssa_pick(vbap, ["Sales Document Item", "POSNR"])
-    mat_col  = _ssa_pick(vbap, ["Material", "MATNR"])
-    plt_col  = _ssa_pick(vbap, ["Plant", "WERKS"])
-    gwt_col  = _ssa_pick(vbap, ["Gross Weight"])
-    nwt_col  = _ssa_pick(vbap, ["Net Weight"])
-    status_col = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
+    item_col = _ssa_pick(vbap, ["Sales Document Item", "Item (SD)", "POSNR"])
+    mat_col = _ssa_pick(vbap, ["Material", "MATNR"])
+    plt_col = _ssa_pick(vbap, ["Plant", "WERKS"])
+    gwt_col = _ssa_pick(vbap, ["Gross Weight", "BRGEW"])
+    nwt_col = _ssa_pick(vbap, ["Net Weight", "NTGEW"])
+    status_col = _ssa_pick(
+        vbap,
+        ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"],
+    )
     rej_col = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
 
     if not all([doc_col, item_col, mat_col, plt_col, gwt_col, nwt_col, status_col]):
@@ -12002,14 +12434,21 @@ def ssa_validar_weights(vbap_df, vbfa_df=None):
             continue
 
         item = _ssa_norm(row[item_col])
+        item_key = _ssa_item_key(row[item_col])
+        doc_type = _SSA_ACTIVE_DOC_TYPE_MAP.get(doc, "").upper()
 
-        if gate_on_obd and not _ssa_has_obd(obd_map, doc, item):
-            continue  # OBD not generated yet — weights not required yet
+        if doc_type in SSA_ORDER_TYPES_ZLZ_GROUP:
+            # ZLZ/ZLZM: weights are mandatory only when active demand exists.
+            if not vbep_ready or (doc, item_key) not in active_demand:
+                continue
+        elif gate_on_obd and not _ssa_has_obd(obd_map, doc, item):
+            # Other applicable types retain the existing VBFA/OBD gate.
+            continue
 
-        mat   = _ssa_norm(row[mat_col])
+        mat = _ssa_norm(row[mat_col])
         plant = _ssa_norm(row[plt_col])
-        gwt   = row[gwt_col]
-        nwt   = row[nwt_col]
+        gwt = row[gwt_col]
+        nwt = row[nwt_col]
 
         if _ssa_is_zero_or_blank(gwt):
             errors.append({
@@ -12020,7 +12459,9 @@ def ssa_validar_weights(vbap_df, vbfa_df=None):
                 "Plant": plant,
                 "Field": "Gross Weight",
                 "Value": _ssa_norm(gwt),
-                "Error": "Gross Weight must not be blank or zero",
+                "Error": "Gross Weight must not be blank or zero: active demand exists in VBEP (Release Type='1')"
+                    if doc_type in SSA_ORDER_TYPES_ZLZ_GROUP
+                    else "Gross Weight must not be blank or zero",
             })
 
         if _ssa_is_zero_or_blank(nwt):
@@ -12032,10 +12473,16 @@ def ssa_validar_weights(vbap_df, vbfa_df=None):
                 "Plant": plant,
                 "Field": "Net Weight",
                 "Value": _ssa_norm(nwt),
-                "Error": "Net Weight must not be blank or zero",
+                "Error": "Net Weight must not be blank or zero: active demand exists in VBEP (Release Type='1')"
+                    if doc_type in SSA_ORDER_TYPES_ZLZ_GROUP
+                    else "Net Weight must not be blank or zero",
             })
 
-        if not _ssa_is_zero_or_blank(gwt) and not _ssa_is_zero_or_blank(nwt) and not _ssa_float_equal(gwt, nwt):
+        if (
+            not _ssa_is_zero_or_blank(gwt)
+            and not _ssa_is_zero_or_blank(nwt)
+            and not _ssa_float_equal(gwt, nwt)
+        ):
             errors.append({
                 "Table": "VBAP",
                 "Sales Document": doc,
@@ -12185,43 +12632,146 @@ def ssa_validar_incoterms_ddp_gb(vbak_df, vbkd_df, kna1_df, vbpa_df=None, vbap_d
 def ssa_validar_incompletion_log(vbak_df, vbap_df):
     """
     Incompletion Log checks (rejected items are skipped):
+
     A) VBAK Overall Header (FA) must not be 'A'
     B) VBAP Item (JC) must not be 'A'
+
+    Exception:
+    - VBAP items belonging to order type ZTAM are ignored when
+      Order Quantity (KWMENG) is zero.
     """
     errors = []
     completed_docs = _ssa_fully_rejected_docs(vbap_df)
 
+    # Store Sales Documents whose order type is ZTAM.
+    ztam_docs = set()
+
     # ── VBAK header check ─────────────────────────────────────────────────────
     if vbak_df is not None and not vbak_df.empty:
-        vbak    = _ssa_load(vbak_df)
-        doc_col = _ssa_pick(vbak, ["Sales Document", "VBELN"])
-        oh_col  = _ssa_pick(vbak, ["Overall Header", "UVALL"])
+        vbak = _ssa_load(vbak_df)
+
+        doc_col = _ssa_pick(
+            vbak,
+            [
+                "Sales Document",
+                "VBELN",
+            ],
+        )
+
+        order_type_col = _ssa_pick(
+            vbak,
+            [
+                "Sales Document Type",
+                "Order Type",
+                "Document Type",
+                "AUART",
+            ],
+        )
+
+        oh_col = _ssa_pick(
+            vbak,
+            [
+                "Overall Header",
+                "UVALL",
+            ],
+        )
+
+        # Identify all ZTAM Sales Documents.
+        if doc_col and order_type_col:
+            for _, row in vbak.iterrows():
+                doc = _ssa_norm(row[doc_col])
+                order_type = _ssa_norm(row[order_type_col]).upper()
+
+                if order_type == "ZTAM":
+                    ztam_docs.add(doc)
 
         if oh_col:
             for _, row in vbak.iterrows():
-                doc = _ssa_norm(row[doc_col]) if doc_col else ''
+                doc = _ssa_norm(row[doc_col]) if doc_col else ""
+
                 if doc in completed_docs:
                     continue
+
                 val = _ssa_norm(row[oh_col]).upper()
-                if val == 'A':
+
+                if val == "A":
                     errors.append({
-                        "Table":          "VBAK",
-                        "Sales Document": _ssa_norm(row[doc_col]) if doc_col else '',
-                        "Item": '', "Material": '', "Plant": '',
-                        "Field":  "Overall Header",
-                        "Value":  val,
-                        "Error":  "Incompletion Log: Overall Header = 'A' (document is incomplete)",
+                        "Table": "VBAK",
+                        "Sales Document": doc,
+                        "Item": "",
+                        "Material": "",
+                        "Plant": "",
+                        "Field": "Overall Header",
+                        "Value": val,
+                        "Error": (
+                            "Incompletion Log: Overall Header = 'A' "
+                            "(document is incomplete)"
+                        ),
                     })
 
     # ── VBAP item check (rejected items are skipped) ─────────────────────────
     if vbap_df is not None and not vbap_df.empty:
-        vbap     = _ssa_load(vbap_df)
-        doc_col  = _ssa_pick(vbap, ["Sales Document", "VBELN"])
-        item_col = _ssa_pick(vbap, ["Sales Document Item", "POSNR"])
-        mat_col  = _ssa_pick(vbap, ["Material", "MATNR"])
-        plt_col  = _ssa_pick(vbap, ["Plant", "WERKS"])
-        status_col = _ssa_pick(vbap, ["Overall Status", "Overall SD Status", "Overall Processing Status", "GBSTA", "GBSTK"])
-        rej_col = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
+        vbap = _ssa_load(vbap_df)
+
+        doc_col = _ssa_pick(
+            vbap,
+            [
+                "Sales Document",
+                "VBELN",
+            ],
+        )
+
+        item_col = _ssa_pick(
+            vbap,
+            [
+                "Sales Document Item",
+                "POSNR",
+            ],
+        )
+
+        mat_col = _ssa_pick(
+            vbap,
+            [
+                "Material",
+                "MATNR",
+            ],
+        )
+
+        plt_col = _ssa_pick(
+            vbap,
+            [
+                "Plant",
+                "WERKS",
+            ],
+        )
+
+        qty_col = _ssa_pick(
+            vbap,
+            [
+                "Order Quantity",
+                "KWMENG",
+            ],
+        )
+
+        status_col = _ssa_pick(
+            vbap,
+            [
+                "Overall Status",
+                "Overall SD Status",
+                "Overall Processing Status",
+                "GBSTA",
+                "GBSTK",
+            ],
+        )
+
+        rej_col = _ssa_pick(
+            vbap,
+            [
+                "Reason for Rejection",
+                "ABGRU",
+            ],
+        )
+
         itm_col = _ssa_pick(
             vbap,
             [
@@ -12233,22 +12783,77 @@ def ssa_validar_incompletion_log(vbak_df, vbap_df):
 
         if itm_col and status_col:
             for _, row in vbap.iterrows():
+                doc = _ssa_norm(row[doc_col]) if doc_col else ""
+
+                # Completed or rejected items are skipped.
                 if _ssa_item_is_done(row, status_col, rej_col):
-                    continue  # completed or rejected items are skipped
+                    continue
+
+                # Exception:
+                # Ignore ZTAM items when Order Quantity (KWMENG) is zero.
+                if doc in ztam_docs and qty_col:
+                    raw_qty = row[qty_col]
+
+                    try:
+                        if pd.isna(raw_qty):
+                            qty = None
+                        elif isinstance(raw_qty, str):
+                            qty_text = raw_qty.strip().replace(" ", "")
+
+                            # Supports values such as:
+                            # 0
+                            # 0.00
+                            # 0,00
+                            # 1,000.00
+                            # 1.000,00
+                            if "," in qty_text and "." in qty_text:
+                                if qty_text.rfind(",") > qty_text.rfind("."):
+                                    qty_text = (
+                                        qty_text
+                                        .replace(".", "")
+                                        .replace(",", ".")
+                                    )
+                                else:
+                                    qty_text = qty_text.replace(",", "")
+                            elif "," in qty_text:
+                                qty_text = qty_text.replace(",", ".")
+
+                            qty = float(qty_text)
+                        else:
+                            qty = float(raw_qty)
+
+                    except (TypeError, ValueError):
+                        qty = None
+
+                    if qty == 0:
+                        continue
 
                 val = _ssa_norm(row[itm_col]).upper()
-                if val != 'A':
+
+                if val != "A":
                     continue
 
                 errors.append({
                     "Table": "VBAP",
-                    "Sales Document": _ssa_norm(row[doc_col]) if doc_col else '',
-                    "Item":     _ssa_norm(row[item_col]) if item_col else '',
-                    "Material": _ssa_norm(row[mat_col])  if mat_col  else '',
-                    "Plant":    _ssa_norm(row[plt_col])  if plt_col  else '',
+                    "Sales Document": doc,
+                    "Item": (
+                        _ssa_norm(row[item_col])
+                        if item_col else ""
+                    ),
+                    "Material": (
+                        _ssa_norm(row[mat_col])
+                        if mat_col else ""
+                    ),
+                    "Plant": (
+                        _ssa_norm(row[plt_col])
+                        if plt_col else ""
+                    ),
                     "Field": "Item",
                     "Value": val,
-                    "Error": "Incompletion Log: Item status = 'A' (item is incomplete)",
+                    "Error": (
+                        "Incompletion Log: Item status = 'A' "
+                        "(item is incomplete)"
+                    ),
                 })
 
     return pd.DataFrame(errors)
@@ -12441,7 +13046,7 @@ def ssa_validar_mrp_for_ds(vbak_df):
 # -----------------------------------------------------------------------------
 def run_ssa_validation(
     vbak_file, vbap_file, vbkd_file, kna1_file,
-    marc_file=None, vbpa_file=None, vbfa_file=None, mvke_file=None,
+    marc_file=None, vbpa_file=None, vbfa_file=None, vbep_file=None, mvke_file=None,
     plant_filter=None,
     apply_styles=True,
 ):
@@ -12475,6 +13080,7 @@ def run_ssa_validation(
     marc = load_xlsx_fast(marc_file, sheet_name=0) if marc_file else None
     vbpa = load_xlsx_fast(vbpa_file, sheet_name=0) if vbpa_file else None
     vbfa = load_xlsx_fast(vbfa_file, sheet_name=0) if vbfa_file else None
+    vbep = load_xlsx_fast(vbep_file, sheet_name=0) if vbep_file else None
     mvke = load_xlsx_fast(mvke_file, sheet_name=0) if mvke_file else None
 
     if any(df is None or df.empty for df in [vbak, vbap, vbkd, kna1]):
@@ -12487,6 +13093,7 @@ def run_ssa_validation(
     marc = _ssa_load(marc) if marc is not None else None
     vbpa = _ssa_load(vbpa) if vbpa is not None else None
     vbfa = _ssa_load(vbfa) if vbfa is not None else None
+    vbep = _ssa_load(vbep) if vbep is not None else None
     mvke = _ssa_load(mvke) if mvke is not None else None
 
     # Validate the complete structural contract before filtering any dataset.
@@ -12499,6 +13106,7 @@ def run_ssa_validation(
         marc=marc,
         vbpa=vbpa,
         vbfa=vbfa,
+        vbep=vbep,
         mvke=mvke,
     )
     _ssa_print_input_diagnostics(field_diagnostics_df)
@@ -12532,6 +13140,7 @@ def run_ssa_validation(
     active_vbkd = _ssa_filter_docs(vbkd, active_docs, ["SD Document", "Sales Document", "VBELN"])
     active_vbpa = _ssa_filter_docs(vbpa, active_docs, ["SD Document", "Sales Document", "VBELN"])
     active_vbfa = _ssa_filter_docs(vbfa, active_docs, ["Preceding Document", "VBELV"])
+    active_vbep = _ssa_filter_docs(vbep, active_docs, ["Sales Document", "SD Document", "VBELN"])
 
     # S-* is included only in the four explicitly approved rules.
     non_s_vbap = _ssa_filter_non_s_items(active_vbap)
@@ -12547,6 +13156,7 @@ def run_ssa_validation(
     non_s_vbkd = _ssa_filter_docs(active_vbkd, non_s_docs, ["SD Document", "Sales Document", "VBELN"])
     non_s_vbpa = _ssa_filter_vbpa_non_s_items(active_vbpa, active_vbap)
     non_s_vbfa = _ssa_filter_docs(active_vbfa, non_s_docs, ["Preceding Document", "VBELV"])
+    non_s_vbep = _ssa_filter_docs(active_vbep, non_s_docs, ["Sales Document", "SD Document", "VBELN"])
 
     all_frames = [
         # S-* included.
@@ -12566,7 +13176,7 @@ def run_ssa_validation(
         # S-* included.
         ssa_validar_customer_reference(active_vbap, active_vbkd, active_vbak),
         # S-* excluded.
-        ssa_validar_weights(non_s_vbap, non_s_vbfa),
+        ssa_validar_weights(non_s_vbap, non_s_vbfa, non_s_vbep),
         ssa_validar_order_without_items(non_s_vbak, non_s_vbap),
         ssa_validar_customer_material(non_s_vbap),
         ssa_validar_mrp_for_ds(non_s_vbak),
