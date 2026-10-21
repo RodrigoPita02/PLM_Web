@@ -1,0 +1,98 @@
+{
+  "run_type": "INDIRECT_MATERIALS",
+  "timestamp": "2026-10-14T11:43:52",
+  "user": "RPITA",
+  "plant_filter": "ALL",
+  "files": {
+    "mara": "MARA.xlsx",
+    "marc": "MARC.xlsx",
+    "mvke": "MVKE.xlsx",
+    "mbew": "MBEW.xlsx"
+  },
+  "error_count": 41735,
+  "material_count": 7771,
+  "field_count": 24,
+  "summary": [
+    {
+      "Field": "Net Weight",
+      "Adjusted Nº of Errors": 7860
+    },
+    {
+      "Field": "Log. Handling Group",
+      "Adjusted Nº of Errors": 7860
+    },
+    {
+      "Field": "Gross Weight",
+      "Adjusted Nº of Errors": 7594
+    },
+    {
+      "Field": "Price Unit",
+      "Adjusted Nº of Errors": 7347
+    },
+    {
+      "Field": "Material Group",
+      "Adjusted Nº of Errors": 6243
+    },
+    {
+      "Field": "Item Category Group (MVKE)",
+      "Adjusted Nº of Errors": 1204
+    },
+    {
+      "Field": "LIFO/FIFO-relevant",
+      "Adjusted Nº of Errors": 859
+    },
+    {
+      "Field": "Purchasing Group",
+      "Adjusted Nº of Errors": 576
+    },
+    {
+      "Field": "Plant Specific Material Status",
+      "Adjusted Nº of Errors": 542
+    },
+    {
+      "Field": "MRP Type",
+      "Adjusted Nº of Errors": 538
+    },
+    {
+      "Field": "MRP Controller",
+      "Adjusted Nº of Errors": 510
+    },
+    {
+      "Field": "Handling Unit Type",
+      "Adjusted Nº of Errors": 285
+    },
+    {
+      "Field": "Division",
+      "Adjusted Nº of Errors": 158
+    },
+    {
+      "Field": "Automatic Purchase Order Allowed",
+      "Adjusted Nº of Errors": 32
+    },
+    {
+      "Field": "Source List Required",
+      "Adjusted Nº of Errors": 30
+    },
+    {
+      "Field": "General Item Category Group",
+      "Adjusted Nº of Errors": 22
+    },
+    {
+      "Field": "Availability Check",
+      "Adjusted Nº of Errors": 20
+    },
+    {
+      "Field": "Packaging Mat. Type",
+      "Adjusted Nº of Errors": 14
+    },
+    {
+      "Field": "Matl Grp Pack.Matls",
+      "Adjusted Nº of Errors": 11
+    },
+    {
+      "Field": "Lot Sizing Procedure ",
+      "Adjusted Nº of Errors": 9
+    }
+  ],
+  "report_path": "C:\\Users\\RPITA\\OneDrive - Visteon\\Desktop\\Rodrigo\\PLM_Web\\reports\\indirect\\2026-10\\20261014_114352_Indirect_Materials_ALL.xlsx"
+}

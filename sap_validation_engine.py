@@ -3787,6 +3787,43 @@ def validar_individual_collective_requirements_marc(marc_df, mara_df, resultados
                 "Plant": plant,
             })
 
+def validar_wh_material_group_mara(mara_df, resultados):
+    """
+    MARA: WH Material Group must be EMPTY for Material Types FERT, HALB and ROH.
+    Validation is material-level because the field belongs to MARA.
+    """
+    required_cols = {"Material", "Material Type", "WH Material Group"}
+    if (
+        mara_df is None
+        or mara_df.empty
+        or not required_cols.issubset(mara_df.columns)
+    ):
+        return
+
+    valid_material_types = {"FERT", "HALB", "ROH"}
+    mara = mara_df.drop_duplicates(subset=["Material"], keep="first")
+
+    for idx, row in mara.iterrows():
+        material = _norm_str(row.get("Material"))
+        material_type = _norm_str(row.get("Material Type")).upper()
+        wh_material_group = _norm_str(row.get("WH Material Group"))
+
+        if material_type not in valid_material_types:
+            continue
+
+        if wh_material_group != "":
+            resultados.append({
+                "Line": idx + 2,
+                "Field": "WH Material Group",
+                "Error": (
+                    "Field must be empty for Material Types FERT, HALB and ROH "
+                    f"(current: '{wh_material_group}')"
+                ),
+                "Material": material,
+                "Plant": "",
+            })
+
+
 def validar_packaging_material_type_mara(mara_df, resultados):
     """
     MARA:
@@ -6445,6 +6482,7 @@ def postprocess_with_views_roles_and_classification(
         'Storage Location for Ext. Procurement': lambda mt, pt: pt == 'PP',
         'Individual/ Collective Requirements':   lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
         'Packaging Mat. Type':                   lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],   
+        'WH Material Group':                     lambda mt, pt: mt in ['FERT', 'HALB', 'ROH'],
         'Production Supervisor':                 lambda mt, pt: mt in ['FERT', 'HALB'],   
         'Batch Management(Plant)':               lambda mt, pt: pt in ['PP', 'COI'],
         'Advanced Planning':                     lambda mt, pt: True,
@@ -6573,7 +6611,7 @@ def run_full_validation(
 
     NOTE: This engine no longer depends on the Item Browse Report / SAPUI5
     Export. Like the Tunisia engine, it builds an equivalent flat dataframe
-    (`sap_like_df`) from MARC + MARA + ZPLM MARC via build_sap_like_df(),
+    (`sap_like_df`) from MARC + MARA + ZPLM MARC via build_sap_like_df(),22
     and runs the exact same validar_* functions against it.
     """
     def _cb(pct, msg):
@@ -6877,6 +6915,7 @@ def run_full_validation(
         (64, lambda: validar_production_supervisor_marc(marc_df, mara_df, resultados)),
         (66, lambda: validar_product_hierarchy_vs_enterproj(mara_df, zplm_mara_df, resultados)),
         (67, lambda: validar_packaging_material_type_mara(mara_df, resultados)),
+        (67, lambda: validar_wh_material_group_mara(mara_df, resultados)),
         (68, lambda: validar_production_scheduling_profile(sap_like_df, resultados)),
         (69, lambda: validar_country_region_origin_fp(marc_df, zplm_marc_df, mara_df, resultados)),
         (69, lambda: validar_commodity_code_fp(marc_df, zplm_marc_df, mara_df, resultados)),
@@ -9576,6 +9615,7 @@ __all__ = [
     "validar_mrp_controller",
     "validar_plant_specific_material_status",
     "validar_enterproj_number",
+    "validar_wh_material_group_mara",
 
     # --- Part 2: Cross-file validations ---
     "validar_account_assignment_group",
