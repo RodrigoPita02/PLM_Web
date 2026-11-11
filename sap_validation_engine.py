@@ -105,6 +105,15 @@ RULE_MATERIAL_TYPE_OVERRIDES = {
 # so they go to the Missing View tables instead of "Field With Error".
 MARA_MAINT_STATUS_C_FIELD = 'Maintenance Status (MARA)'
 
+# Materials that do NOT need view 'C' (Classification) -> never reported by the
+# MARA "Maintenance status must contain 'C'" rule, hence never shown as
+# Missing View 'C' nor in the Field With Error / summary / coverage tables.
+# Independent from BATCH_MANAGEMENT_HALB_LIKE_MATERIALS (that one also changes
+# the Batch Management rules; this one only affects view 'C').
+MARA_MAINT_STATUS_C_EXEMPT_MATERIALS = {
+    'VPTXDF-10A855-DA',
+}
+
 # Field names as DISPLAYED in the generated file (internal names, Roles lookups
 # and field_rules keep the original names).
 FIELD_DISPLAY_RENAMES = {
@@ -4136,6 +4145,10 @@ def validar_maintenance_status_c_roh_mara(mara_df, resultados, sap_df=None):
 
         # Exception: listed ROH with PP/COI are treated as HALB -> no 'C' needed
         if _norm_str(row.get(mat_col)) in halb_like_materials:
+            continue
+
+        # Exception: materials that never need view 'C'
+        if _norm_str(row.get(mat_col)).upper() in MARA_MAINT_STATUS_C_EXEMPT_MATERIALS:
             continue
 
         status = _norm_str(row.get(ms_col)).upper()
@@ -11721,6 +11734,54 @@ def _ssa_fully_rejected_docs(vbap_df):
             closed.add(doc)
     return closed
 
+# Order types whose items must NEVER be reported by any SSA rule when the
+# Reason for Rejection (VBAP-ABGRU) is filled. Add "ZLZM" here to extend it.
+SSA_REJECTION_EXCLUDED_ORDER_TYPES = {"ZLZ"}
+
+
+def _ssa_rejected_item_keys(vbap_df, order_types=SSA_REJECTION_EXCLUDED_ORDER_TYPES):
+    """
+    Return {(sales_document, item_key)} for every VBAP item whose Reason for
+    Rejection (VBAP-ABGRU) is filled and whose Sales Document Type is in
+    order_types. Needs _SSA_ACTIVE_DOC_TYPE_MAP to be set already.
+    """
+    if vbap_df is None or vbap_df.empty:
+        return set()
+    vbap = _ssa_load(vbap_df)
+    doc_col = _ssa_pick(vbap, ["Sales Document", "VBELN"])
+    item_col = _ssa_pick(vbap, ["Sales Document Item", "Item (SD)", "POSNR"])
+    rej_col = _ssa_pick(vbap, ["Reason for Rejection", "ABGRU"])
+    if not doc_col or not item_col or not rej_col:
+        return set()
+    keys = set()
+    for doc, item, rej in zip(vbap[doc_col], vbap[item_col], vbap[rej_col]):
+        doc = _ssa_norm(doc)
+        if not doc or _ssa_norm(rej) == "":
+            continue
+        if _SSA_ACTIVE_DOC_TYPE_MAP.get(doc, "").upper() not in order_types:
+            continue
+        keys.add((doc, _ssa_item_key(item)))
+    return keys
+
+
+def _ssa_drop_rejected_items(frame, rejected_keys, order_types=SSA_REJECTION_EXCLUDED_ORDER_TYPES):
+    """
+    Central safety net: remove from an SSA rule result every row that points
+    to a rejected item (VBAP-ABGRU filled) of the given order types.
+    Header-level rows (blank Item) are kept.
+    """
+    if frame is None or frame.empty or not rejected_keys:
+        return frame
+    if not {"Order Type", "Sales Document", "Item"}.issubset(frame.columns):
+        return frame
+    is_type = frame["Order Type"].astype(str).str.strip().str.upper().isin(order_types)
+    is_rej = [
+        (_ssa_norm(d), _ssa_item_key(i)) in rejected_keys
+        for d, i in zip(frame["Sales Document"], frame["Item"])
+    ]
+    return frame[~(is_type & pd.Series(is_rej, index=frame.index))].reset_index(drop=True)
+
+
 def _ssa_build_obd_set(vbfa_df):
     """
     Build the set of Sales Documents/items for which an Outbound Delivery
@@ -13685,6 +13746,12 @@ def run_ssa_validation(
     ]
 
     all_frames = [_ssa_add_order_type_column(frame) for frame in all_frames]
+
+    # ZLZ items with Reason for Rejection (VBAP-ABGRU) filled are never
+    # reported, whatever the rule. Applied once, centrally, so no individual
+    # rule can leak them (and future rules are covered automatically).
+    _rejected_keys = _ssa_rejected_item_keys(vbap)
+    all_frames = [_ssa_drop_rejected_items(frame, _rejected_keys) for frame in all_frames]
 
     non_empty_frames = [frame for frame in all_frames if frame is not None and not frame.empty]
     all_errors_df = (
