@@ -92,6 +92,137 @@ RULE_MATERIAL_TYPE_OVERRIDES = {
 }
 
 # =============================================================================
+# BATCH MANAGEMENT — MATERIAL TYPE EXCEPTION
+# Applies ONLY to the two Batch Management validations
+# (validar_batch_management and validar_batch_management_plant_marc).
+# The listed materials, when they are ROH with Plant Type PP or COI,
+# are evaluated as if their Material Type were HALB.
+# The same exception is also used by the MARA 'Maintenance status must
+# contain C' rule (validar_maintenance_status_c_roh_mara).
+# =============================================================================
+# Field name used by the MARA "Maintenance status must contain 'C'" validation.
+# Errors of this field are treated as a MISSING VIEW (view 'C' - Classification),
+# so they go to the Missing View tables instead of "Field With Error".
+MARA_MAINT_STATUS_C_FIELD = 'Maintenance Status (MARA)'
+
+# Field names as DISPLAYED in the generated file (internal names, Roles lookups
+# and field_rules keep the original names).
+FIELD_DISPLAY_RENAMES = {
+    'Export/Import Group': 'Intrastat Group',
+    'Batch Management Required Ind.': 'Batch Management (Plant)',
+    'Batch Management(Plant)': 'Batch Management (Plant)',
+    'Batch Management (MARA)': 'Batch Management (Global)',
+}
+
+BATCH_GLOBAL_FIELD = 'Batch Management (Global)'
+_BATCH_PLANT_FIELD_KEYS = {
+    'batch management required ind.',
+    'batch management(plant)',
+    'batch management (plant)',
+}
+
+
+def _field_key(x):
+    """Case / whitespace-insensitive key used to match field names."""
+    import re as _re
+    return _re.sub(r'\s+', ' ', str(x)).strip().lower()
+
+
+def apply_display_field_renames(df_):
+    """
+    Rename the 'Field' column VALUES to the names shown in the report
+    (FIELD_DISPLAY_RENAMES). Matching ignores case and extra spaces.
+    Safe on empty frames / frames without a 'Field' column.
+    """
+    if df_ is None or not hasattr(df_, 'columns') or 'Field' not in df_.columns or df_.empty:
+        return df_
+    lookup = {_field_key(k): v for k, v in FIELD_DISPLAY_RENAMES.items()}
+    df_ = df_.copy()
+    df_['Field'] = df_['Field'].astype(object).map(
+        lambda f: lookup.get(_field_key(f), f) if isinstance(f, str) else f
+    )
+    return df_
+
+
+def consolidar_batch_management_errors(resultados, sap_df=None):
+    """
+    If a material has the plant-level Batch Management error in ALL of its plants
+    (at least 2) AND the global Batch Management error, keep ONLY the global one.
+    Works on the raw `resultados` list (in place). Returns the number of removed errors.
+    """
+    if not resultados:
+        return 0
+
+    global_key = _field_key(BATCH_GLOBAL_FIELD)
+    global_mats = set()
+    err_plants = {}
+    for r in resultados:
+        fk = _field_key(r.get('Field', ''))
+        mat = _norm_str(r.get('Material'))
+        if fk == global_key:
+            global_mats.add(mat)
+        elif fk in _BATCH_PLANT_FIELD_KEYS:
+            err_plants.setdefault(mat, set()).add(_norm_str(r.get('Plant')).upper())
+
+    if not global_mats:
+        return 0
+
+    all_plants = {}
+    if sap_df is not None and not sap_df.empty and {'Material', 'Plant'}.issubset(sap_df.columns):
+        for m, pl in zip(sap_df['Material'], sap_df['Plant']):
+            all_plants.setdefault(_norm_str(m), set()).add(_norm_str(pl).upper())
+
+    drop = set()
+    for mat in global_mats:
+        ep = err_plants.get(mat, set())
+        plants = all_plants.get(mat, ep)
+        if len(ep) >= 2 and plants <= ep:
+            drop.add(mat)
+
+    if not drop:
+        return 0
+
+    before = len(resultados)
+    resultados[:] = [
+        r for r in resultados
+        if not (
+            _field_key(r.get('Field', '')) in _BATCH_PLANT_FIELD_KEYS
+            and _norm_str(r.get('Material')) in drop
+        )
+    ]
+    return before - len(resultados)
+
+BATCH_MANAGEMENT_HALB_LIKE_MATERIALS = {
+    "VPTVQF-15K258-AC",
+    "VPVFEF-10841-BA",
+    "VPVFEF-10841-BC",
+    "VPVFEF-19G526-AA",
+    "VPVFEF-19G526-CA",
+    "VPWXRF-10841-AA",
+}
+
+
+def get_batch_management_effective_material_type(material, real_mt, plant_type):
+    """
+    Effective Material Type for the Batch Management rules only.
+
+    ROH + Plant Type PP/COI on one of BATCH_MANAGEMENT_HALB_LIKE_MATERIALS
+    is treated as 'HALB'. Everything else keeps its real Material Type.
+    """
+    material = '' if material is None or (isinstance(material, float) and pd.isna(material)) else str(material).strip()
+    real_mt = '' if real_mt is None or (isinstance(real_mt, float) and pd.isna(real_mt)) else str(real_mt).strip().upper()
+    plant_type = '' if plant_type is None or (isinstance(plant_type, float) and pd.isna(plant_type)) else str(plant_type).strip().upper()
+
+    if (
+        material.upper() in BATCH_MANAGEMENT_HALB_LIKE_MATERIALS
+        and real_mt == 'ROH'
+        and plant_type in {'PP', 'COI'}
+    ):
+        return 'HALB'
+    return real_mt
+
+
+# =============================================================================
 # 2) GENERAL HELPERS
 # =============================================================================
 
@@ -809,16 +940,21 @@ def validar_batch_management(df, resultados):
     Rules:
       - TN02: Batch Management Required Ind. must be empty.
       - Outside TN02:
-          - PP / COI -> 'Yes' (1)
-          - All other Plant Types -> 'No' (0)
+          - ROH with Plant Type PP / COI -> must be marked ('Yes' / 1)
+          - FERT and HALB (any Plant Type) -> must NOT be marked ('No' / 0)
+          - ROH with any other Plant Type -> must NOT be marked ('No' / 0)
 
-    The TN02 rule takes precedence over the Plant Type rule.
+    Exception: the materials in BATCH_MANAGEMENT_HALB_LIKE_MATERIALS, when
+    ROH with Plant Type PP / COI, are treated as HALB (must NOT be marked).
+
+    The TN02 rule takes precedence over the Material Type / Plant Type rules.
     """
     col = 'Batch Management Required Ind.'
 
     required_columns = {
         'Plant',
         'Plant Type',
+        'Material Type',
         col,
     }
 
@@ -836,69 +972,56 @@ def validar_batch_management(df, resultados):
     for idx, row in df.iterrows():
         erros = []
 
-        plant = str(
-            row.get('Plant', '')
-        ).strip().upper()
-
-        plant_type = str(
-            row.get('Plant Type', '')
-        ).strip().upper()
+        plant = str(row.get('Plant', '')).strip().upper()
+        plant_type = str(row.get('Plant Type', '')).strip().upper()
 
         raw_batch_ind = row.get(col)
-
         batch_ind = (
             ''
             if pd.isna(raw_batch_ind)
             else str(raw_batch_ind).strip().upper()
         )
 
-        # ========================================================
-        # RULE 1
-        # TN02 must always be empty.
-        #
-        # This rule takes precedence over the Plant Type rule.
-        # ========================================================
+        # Normalise: '1' / 'X' = marked, '0' = not marked
+        is_marked = batch_ind in ('1', 'X', '1.0')
+        is_unmarked = batch_ind in ('0', '0.0')
+
+        real_mt = str(row.get('Material Type', '')).strip().upper()
+        material_type = get_batch_management_effective_material_type(
+            row.get('Material'),
+            real_mt,
+            plant_type,
+        )
+        exception_applied = (material_type != real_mt)
+
         if plant == 'TN02':
+            # TN02 must always be empty (takes precedence)
             if batch_ind != '':
                 erros.append(
                     "For Plant 'TN02', should be blank "
                     f"(Current: '{batch_ind}')"
                 )
 
-        # ========================================================
-        # RULE 2
-        # Outside TN02, PP and COI must have Yes (1).
-        #
-        # X is accepted as equivalent to 1.
-        # ========================================================
-        elif plant_type in ('PP', 'COI'):
+        elif material_type == 'ROH' and plant_type in ('PP', 'COI'):
+            # ROH + PP/COI -> must be marked
             if batch_ind == '':
+                erros.append('Mandatory field blank')
+            elif not is_marked:
                 erros.append(
-                    'Mandatory field blank'
+                    f"For Material Type 'ROH' with Plant Type '{plant_type}', "
+                    f"should be 'Yes' (Current: '{batch_ind}')"
                 )
 
-            elif batch_ind not in ('1', 'X'):
-                erros.append(
-                    f"For Plant Type '{plant_type}', "
-                    "should be 'Yes' "
-                    f"(Current: '{batch_ind}')"
-                )
-
-        # ========================================================
-        # RULE 3
-        # Outside TN02, all other Plant Types must have No (0).
-        # ========================================================
         else:
+            # FERT / HALB (and ROH outside PP/COI) -> must NOT be marked
+            mt_label = "ROH (treated as HALB)" if exception_applied else material_type
             if batch_ind == '':
+                erros.append('Mandatory field blank')
+            elif not is_unmarked:
                 erros.append(
-                    'Mandatory field blank'
-                )
-
-            elif batch_ind != '0':
-                erros.append(
-                    f"For Plant Type '{plant_type}', "
-                    "should be 'No' "
-                    f"(Current: '{batch_ind}')"
+                    f"For Material Type '{mt_label}' "
+                    f"with Plant Type '{plant_type}', "
+                    f"should be 'No' (Current: '{batch_ind}')"
                 )
 
         if erros:
@@ -906,11 +1029,93 @@ def validar_batch_management(df, resultados):
                 'Line': idx + 2,
                 'Field': col,
                 'Error': ' | '.join(erros),
-                'Material': str(
-                    row.get('Material', '')
-                ).strip(),
+                'Material': str(row.get('Material', '')).strip(),
                 'Plant': plant,
             })
+
+
+def validar_batch_management_mara_global(sap_df, mara_df, resultados):
+    """
+    MARA (global) 'Batch Management' — material level, same rule as plant level.
+
+    A material must have the global flag marked when at least one of its plants
+    requires it at plant level (ROH with Plant Type PP / COI, TN02 excluded).
+    Otherwise (FERT, HALB, ROH without PP/COI plants, and the materials in
+    BATCH_MANAGEMENT_HALB_LIKE_MATERIALS when ROH with PP/COI) it must NOT be marked.
+
+    Reported once per material (Plant blank), Field 'Batch Management (Global)',
+    so it never collides with the plant-level error of the same material.
+    """
+    field = 'Batch Management (Global)'
+
+    if sap_df is None or sap_df.empty or mara_df is None or mara_df.empty:
+        return
+    if 'Batch Management' not in mara_df.columns or 'Material' not in mara_df.columns:
+        print("⚠️ MARA has no 'Batch Management' column - global Batch Management validation skipped.")
+        return
+    if not {'Material', 'Plant', 'Plant Type', 'Material Type'}.issubset(sap_df.columns):
+        return
+
+    def _flag(v):
+        v = '' if v is None or (isinstance(v, float) and pd.isna(v)) else str(v).strip().upper()
+        return 'X' if v in ('X', '1', '1.0') else ('' if v in ('', '0', '0.0', 'NAN', 'NONE') else v)
+
+    mara = mara_df.copy()
+    mara['Material'] = mara['Material'].fillna('').astype(str).str.strip()
+    mara = mara.drop_duplicates(subset=['Material'], keep='first')
+    mara_flag = dict(zip(mara['Material'], mara['Batch Management'].map(_flag)))
+    mara_type = (
+        dict(zip(mara['Material'], mara['Material Type'].fillna('').astype(str).str.strip().str.upper()))
+        if 'Material Type' in mara.columns else {}
+    )
+    mara_line = {m: i + 2 for i, m in enumerate(mara['Material'])}
+
+    plants_requiring = {}   # material -> sorted plants that require batch management
+    seen_materials = set()
+    for _, row in sap_df.iterrows():
+        material = _norm_str(row.get('Material'))
+        plant = _norm_str(row.get('Plant')).upper()
+        if not material or plant == 'TN02':
+            continue
+        seen_materials.add(material)
+        plant_type = _norm_str(row.get('Plant Type')).upper()
+        eff_mt = get_batch_management_effective_material_type(
+            material, _norm_str(row.get('Material Type')).upper(), plant_type
+        )
+        if eff_mt == 'ROH' and plant_type in ('PP', 'COI'):
+            plants_requiring.setdefault(material, set()).add(plant)
+
+    for material in sorted(seen_materials):
+        if material not in mara_flag:
+            continue
+        current = mara_flag[material]
+        required = material in plants_requiring
+        mt = mara_type.get(material, '')
+
+        if required and current != 'X':
+            plants = ', '.join(sorted(plants_requiring[material]))
+            error = (
+                "Mandatory field blank " if current == '' else f"Current: '{current}' "
+            ) + (
+                "- Batch Management (Global) should be 'Yes' "
+                f"(ROH with Plant Type PP/COI in {plants})"
+            )
+        elif (not required) and current == 'X':
+            error = (
+                "Batch Management (Global) should be 'No' "
+                f"(Material Type '{mt}' without any ROH PP/COI plant)"
+            )
+        else:
+            continue
+
+        resultados.append({
+            'Line': mara_line.get(material, ''),
+            'Field': field,
+            'Error': error,
+            'Material': material,
+            'Plant': '',
+        })
+
 
 def validar_consumption_mode(df, resultados):
     """FERT -> 0 or empty; all other Material Types -> 2 (mandatory)."""
@@ -3824,6 +4029,188 @@ def validar_wh_material_group_mara(mara_df, resultados):
             })
 
 
+def _find_col_ci(df, candidates):
+    """Case-insensitive column lookup. Returns the real column name or None."""
+    if df is None:
+        return None
+    lookup = {str(c).strip().lower(): c for c in df.columns}
+    for cand in candidates:
+        hit = lookup.get(str(cand).strip().lower())
+        if hit is not None:
+            return hit
+    return None
+
+
+def validar_reference_matl_for_packing_mara(mara_df, resultados):
+    """
+    MARA: 'Reference matl for packing' must be 'REF_PACK_MAT_EA'
+    for Material Types FERT, HALB and ROH.
+    Validation is material-level (field belongs to MARA).
+    """
+    if mara_df is None or mara_df.empty:
+        return
+
+    ref_col = _find_col_ci(mara_df, [
+        'Reference matl for packing',
+        'Reference material for packing',
+        'Ref. material for packing',
+        'Ref. matl for packing',
+    ])
+    mat_col = _find_col_ci(mara_df, ['Material'])
+    mt_col = _find_col_ci(mara_df, ['Material Type'])
+
+    if ref_col is None or mat_col is None or mt_col is None:
+        print("⚠️ MARA is missing 'Reference matl for packing' (or Material / Material Type).")
+        return
+
+    expected = 'REF_PACK_MAT_EA'
+    valid_material_types = {'FERT', 'HALB', 'ROH'}
+    mara = mara_df.drop_duplicates(subset=[mat_col], keep='first')
+
+    for idx, row in mara.iterrows():
+        material = _norm_str(row.get(mat_col))
+        material_type = _norm_str(row.get(mt_col)).upper()
+        if material_type not in valid_material_types:
+            continue
+
+        value = _norm_str(row.get(ref_col))
+
+        if value == '':
+            error = f"Mandatory field blank (should be '{expected}')"
+        elif value.upper() != expected:
+            error = f"Invalid value: '{value}' (should be '{expected}')"
+        else:
+            continue
+
+        resultados.append({
+            'Line': idx + 2,
+            'Field': 'Reference matl for packing',
+            'Error': f"{error} for Material Type {material_type}",
+            'Material': material,
+            'Plant': '',
+        })
+
+
+def validar_maintenance_status_c_roh_mara(mara_df, resultados, sap_df=None):
+    """
+    MARA: 'Maintenance status' must contain the letter 'C'
+    for Material Type ROH (Classification view maintained).
+    Validation is material-level (MARA, not MARC).
+
+    Exception (same one as Batch Management): the materials in
+    BATCH_MANAGEMENT_HALB_LIKE_MATERIALS, when ROH with Plant Type PP / COI
+    in at least one plant, are treated as HALB -> they do NOT need the
+    letter 'C' and are therefore never reported (nor as Missing View).
+    Needs sap_df (Material / Material Type / Plant Type) to know the Plant Type.
+    """
+    if mara_df is None or mara_df.empty:
+        return
+
+    halb_like_materials = set()
+    if (
+        sap_df is not None
+        and not sap_df.empty
+        and {'Material', 'Material Type', 'Plant Type'}.issubset(sap_df.columns)
+    ):
+        for _, _r in sap_df.iterrows():
+            _m = _norm_str(_r.get('Material'))
+            if get_batch_management_effective_material_type(
+                _m, _norm_str(_r.get('Material Type')), _norm_str(_r.get('Plant Type'))
+            ) == 'HALB' and _norm_str(_r.get('Material Type')).upper() == 'ROH':
+                halb_like_materials.add(_m)
+
+    ms_col = _find_col_ci(mara_df, ['Maintenance status', 'Maintenance Status', 'PSTAT'])
+    mat_col = _find_col_ci(mara_df, ['Material'])
+    mt_col = _find_col_ci(mara_df, ['Material Type'])
+
+    if ms_col is None or mat_col is None or mt_col is None:
+        print("⚠️ MARA is missing 'Maintenance status' (or Material / Material Type).")
+        return
+
+    mara = mara_df.drop_duplicates(subset=[mat_col], keep='first')
+
+    for idx, row in mara.iterrows():
+        material_type = _norm_str(row.get(mt_col)).upper()
+        if material_type != 'ROH':
+            continue
+
+        # Exception: listed ROH with PP/COI are treated as HALB -> no 'C' needed
+        if _norm_str(row.get(mat_col)) in halb_like_materials:
+            continue
+
+        status = _norm_str(row.get(ms_col)).upper()
+        if 'C' in status:
+            continue
+
+        resultados.append({
+            'Line': idx + 2,
+            'Field': MARA_MAINT_STATUS_C_FIELD,
+            'Error': (
+                "Maintenance status must contain the letter 'C' for Material Type ROH "
+                f"(current: '{status or 'blank'}')"
+            ),
+            'Material': _norm_str(row.get(mat_col)),
+            'Plant': '',
+        })
+
+
+def validar_special_procurement_type_pt02_transfer(marc_df, zplm_marc_df, resultados):
+    """
+    MARC: Special Procurement Type — PT02 with transfer.
+
+    Rule:
+      - PT02 materials with 'Material Transfer' marked in ZPLM MARC
+        must have Special Procurement Type = 'Z2'.
+
+    Notes:
+      - PT02 without transfer is not validated by this rule.
+      - PT01 is not validated by this rule.
+      - Scope follows marc_df (already restricted to FERT/HALB/ROH).
+    """
+    col = 'Special Procurement Type'
+
+    if marc_df is None or marc_df.empty or zplm_marc_df is None or zplm_marc_df.empty:
+        return
+    if not {'Material', 'Plant', col}.issubset(marc_df.columns):
+        return
+
+    transfer_map = build_material_transfer_map(zplm_marc_df)
+    if not transfer_map:
+        return
+
+    for idx, row in marc_df.iterrows():
+        plant = _norm_str(row.get('Plant')).upper()
+        if plant != 'PT02':
+            continue
+
+        material = _norm_str(row.get('Material'))
+        if not transfer_map.get((material, plant), False):
+            continue
+
+        value = _norm_str(row.get(col)).upper()
+
+        if value == '':
+            error = (
+                "Mandatory field blank "
+                "(PT02 with transfer requires Special Procurement Type = 'Z2')"
+            )
+        elif value != 'Z2':
+            error = (
+                "PT02 with transfer requires Special Procurement Type = 'Z2' "
+                f"(current: '{value}')"
+            )
+        else:
+            continue
+
+        resultados.append({
+            'Line': idx + 2,
+            'Field': col,
+            'Error': error,
+            'Material': material,
+            'Plant': plant,
+        })
+
+
 def validar_packaging_material_type_mara(mara_df, resultados):
     """
     MARA:
@@ -3934,13 +4321,16 @@ def validar_batch_management_plant_marc(
          Batch Management(Plant) must be empty.
 
     2. Outside TN02:
-         - Plant Type PP or COI:
+         - ROH with Plant Type PP or COI:
              Batch Management(Plant) must be active.
              Accepted values: '1' or 'X'.
 
-         - Other Plant Types:
+         - FERT and HALB (any Plant Type), and ROH with other Plant Types:
              Batch Management(Plant) must not be active.
              Therefore, it must not contain '1' or 'X'.
+
+         - Exception: BATCH_MANAGEMENT_HALB_LIKE_MATERIALS, when ROH with
+           PP/COI, are treated as HALB (must NOT be active).
 
     3. Dependency rule outside TN02:
          If Batch Management(Plant) is active,
@@ -4151,6 +4541,14 @@ def validar_batch_management_plant_marc(
             row.get('Material Type')
         ).upper()
 
+        # Material Type exception: listed materials that are ROH with
+        # Plant Type PP/COI are treated as HALB (Batch Management only).
+        material_type = get_batch_management_effective_material_type(
+            material,
+            material_type,
+            plant_type,
+        )
+
         batch_management_plant = _norm_str(
             row.get(marc_field)
         ).upper()
@@ -4194,17 +4592,17 @@ def validar_batch_management_plant_marc(
         #
         # Both 1 and X are accepted.
         # ========================================================
-        elif plant_type in {'PP', 'COI'}:
+        elif material_type == 'ROH' and plant_type in {'PP', 'COI'}:
             if batch_management_plant == '':
                 erros.append(
                     "Mandatory field blank "
-                    f"(Plant Type '{plant_type}' requires "
+                    f"(ROH with Plant Type '{plant_type}' requires "
                     "Batch Management(Plant) = '1' or 'X')"
                 )
 
             elif batch_management_plant not in active_values:
                 erros.append(
-                    f"For Plant Type '{plant_type}', "
+                    f"For Material Type 'ROH' with Plant Type '{plant_type}', "
                     "Batch Management(Plant) should be 'Yes' "
                     f"(Current: '{batch_management_plant}')"
                 )
@@ -4220,7 +4618,8 @@ def validar_batch_management_plant_marc(
             if batch_management_plant in active_values:
                 erros.append(
                     "Batch Management(Plant) should be 'No' "
-                    f"for Plant Type '{plant_type}' "
+                    f"for Material Type '{material_type}' "
+                    f"with Plant Type '{plant_type}' "
                     f"(Current: '{batch_management_plant}')"
                 )
 
@@ -6284,6 +6683,10 @@ def postprocess_with_views_roles_and_classification(
 
     if 'Field' in errors_df.columns:
         errors_df['View'] = errors_df['Field'].map(field_to_view).fillna('Not applicable')
+        # MARA Maintenance status 'C' rule -> view C (Classification)
+        errors_df.loc[
+            errors_df['Field'].astype(str).str.strip() == MARA_MAINT_STATUS_C_FIELD, 'View'
+        ] = 'C'
     else:
         errors_df['View'] = 'Not applicable'
 
@@ -6359,6 +6762,9 @@ def postprocess_with_views_roles_and_classification(
             _missing_lookup[_key] = set(_raw.split(',')) if isinstance(_raw, str) and _raw else set()
 
     def classify_error(row):
+        # The validation itself proves view 'C' is not maintained (MARA level)
+        if str(row.get('Field', '')).strip() == MARA_MAINT_STATUS_C_FIELD:
+            return 'Missing View'
         view = str(row.get('View', '')).strip()
         if view not in ('', 'Not applicable'):
             _key = (str(row.get('Material', '')).strip(), str(row.get('Plant', '')).strip())
@@ -6408,13 +6814,8 @@ def postprocess_with_views_roles_and_classification(
     # -----------------------------------------------
     # 8) Field renames (Export/Import Group -> Intrastat Group)
     # -----------------------------------------------
-    field_renames = {'Export/Import Group': 'Intrastat Group'}
-
     def apply_field_renames(df_):
-        df_ = df_.copy()
-        if 'Field' in df_.columns:
-            df_['Field'] = df_['Field'].replace(field_renames)
-        return df_
+        return apply_display_field_renames(df_)
 
     errors_df               = apply_field_renames(errors_df)
     errors_filtered_df      = apply_field_renames(errors_filtered_df)
@@ -6533,14 +6934,59 @@ def postprocess_with_views_roles_and_classification(
                     'Plant':            str(r['Plant']).strip(),
                     'Missing_View':     v,
                     'View_Description': view_to_desc.get(v, ''),
-                    'Fields_Expected':  ','.join(view_to_fields.get(v, [])),
+                    'Fields_Expected':  ','.join(FIELD_DISPLAY_RENAMES.get(_f, _f) for _f in view_to_fields.get(v, [])),
                 })
         if rows:
             df_view = pd.DataFrame(rows)
             if not df_view.empty:
                 df_view = df_view.drop_duplicates(subset=['Material', 'Plant', 'Missing_View']).reset_index(drop=True)
             view_tabs_dict[v] = df_view
-    
+
+    # -------------------------------------------------
+    # View 'C' (Classification) missing at MARA level
+    # (ROH without letter 'C' in MARA Maintenance status)
+    # -> same output pattern as every other missing view:
+    #    Missing_C tab, "View is Missing" sheet and coverage table.
+    # -------------------------------------------------
+    if not errors_df.empty and 'Field' in errors_df.columns:
+        _c_errs = errors_df[errors_df['Field'].astype(str).str.strip() == MARA_MAINT_STATUS_C_FIELD]
+        if not _c_errs.empty:
+            _c_mats = set(_c_errs['Material'].astype(str).str.strip())
+            _plants_by_mat = (
+                marc_filtered.assign(
+                    _M=marc_filtered['Material'].astype(str).str.strip(),
+                    _P=marc_filtered['Plant'].astype(str).str.strip(),
+                )
+                .groupby('_M')['_P'].apply(lambda x: sorted(set(x))).to_dict()
+            )
+            _c_rows = []
+            for _m in sorted(_c_mats):
+                for _pl in (_plants_by_mat.get(_m) or ['']):
+                    _c_rows.append({
+                        'Material':         _m,
+                        'Plant':            _pl,
+                        'Missing_View':     'C',
+                        'View_Description': view_to_desc.get('C', 'Classification'),
+                        'Fields_Expected':  ','.join(FIELD_DISPLAY_RENAMES.get(_f, _f) for _f in view_to_fields.get('C', [])),
+                    })
+            _c_df = pd.DataFrame(_c_rows)
+            if 'C' in view_tabs_dict and not view_tabs_dict['C'].empty:
+                _c_df = pd.concat([view_tabs_dict['C'], _c_df], ignore_index=True)
+            view_tabs_dict['C'] = _c_df.drop_duplicates(
+                subset=['Material', 'Plant', 'Missing_View']
+            ).reset_index(drop=True)
+
+            _c_count = len(view_tabs_dict['C'])
+            if not coverage_df.empty and (coverage_df['View'] == 'C').any():
+                coverage_df.loc[coverage_df['View'] == 'C', 'Materiais without Active View'] = _c_count
+            else:
+                coverage_df = pd.concat([coverage_df, pd.DataFrame([{
+                    'View': 'C',
+                    'View_Description': view_to_desc.get('C', 'Classification'),
+                    'Materiais without Active View': _c_count,
+                    'Link': '=HYPERLINK("#Missing_C!A1","Check Details")',
+                }])], ignore_index=True)
+
     # -------------------------------------------------
     # ADD MRP Controller from MARC (Material + Plant)
     # -------------------------------------------------
@@ -6697,6 +7143,7 @@ def run_full_validation(
         'production storage location': 'Issue Storage Location',
         'planning strategy group': 'Planning Strategy Group',
         'plant-specific material status': 'Plant Specific Material Status',
+        'special procurement type': 'Special Procurement Type',
     })
     # ✅ 'Strategy Group' alias — validar_strategy_group() (generic, Palmela-only)
     # expects this exact name (matching the old Item Browse Report column),
@@ -6887,6 +7334,7 @@ def run_full_validation(
         (24, lambda: validar_account_assignment_group(sap_like_df, resultados, mvke_df)),
         (26, lambda: validar_automatic_purchase_order(sap_like_df, resultados)),
         (28, lambda: validar_batch_management(sap_like_df, resultados)),
+        (28, lambda: validar_batch_management_mara_global(sap_like_df, mara_df, resultados)),
         (30, lambda: validar_consumption_mode(sap_like_df, resultados)),
         (32, lambda: validar_consumption_per(marc_df, mara_df, resultados)),
         (33, lambda: validar_division(sap_like_df, resultados)),
@@ -6916,6 +7364,9 @@ def run_full_validation(
         (66, lambda: validar_product_hierarchy_vs_enterproj(mara_df, zplm_mara_df, resultados)),
         (67, lambda: validar_packaging_material_type_mara(mara_df, resultados)),
         (67, lambda: validar_wh_material_group_mara(mara_df, resultados)),
+        (67, lambda: validar_reference_matl_for_packing_mara(mara_df, resultados)),
+        (67, lambda: validar_maintenance_status_c_roh_mara(mara_df, resultados, sap_like_df)),
+        (67, lambda: validar_special_procurement_type_pt02_transfer(marc_df, zplm_marc_df, resultados)),
         (68, lambda: validar_production_scheduling_profile(sap_like_df, resultados)),
         (69, lambda: validar_country_region_origin_fp(marc_df, zplm_marc_df, mara_df, resultados)),
         (69, lambda: validar_commodity_code_fp(marc_df, zplm_marc_df, mara_df, resultados)),
@@ -6965,6 +7416,9 @@ def run_full_validation(
     neg_errors_early = validar_neg_stocks_in_plant(marc_df, mara_df)
     if neg_errors_early:
         resultados.extend(neg_errors_early)
+
+    # Batch Management: plant error in all plants + global error -> only global
+    consolidar_batch_management_errors(resultados, sap_like_df)
 
     # ------------------------------------------------------------------
     # 5) Build errors DataFrame
@@ -7044,6 +7498,11 @@ def run_full_validation(
         contagem_final_df = contagem_final_df.sort_values(
             'Adjusted Nº of Errors', ascending=False
         ).reset_index(drop=True)
+
+    # Final guard: field names exactly as displayed in the report
+    errors_df               = apply_display_field_renames(errors_df)
+    views_missing_output_df = apply_display_field_renames(views_missing_output_df)
+    contagem_final_df       = apply_display_field_renames(contagem_final_df)
 
     with pd.ExcelWriter(file_bytes, engine="openpyxl") as writer:
         pd.DataFrame().to_excel(writer, sheet_name="Executive Summary", index=False)
@@ -9576,6 +10035,9 @@ __all__ = [
     "validar_procurement_type",
     "validar_automatic_purchase_order",
     "validar_batch_management",
+    "validar_batch_management_mara_global",
+    "consolidar_batch_management_errors",
+    "apply_display_field_renames",
     "validar_consumption_mode",
     "validar_consumption_per",
     "validar_division",

@@ -92,6 +92,9 @@ from sap_validation_engine import (
     validar_stock_determination_group_marc,
     validar_packaging_material_type_mara,
     validar_batch_management,
+    validar_batch_management_mara_global,
+    consolidar_batch_management_errors,
+    apply_display_field_renames,
     validar_batch_management_plant_marc,
     validar_version_indicator_marc,
     validar_country_region_origin_fp,
@@ -3022,6 +3025,7 @@ def run_tn_validation(
     validar_export_import_group(sap_like_df, resultados)
     validar_general_item_category_group(sap_like_df, resultados)
     validar_batch_management(sap_like_df, resultados)  # uses Batch Management Required Ind. from MARA
+    validar_batch_management_mara_global(sap_like_df, mara_df, resultados)
 
     _cb(25, "Validating Gross/Net Weight...")
     validar_gross_weight(sap_like_df, resultados)
@@ -3201,6 +3205,9 @@ def run_tn_validation(
     if neg_errors:
         resultados.extend(neg_errors)
 
+    # Batch Management: plant error in all plants + global error -> only global
+    consolidar_batch_management_errors(resultados, sap_like_df)
+
     # ── 5. Build errors DataFrame ─────────────────────────────────────────────
     _cb(78, "Building errors DataFrame...")
     errors_df = _coerce_df_for_display(pd.DataFrame(resultados))
@@ -3291,6 +3298,11 @@ def run_tn_validation(
         return out
 
     view_is_missing_df = _cat_missing(view_tabs_dict)
+
+    # Final guard: field names exactly as displayed in the report
+    errors_df               = apply_display_field_renames(errors_df)
+    views_missing_output_df = apply_display_field_renames(views_missing_output_df)
+    contagem_final_df       = apply_display_field_renames(contagem_final_df)
 
     with pd.ExcelWriter(file_bytes, engine='openpyxl') as writer:
 

@@ -534,10 +534,10 @@ def im_validar_mrp_view1(sap_df, errors):
                 _append_error(errors, material=material, plant=plant,
                               field="Plant Specific Material Status", value=val,
                               error="VERP must be 45, 70 or 99", table="MARC")
-            elif mt in {"ERSA", "HIBE"} and val != "80":
+            elif mt in {"ERSA", "HIBE"} and val not in {"80", "70", "99"}:
                 _append_error(errors, material=material, plant=plant,
                               field="Plant Specific Material Status", value=val,
-                              error="ERSA/HIBE must be '80'", table="MARC")
+                              error="ERSA/HIBE must be 80, 70 or 99", table="MARC")
 
         # DISLS — MARC
         if lot_col:
@@ -583,10 +583,10 @@ def im_validar_mrp_view2(sap_df, errors):
                 _append_error(errors, material=material, plant=plant,
                               field="Procurement Type", value="",
                               error="Mandatory field blank", table="MARC")
-            elif val not in {"F", "X"}:
+            elif val != "F":
                 _append_error(errors, material=material, plant=plant,
                               field="Procurement Type", value=val,
-                              error="Must be 'F' or 'X'", table="MARC")
+                              error="Must be 'F' for ERSA/HIBE/VERP", table="MARC")
 
         # SOBSL — MARC  (only TN02)
         if spec_col and plant == "TN02":
@@ -881,6 +881,7 @@ def im_validar_mara_wh_packaging(mara_df, mt_map, errors):
     wh_col  = _pick(mara_df, ["WH Material Group", "Warehouse Material Group"])
     hut_col = _pick(mara_df, ["Handling Unit Type", "HUTYP"])
     pkg_col = _pick(mara_df, ["Packaging Mat. Type", "Packaging material type"])
+    ms_col  = _pick(mara_df, ["Maintenance status", "Maintenance Status", "PSTAT"])
 
     for _, row in mara_df.iterrows():
         material = row[mat_col] if mat_col else ""
@@ -889,13 +890,22 @@ def im_validar_mara_wh_packaging(mara_df, mt_map, errors):
             continue
         mg = _norm(row[mg_col]).upper() if mg_col else ""
 
-        # WH Material Group — MARA  (ERSA + specific MG only)
+        # WH Material Group — MARA  (ERSA + specific MG only) — must be blank
         if wh_col and mt == "ERSA" and mg == "MT0020012":
             val = _norm(row[wh_col]).upper()
-            if val != "Z006":
+            if not _is_blank(val):
                 _append_error(errors, material=material, plant="",
                               field="WH Material Group", value=val,
-                              error="ERSA MT0020012 must be 'Z006'", table="MARA")
+                              error="ERSA MT0020012 must be blank", table="MARA")
+
+        # Maintenance status — MARA  (ERSA + MT0020012 must contain letter 'C')
+        if ms_col and mt == "ERSA" and mg == "MT0020012":
+            ms_val = _norm(row[ms_col]).upper()
+            if "C" not in ms_val:
+                _append_error(errors, material=material, plant="",
+                              field="Maintenance Status (MARA)", value=ms_val,
+                              error="ERSA MT0020012 must have letter 'C' in Maintenance status",
+                              table="MARA")
 
         # HUTYP — MARA  (mandatory for VERP)
         if hut_col and mt == "VERP" and _is_blank(row[hut_col]):
@@ -997,6 +1007,7 @@ _IM_FIELD_TO_VIEW = {
     "Tax Data (MVKE)":                      "V",
     # Warehouse Management (S) — only conditionally required (see _im_postprocess)
     "WH Material Group":                    "S",
+    "Maintenance Status (MARA)":            "C",
     # No view
     "Handling Unit Type":                   "Not applicable",
 }
@@ -1009,6 +1020,7 @@ _IM_VIEW_TO_DESC = {
     "B": "Accounting",
     "V": "Sales",
     "S": "Warehouse management",
+    "C": "Classification",
 }
 
 # Required views per IM material type
@@ -1057,6 +1069,13 @@ def _im_postprocess(
     else:
         errors_df["View"] = "Not applicable"
 
+    # Materials flagged by the MARA rule "Maintenance status must contain 'C'"
+    # (ERSA + MT0020012). They are a Missing View 'C' (Classification).
+    _mara_c_mats: set[str] = set()
+    if not errors_df.empty and "Field" in errors_df.columns and "Material" in errors_df.columns:
+        _mask_c = errors_df["Field"].astype(str).str.strip() == "Maintenance Status (MARA)"
+        _mara_c_mats = {_material_key(m) for m in errors_df.loc[_mask_c, "Material"]}
+
     mat_col    = _pick(sap_im_df, ["Material", "MATNR"])
     plant_col  = _pick(sap_im_df, ["Plant", "WERKS"])
     mt_col     = _pick(sap_im_df, ["Material Type", "MTART"])
@@ -1090,6 +1109,9 @@ def _im_postprocess(
             required.add("S")
 
         missing  = (required - present) - {"K"}  # K is never missing
+        # MARA-level rule: ERSA MT0020012 without letter 'C' -> view C missing
+        if _material_key(mat) in _mara_c_mats:
+            missing = missing | {"C"}
 
         key = (mat, plant)
         missing_lookup[key] = missing
@@ -1107,6 +1129,9 @@ def _im_postprocess(
 
     # 3) Classify each error row: Missing View (justified) vs Field Error
     def _classify(row):
+        # The MARA validation itself proves view 'C' is not maintained
+        if str(row.get("Field", "")).strip() == "Maintenance Status (MARA)":
+            return "Missing View"
         view = str(row.get("View", "")).strip()
         if view in ("", "Not applicable", "K"):
             return "Field Error"
