@@ -1,0 +1,115 @@
+/* Overrides de elementos Streamlit/BaseWeb — dependem só dos tokens do tema ativo. */
+.stApp, .main, section.main, .block-container,
+[data-testid="stAppViewContainer"] {
+    background-color: var(--app-bg) !important;
+    color: var(--app-fg) !important;
+}
+input, textarea,
+[data-baseweb="input"] input,
+[data-baseweb="textarea"] textarea {
+    background-color: var(--menu-item-bg) !important;
+    color: var(--app-fg) !important;
+    border-color: var(--app-border) !important;
+}
+[data-testid="metric-container"] {
+    background-color: var(--card-bg-1) !important;
+    border: 1px solid var(--app-border) !important;
+    border-radius: 10px;
+    padding: 12px;
+}
+[data-testid="metric-container"] label,
+[data-testid="metric-container"] [data-testid="stMetricValue"],
+[data-testid="metric-container"] [data-testid="stMetricDelta"] {
+    color: var(--app-fg) !important;
+}
+.stMarkdown, .stText, p, li, td, th, label {
+    color: var(--app-fg) !important;
+}
+[data-testid="stExpander"] {
+    background-color: var(--app-bg-secondary) !important;
+    border-color: var(--app-border) !important;
+}
+[data-testid="stDataFrame"] th {
+    background-color: var(--app-bg-secondary) !important;
+    color: var(--app-fg) !important;
+}
+[data-baseweb="select"] > div {
+    background-color: var(--menu-item-bg) !important;
+    border-color: var(--app-border) !important;
+}
+[data-baseweb="select"] span {
+    color: var(--app-fg) !important;
+}
+section[data-testid="stSidebar"] {
+    background-color: var(--menu-bg) !important;
+}
+
+/* ---- Streamlit top toolbar ---- */
+[data-testid="stHeader"] {
+    background-color: var(--app-bg) !important;
+    border-bottom: 1px solid var(--app-border) !important;
+}
+[data-testid="stHeader"] button svg,
+[data-testid="stHeader"] a svg {
+    fill: var(--app-fg) !important;
+}
+[data-testid="stToolbar"] {
+    background-color: var(--app-bg) !important;
+}
+[data-testid="stDecoration"] {
+    background: var(--primary) !important;
+}
+
+/* ---- BaseWeb dropdowns / selects (full coverage) ---- */
+[data-baseweb="select"] > div:first-child {
+    background-color: var(--menu-item-bg) !important;
+    border-color: var(--app-border) !important;
+    color: var(--app-fg) !important;
+}
+[data-baseweb="select"] [data-baseweb="icon"] svg path {
+    fill: var(--app-fg) !important;
+}
+/* Dropdown list popup */
+[data-baseweb="popover"] [data-baseweb="menu"],
+[data-baseweb="menu"] {
+    background-color: var(--menu-item-bg) !important;
+    border-color: var(--app-border) !important;
+}
+[data-baseweb="menu"] li,
+[data-baseweb="menu"] [role="option"] {
+    background-color: var(--menu-item-bg) !important;
+    color: var(--app-fg) !important;
+}
+[data-baseweb="menu"] li:hover,
+[data-baseweb="menu"] [role="option"]:hover,
+[data-baseweb="menu"] [aria-selected="true"] {
+    background-color: var(--menu-item-hover) !important;
+    color: var(--app-fg) !important;
+}
+/* Selected option tag inside multiselect */
+[data-baseweb="tag"] {
+    background-color: var(--menu-item-active) !important;
+    color: var(--app-fg) !important;
+}
+/* Placeholder text */
+[data-baseweb="select"] input::placeholder {
+    color: var(--app-fg-muted, var(--txt-muted)) !important;
+}
+
+/* ---- st.multiselect / st.text_input backgrounds ---- */
+[data-baseweb="base-input"] {
+    background-color: var(--menu-item-bg) !important;
+    color: var(--app-fg) !important;
+}
+
+/* ---- st.tabs ---- */
+[data-baseweb="tab-list"] {
+    background-color: var(--app-bg) !important;
+}
+[data-baseweb="tab"] {
+    background-color: var(--app-bg) !important;
+    color: var(--app-fg-muted, var(--txt-muted)) !important;
+}
+[aria-selected="true"][data-baseweb="tab"] {
+    color: var(--primary) !important;
+}

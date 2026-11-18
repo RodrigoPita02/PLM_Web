@@ -1,0 +1,106 @@
+/* Evolution Dashboard — componentes. Tokens de cor vêm de ui/theme.py (:root). */
+/* ---------- Brand colours (always the same) ---------- */
+:root {
+--sap:   #FF7200;
+--plm01: #6EC6FF;
+--plm02: #00A6A6;
+--tln01: #2176AE;
+--tln02: #1A936F;
+--clean: #4D4D4D;
+--good:  #1A936F;
+--warn:  #F4A011;
+--bad:   #C00000;
+}
+
+/* ---------- Typography (inherits from theme, no override) ---------- */
+h1,h2,h3,h4,h5,h6{ color: var(--txt-main); }
+hr{ border-color: var(--border); opacity: 0.6; }
+
+/* ---------- Exec banner ---------- */
+/* Uses --primary from the active theme for the accent line;
+   background is always a dark navy so text is always white/readable. */
+.exec-banner {
+background: linear-gradient(135deg, #0D2137 0%, #163859 55%, #1B4F80 100%);
+border-radius: 14px;
+padding: 22px 28px 18px 28px;
+margin: 10px 0 20px 0;
+color: #ffffff !important;
+border: 2px solid var(--primary);
+box-shadow: 0 10px 30px rgba(0,0,0,.35), 0 0 0 1px rgba(255,106,19,.15);
+}
+.exec-banner h1{
+font-size: 1.55rem; font-weight: 800; margin: 0 0 6px 0;
+color: #ffffff !important;
+}
+.exec-banner p, .exec-banner .subtitle{
+font-size: .9rem; color: rgba(255,255,255,.85) !important; margin: 0;
+}
+.exec-banner strong { color: #ffffff !important; }
+.exec-banner .badge{
+display: inline-block; padding: 4px 12px; border-radius: 999px;
+font-size: .80rem; font-weight: 700; margin-left: 10px;
+}
+/* Status badges — always legible on dark banner */
+.badge-green{ background:rgba(26,147,111,.25); color:#4ade80; border: 1px solid #1A936F; }
+.badge-amber{ background:rgba(244,160,17,.20); color:#fbbf24; border: 1px solid #F4A011; }
+.badge-red{   background:rgba(192,0,0,.25);    color:#f87171; border: 1px solid #C00000; }
+
+/* ---------- Section header ---------- */
+.section-header{
+color: var(--txt-muted); font-size: .75rem; font-weight: 800;
+letter-spacing: .12em; text-transform: uppercase;
+border-bottom: 1px solid var(--border); padding-bottom: 8px; margin: 24px 0 14px 0;
+}
+
+/* ---------- KPI cards ---------- */
+.kpi-card{
+background: var(--bg-card);
+border: 1px solid var(--border);
+border-radius: 12px;
+padding: 14px 16px 12px 16px;
+margin-bottom: 8px;
+box-shadow: 0 6px 16px rgba(0,0,0,.10);
+}
+.kpi-card .kpi-label{
+color: var(--txt-muted); font-size: .75rem; font-weight: 700;
+letter-spacing: .06em; text-transform: uppercase; margin-bottom: 6px;
+}
+.kpi-card .kpi-value{ font-size: 2.1rem; font-weight: 800; color: var(--txt-main); }
+.kpi-card .kpi-sub{ font-size: .78rem; color: var(--txt-muted); margin-top: 4px; }
+.kpi-delta-good{ color:#30C08D; font-weight: 700; font-size:.85rem; }
+.kpi-delta-bad{  color:#E05858; font-weight: 700; font-size:.85rem; }
+.kpi-delta-neu{  color:var(--txt-muted); font-weight: 700; font-size:.85rem; }
+
+/* ---------- Activity feed ---------- */
+.activity-row{
+display:flex; align-items:center; gap:10px;
+padding:10px 8px; border-bottom: 1px solid var(--border);
+font-size: .9rem; background: transparent;
+}
+.activity-source{ font-weight: 800; min-width: 160px; color: var(--txt-main); }
+.activity-age{ color: var(--txt-muted); min-width: 80px; }
+.activity-who{ color: #8BB6F5; }
+.activity-row:hover{ background: var(--bg-alt); border-radius: 8px; }
+
+/* ---------- Trend panels ---------- */
+.trend-panel{
+background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
+padding: 14px 16px; margin: 6px 0; box-shadow: 0 6px 16px rgba(0,0,0,.10);
+}
+.trend-icon{ font-size: 2.0rem; line-height:1; }
+.trend-label{ font-size: 1.05rem; font-weight: 800; color: var(--txt-main); }
+.trend-stat{ font-size: .80rem; color: var(--txt-muted); margin-top: 2px; }
+
+/* ---------- Insight boxes ---------- */
+.insight-box{
+border-radius:10px; padding:10px 14px; margin:6px 0; font-size:.9rem; line-height:1.55;
+border: 1px solid var(--border);
+}
+.insight-neutral{ background:var(--bg-panel); color:var(--txt-main); }
+.insight-good{    background:var(--bg-panel); color:var(--txt-main); border-color: #1A936F; }
+.insight-warn{    background:var(--bg-panel); color:var(--txt-main); border-color: #F4A011; }
+.insight-bad{     background:var(--bg-panel); color:var(--txt-main); border-color: #C00000; }
+
+/* ---------- Streamlit bits ---------- */
+.block-container{ padding-top: 1.0rem; }
+[data-baseweb="select"] *{ color: var(--txt-main)!important; }

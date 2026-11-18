@@ -1,77 +1,14 @@
 /* ============================================================================
-   VISTEON PREMIUM CORPORATE THEME (FULL APP)
-   Gradient + Glass + Glow • Light & Dark Mode
+   VALIDATION HUB — BASE STYLES
+   Os tokens de cor do tema ativo são injetados em :root por ui/theme.py a cada
+   rerun. Este ficheiro só define fallbacks, estrutura e componentes.
    ============================================================================ */
 
-/* ============================================================
-   STREAMLIT THEME INTEGRATION (LIGHT / DARK / SYSTEM)
-   ============================================================ */
-
-html[data-theme="light"] {
-    --app-bg: #ffffff !important;
-    --app-bg-secondary: #f5f7fa !important;
-    --app-fg: #1f2937 !important;
-    --app-fg-muted: #6b7280 !important;
-    --app-border: rgba(0,0,0,.12) !important;
-
-    --primary: var(--vs-orange) !important;
-    --primary-hover: var(--vs-orange-light) !important;
-    --primary-dark: var(--vs-orange-dark) !important;
-
-    --menu-bg: #f3f4f6 !important;
-    --menu-item-bg: #ffffff !important;
-    --menu-item-hover: #ececec !important;
-    --menu-item-active: rgba(255,106,19,.18) !important;
-    --menu-border: #e5e7eb !important;
-    --menu-text: #1f2937 !important;
-    --menu-text-muted: #6b7280 !important;
-
-    --card-bg-1: #fafafa !important;
-    --card-bg-2: #ffffff !important;
-}
-
-html[data-theme="dark"] {
-    --app-bg: #0b0b0b !important;
-    --app-bg-secondary: #131313 !important;
-    --app-fg: #f3f4f6 !important;
-    --app-fg-muted: #9ca3af !important;
-    --app-border: rgba(255,255,255,.12) !important;
-
-    --primary: #FF6A13 !important;
-    --primary-hover: #ff7f38 !important;
-    --primary-dark: #d8560f !important;
-
-    --menu-bg: #0b0b0b !important;
-    --menu-item-bg: #1a1a1a !important;
-    --menu-item-hover: #252525 !important;
-    --menu-item-active: rgba(255,106,19,.25) !important;
-    --menu-border: rgba(255,255,255,.12) !important;
-    --menu-text: #e5e5e5 !important;
-    --menu-text-muted: #9ca3af !important;
-    --menu-radio: #FF6A13 !important;
-
-    --card-bg-1: #161616 !important;
-    --card-bg-2: #1f1f1f !important;
-}
-
-/* NOTE: prefers-color-scheme: dark media queries removed.
-   Dark mode is controlled exclusively by Streamlit's theme setting
-   via html[data-theme="dark"] selector above.
-   Removing these blocks prevents the OS dark mode from overriding
-   Streamlit's Light theme selection. */
-
-/* =============================================================================
-   1) BASE VARIABLES (LIGHT MODE)
-   ============================================================================ */
+/* 1) TOKENS (fallbacks — sobrepostos pelo tema ativo) ------------------------ */
 :root {
   --vs-orange:       #FF6A13;
   --vs-orange-light: #ff7f38;
   --vs-orange-dark:  #d8560f;
-
-  --vs-black:      #0b0b0b;
-  --vs-gray-dark:  #1a1a1a;
-  --vs-gray:       #2c2c2c;
-  --vs-gray-light: #d1d5db;
 
   --app-bg:           #ffffff;
   --app-bg-secondary: #f5f7fa;
@@ -85,10 +22,9 @@ html[data-theme="dark"] {
   --accent:        #2563eb;
   --glow:          rgba(255,106,19,.35);
 
-  /* Status colors */
-  --color-ok:      #22c55e;
-  --color-warn:    #f59e0b;
-  --color-error:   #ef4444;
+  --color-ok:    #16a34a;
+  --color-warn:  #f59e0b;
+  --color-error: #dc2626;
 
   --menu-bg:          #f3f4f6;
   --menu-item-bg:     #ffffff;
@@ -101,407 +37,357 @@ html[data-theme="dark"] {
 
   --card-bg-1: #fafafa;
   --card-bg-2: #ffffff;
+
+  /* aliases usados pelos dashboards */
+  --bg-page:   var(--app-bg);
+  --bg-panel:  var(--app-bg-secondary);
+  --bg-card:   var(--card-bg-2);
+  --bg-alt:    #f0f2f5;
+  --border:    var(--app-border);
+  --txt-main:  var(--app-fg);
+  --txt-muted: var(--app-fg-muted);
+
+  /* escala de espaçamento / raio / sombra */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,.10);
+  --shadow-md: 0 4px 14px rgba(0,0,0,.12);
+  --shadow-lg: 0 10px 28px rgba(0,0,0,.18);
+  --font-ui: "Segoe UI", "Inter", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
 }
 
-/* =============================================================================
-   2) DARK MODE VARIABLES (controlled via html[data-theme="dark"] above only)
-   ============================================================================ */
-
-
-/* =============================================================================
-   3) GLOBAL BACKGROUND + TYPOGRAPHY
-   ============================================================================ */
+/* 2) BASE ------------------------------------------------------------------- */
 body, .stApp, .main, section.main {
   background-color: var(--app-bg) !important;
   color: var(--app-fg) !important;
-  transition: background-color .3s ease, color .3s ease;
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  transition: background-color .25s ease, color .25s ease;
 }
 
 .block-container {
   background-color: var(--app-bg) !important;
+  max-width: 1440px;
+  padding-top: 1.2rem !important;
+  padding-bottom: 3rem !important;
 }
 
 h1, h2, h3, h4, h5, h6 {
   color: var(--app-fg) !important;
+  font-family: var(--font-ui);
+  letter-spacing: -.01em;
+}
+h1 { font-weight: 800; }
+h2, h3 { font-weight: 700; }
+
+hr { border-color: var(--app-border); opacity: .7; }
+
+/* foco acessível em todos os controlos */
+:is(button, a, input, textarea, select, [role="radio"], [role="tab"]):focus-visible {
+  outline: 2px solid var(--primary) !important;
+  outline-offset: 2px;
 }
 
-/* =============================================================================
-   4) SIDEBAR
-   ============================================================================ */
+/* scrollbars discretas */
+* { scrollbar-width: thin; scrollbar-color: var(--app-border) transparent; }
+
+/* 3) SIDEBAR ---------------------------------------------------------------- */
 section[data-testid="stSidebar"] {
   background: linear-gradient(180deg, var(--menu-bg), var(--app-bg)) !important;
   border-right: 1px solid var(--menu-border);
-  padding: 26px 18px;
+  padding: 22px 14px;
+}
+
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] [data-testid="stHeadingWithActionElements"] {
+  font-size: 12px !important;
+  font-weight: 800 !important;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--menu-text-muted) !important;
 }
 
 section[data-testid="stSidebar"] .stRadio > label {
   color: var(--menu-text-muted) !important;
   font-weight: 700 !important;
-  font-size: 15px !important;
+  font-size: 14px !important;
 }
+
+section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] { gap: 8px; }
 
 section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label {
   width: 100% !important;
   display: flex !important;
-  justify-content: flex-start;
   align-items: center;
-  gap: 14px;
-  padding: 14px 16px !important;
-  border-radius: 12px;
+  gap: 12px;
+  padding: 12px 14px !important;
+  border-radius: var(--radius-md);
   border: 1px solid var(--menu-border) !important;
   background-color: var(--menu-item-bg) !important;
   color: var(--menu-text) !important;
-  transition: all .25s ease;
-  font-size: 15px !important;
+  font-size: 14.5px !important;
+  transition: background-color .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease;
 }
 
 section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label:hover {
   background-color: var(--menu-item-hover) !important;
-  transform: translateX(5px);
+  transform: translateX(3px);
 }
 
 section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label:has(input:checked) {
   background-color: var(--menu-item-active) !important;
   border-color: var(--menu-radio) !important;
-  box-shadow: 0 0 12px var(--glow);
-  transform: translateX(4px) scale(1.02);
+  box-shadow: 0 0 0 1px var(--menu-radio), 0 4px 14px var(--glow);
+  font-weight: 700;
 }
 
 section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:first-child {
-  width: 18px !important;
-  height: 18px !important;
+  width: 16px !important;
+  height: 16px !important;
   border: 2px solid var(--menu-radio) !important;
   border-radius: 50%;
 }
 
-/* =============================================================================
-   5) BUTTONS
-   ============================================================================ */
-.stButton > button {
-  background: linear-gradient(90deg, var(--primary), var(--primary-dark));
-  color: white !important;
-  padding: 10px 22px;
-  border-radius: 10px;
-  border: none;
-  font-size: 15px;
-  font-weight: 700;
-  cursor: pointer;
-  box-shadow: 0 3px 12px rgba(0,0,0,.25);
-  transition: all .25s ease;
-}
-
-.stButton > button:hover {
-  transform: translateY(-2px);
-  background: linear-gradient(90deg, var(--primary-hover), var(--primary-dark));
-  box-shadow: 0 6px 18px rgba(0,0,0,.35);
-}
-
-/* Disabled state */
-.stButton > button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  transform: none !important;
-  box-shadow: none !important;
-}
-
-/* =============================================================================
-   6) WIZARD — Glass + Glow
-   ============================================================================ */
-.wizard-step {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 0;
-}
-
-.step-circle {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  backdrop-filter: blur(10px);
-  background: rgba(255,255,255,.1);
-  border: 2px solid var(--primary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--app-fg);
-  font-weight: 700;
-  font-size: 15px;
-  transition: all .3s ease;
-  box-shadow: 0 0 12px var(--glow);
-}
-
-.step-circle.active {
-  background: var(--primary);
-  color: white;
-  transform: scale(1.12);
-  box-shadow: 0 0 20px var(--glow);
-}
-
-.step-circle.done {
-  background: var(--color-ok);
-  border-color: var(--color-ok);
-  color: white;
-}
-
-.step-circle.pending {
-  background: var(--app-bg-secondary);
-  border-color: var(--app-border);
-  color: var(--app-fg-muted);
-  box-shadow: none;
-}
-
-.step-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--app-fg-muted);
-  text-align: center;
-}
-
-.wizard-step:has(.step-circle.active) .step-label {
-  color: var(--primary);
-}
-
-/* Progress bar — full width baseline track + fill */
-.wizard-progress-track {
-  position: relative;
-  height: 5px;
-  border-radius: 999px;
-  background: var(--app-border);
-  margin: 12px 0 18px 0;
-  overflow: hidden;
-}
-
-.progress-line {
-  height: 5px;
-  border-radius: 999px;
-  margin: 12px 0 18px 0;
-  background: linear-gradient(90deg, var(--vs-orange), var(--vs-orange-dark)) !important;
-  box-shadow: 0 0 10px var(--glow);
-  transition: width .4s ease;
-  min-width: 4px;
-}
-
-/* =============================================================================
-   7) KPI CARDS
-   ============================================================================ */
-.card {
-  background: linear-gradient(135deg, var(--card-bg-1), var(--card-bg-2));
-  border-radius: 14px;
-  padding: 18px 20px;
-  border: 1px solid var(--app-border);
-  box-shadow: 0 2px 12px rgba(0,0,0,.15);
-  transition: all .25s ease;
-}
-
-.card:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 6px 20px rgba(0,0,0,.25);
-}
-
-.card h4 {
-  color: var(--app-fg-muted);
-  margin: 0 0 8px 0;
-  font-size: 13px;
-  font-weight: 600;
+/* submenu */
+.sidebar-submenu-title {
+  font-size: 12px !important;
+  font-weight: 800 !important;
+  letter-spacing: .08em;
   text-transform: uppercase;
-  letter-spacing: .5px;
+  color: var(--menu-text-muted) !important;
+  margin: 6px 0 -2px 6px !important;
+  cursor: default;
 }
 
-.card .big {
-  color: var(--app-fg);
-  font-size: 30px;
-  font-weight: 800;
-  line-height: 1;
-}
-
-/* File status icons inside expander */
-.file-status-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--app-border);
-  font-size: 14px;
-}
-.file-status-row:last-child { border-bottom: none; }
-
-/* =============================================================================
-   8) TABS
-   ============================================================================ */
-.stTabs [data-baseweb="tab-list"] {
-  border-bottom: 2px solid var(--app-border) !important;
-  margin-bottom: 12px;
-}
-
-.stTabs [data-baseweb="tab"] {
-  padding: 10px 20px !important;
-  color: var(--app-fg-muted) !important;
-  font-weight: 600 !important;
-  font-size: 15px !important;
-  transition: color .2s;
-}
-
-.stTabs [aria-selected="true"] {
-  color: var(--primary) !important;
-  border-bottom: 3px solid var(--primary) !important;
-}
-
-/* =============================================================================
-   9) EXPANDER
-   ============================================================================ */
-.st-expander {
-  background-color: var(--app-bg-secondary) !important;
-  border: 1px solid var(--app-border) !important;
-  border-radius: 12px !important;
-  transition: background-color .2s ease;
-}
-
-/* =============================================================================
-   10) FILE UPLOADER
-   ============================================================================ */
-.stFileUploader > div {
-  border: 2px dashed var(--primary);
-  border-radius: 14px;
-  background: rgba(255,106,19,.05);
-  padding: 20px;
-  transition: all .3s ease;
-}
-
-.stFileUploader > div:hover {
-  background: rgba(255,106,19,.12);
-  transform: translateY(-2px);
-}
-
-/* =============================================================================
-   11) TABLES / DATAFRAMES
-   ============================================================================ */
-.stDataFrame, .stTable {
-  background-color: var(--app-bg-secondary) !important;
-  color: var(--app-fg) !important;
-}
-
-.stDataFrame thead th {
-  background-color: var(--app-bg-secondary) !important;
-  color: var(--app-fg) !important;
-  font-weight: 700 !important;
-}
-
-/* =============================================================================
-   12) SIDEBAR SUBMENU
-   ============================================================================ */
 .sidebar-submenu-wrap {
-  margin-top: -12px !important;
-  margin-left: 32px !important;
+  margin-top: -10px !important;
+  margin-left: 28px !important;
   padding-left: 8px !important;
   border-left: 2px solid var(--menu-border) !important;
-}
-
-.sidebar-submenu-title {
-  font-size: 14px !important;
-  font-weight: 700 !important;
-  color: var(--menu-text-muted) !important;
-  margin: 4px 0 -4px 6px !important;
-  cursor: default;
 }
 
 .sidebar-submenu-wrap .stRadio > div[role="radiogroup"] > label {
   background-color: var(--menu-item-bg) !important;
   border: 1px solid var(--menu-border) !important;
   border-radius: 10px;
-  padding: 10px 12px !important;
+  padding: 9px 12px !important;
   margin-bottom: 6px;
-  font-size: 14px !important;
-  transition: all .20s ease;
+  font-size: 13.5px !important;
+  transition: background-color .18s ease, border-color .18s ease, transform .18s ease;
 }
-
 .sidebar-submenu-wrap .stRadio > div[role="radiogroup"] > label:hover {
   background-color: var(--menu-item-hover) !important;
-  transform: translateX(4px);
+  transform: translateX(3px);
 }
-
 .sidebar-submenu-wrap .stRadio > div[role="radiogroup"] > label:has(input:checked) {
   background-color: var(--menu-item-active) !important;
   border-color: var(--menu-radio) !important;
-  box-shadow: 0 0 8px var(--glow);
-  transform: translateX(3px) scale(1.01);
+  box-shadow: 0 0 0 1px var(--menu-radio);
 }
-
 .sidebar-submenu-wrap .stRadio > div[role="radiogroup"] > label > div:first-child {
-  width: 14px !important;
-  height: 14px !important;
+  width: 13px !important;
+  height: 13px !important;
   border-width: 2px !important;
 }
 
-/* =============================================================================
-   13) LAYOUT — Header / Separator / Footer / Sections
-   ============================================================================ */
-.app-header-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 6px 4px 2px 4px;
-}
-
-.app-page-title {
-  font-size: 24px;
-  font-weight: 800;
-  letter-spacing: .2px;
-  color: var(--app-fg);
-}
-
-.app-separator {
-  height: 1px;
-  width: 100%;
-  background: var(--app-border);
-  margin: 10px 0 14px 0;
-}
-
-.app-footer {
-  margin-top: 24px;
-  padding: 10px 12px;
-  border-top: 1px solid var(--app-border);
-  border-radius: 0 0 10px 10px;
-  color: var(--app-fg-muted);
-  display: flex;
-  gap: 14px;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 12.5px;
-  background: var(--app-bg-secondary);
-}
-
-.section-title {
-  font-size: 18px;
+/* 4) BOTÕES ----------------------------------------------------------------- */
+.stButton > button,
+.stFormSubmitButton > button {
+  background: linear-gradient(90deg, var(--primary), var(--primary-dark));
+  color: #fff !important;
+  padding: 9px 22px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  font-size: 14.5px;
   font-weight: 700;
-  margin: 8px 0 4px;
+  letter-spacing: .01em;
+  box-shadow: var(--shadow-md);
+  transition: transform .18s ease, box-shadow .18s ease, filter .18s ease;
+}
+.stButton > button:hover,
+.stFormSubmitButton > button:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+  box-shadow: var(--shadow-lg);
+}
+.stButton > button:active { transform: translateY(0); filter: brightness(.96); }
+.stButton > button:disabled {
+  opacity: .45; cursor: not-allowed; transform: none !important;
+  box-shadow: none !important; filter: grayscale(.4);
 }
 
-.section-subtitle {
-  font-size: 13.5px;
+/* downloads: botão secundário (outline) para não competir com a ação principal */
+.stDownloadButton > button {
+  background: var(--card-bg-2) !important;
+  color: var(--primary) !important;
+  border: 1.5px solid var(--primary) !important;
+  border-radius: 10px;
+  font-weight: 700;
+  box-shadow: var(--shadow-sm);
+  transition: background-color .18s ease, transform .18s ease;
+}
+.stDownloadButton > button:hover {
+  background: var(--menu-item-active) !important;
+  transform: translateY(-1px);
+}
+
+/* 5) WIZARD ----------------------------------------------------------------- */
+.wizard-step {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 8px; padding: 6px 0;
+}
+
+.step-circle {
+  width: 38px; height: 38px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--card-bg-2);
+  border: 2px solid var(--primary);
+  color: var(--app-fg);
+  font-weight: 700; font-size: 15px;
+  transition: all .25s ease;
+}
+.step-circle.active  { background: var(--primary); color: #fff; transform: scale(1.1); box-shadow: 0 0 0 4px var(--glow); }
+.step-circle.done    { background: var(--color-ok); border-color: var(--color-ok); color: #fff; }
+.step-circle.pending { background: var(--app-bg-secondary); border-color: var(--app-border); color: var(--app-fg-muted); }
+
+.step-label { font-size: 12.5px; font-weight: 600; color: var(--app-fg-muted); text-align: center; letter-spacing: .02em; }
+.wizard-step:has(.step-circle.active) .step-label { color: var(--primary); font-weight: 700; }
+.wizard-step:has(.step-circle.done) .step-label   { color: var(--app-fg); }
+
+.wizard-progress-track {
+  position: relative; height: 4px; border-radius: 999px;
+  background: var(--app-border); margin: 10px 0 18px; overflow: hidden;
+}
+.progress-line {
+  height: 4px; border-radius: 999px; margin: 10px 0 18px;
+  background: linear-gradient(90deg, var(--primary), var(--primary-dark)) !important;
+  box-shadow: 0 0 10px var(--glow);
+  transition: width .4s ease; min-width: 4px;
+}
+
+/* 6) CARDS / KPIs ----------------------------------------------------------- */
+.card {
+  background: linear-gradient(135deg, var(--card-bg-1), var(--card-bg-2));
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+  border: 1px solid var(--app-border);
+  box-shadow: var(--shadow-sm);
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+.card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.card h4 {
+  color: var(--app-fg-muted) !important;
+  margin: 0 0 8px; font-size: 12px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .08em;
+}
+.card .big {
+  color: var(--app-fg); font-size: 30px; font-weight: 800; line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-testid="metric-container"] {
+  border-radius: var(--radius-md) !important;
+  box-shadow: var(--shadow-sm);
+}
+[data-testid="stMetricValue"] { font-variant-numeric: tabular-nums; font-weight: 800; }
+
+.file-status-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 0; border-bottom: 1px solid var(--app-border); font-size: 14px;
+}
+.file-status-row:last-child { border-bottom: none; }
+
+/* 7) TABS / EXPANDER / UPLOADER / TABELAS / ALERTAS ------------------------- */
+.stTabs [data-baseweb="tab-list"] { border-bottom: 1px solid var(--app-border) !important; margin-bottom: 14px; gap: 4px; }
+.stTabs [data-baseweb="tab"] {
+  padding: 10px 18px !important;
+  color: var(--app-fg-muted) !important;
+  font-weight: 600 !important; font-size: 14.5px !important;
+  border-radius: 8px 8px 0 0;
+  transition: color .15s ease, background-color .15s ease;
+}
+.stTabs [data-baseweb="tab"]:hover { background-color: var(--app-bg-secondary) !important; }
+.stTabs [aria-selected="true"] { color: var(--primary) !important; border-bottom: 3px solid var(--primary) !important; }
+
+.st-expander,
+[data-testid="stExpander"] {
+  background-color: var(--app-bg-secondary) !important;
+  border: 1px solid var(--app-border) !important;
+  border-radius: var(--radius-md) !important;
+}
+
+.stFileUploader > div,
+[data-testid="stFileUploaderDropzone"] {
+  border: 2px dashed var(--primary);
+  border-radius: var(--radius-lg);
+  background: rgba(255,106,19,.05);
+  padding: 18px;
+  transition: background-color .2s ease, transform .2s ease;
+}
+.stFileUploader > div:hover,
+[data-testid="stFileUploaderDropzone"]:hover { background: rgba(255,106,19,.12); }
+
+[data-testid="stDataFrame"] {
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.stDataFrame, .stTable { background-color: var(--app-bg-secondary) !important; color: var(--app-fg) !important; }
+.stDataFrame thead th { background-color: var(--app-bg-secondary) !important; color: var(--app-fg) !important; font-weight: 700 !important; }
+
+[data-testid="stAlert"] { border-radius: var(--radius-md); }
+
+/* 8) LAYOUT — header / separador / rodapé / secções -------------------------- */
+.app-header-wrap { display: flex; flex-direction: column; gap: 8px; padding: 4px 4px 0; }
+.app-page-title { font-size: 24px; font-weight: 800; letter-spacing: -.01em; color: var(--app-fg); }
+.app-separator {
+  height: 2px; width: 100%; margin: 10px 0 16px; border-radius: 2px;
+  background: linear-gradient(90deg, var(--primary), transparent 60%);
+  opacity: .55;
+}
+.app-footer {
+  margin-top: 28px; padding: 10px 14px;
+  border: 1px solid var(--app-border); border-radius: var(--radius-md);
   color: var(--app-fg-muted);
-  margin-bottom: 10px;
+  display: flex; gap: 14px; align-items: center; justify-content: space-between;
+  font-size: 12.5px; background: var(--app-bg-secondary);
 }
+.section-title    { font-size: 18px; font-weight: 700; margin: 10px 0 4px; }
+.section-subtitle { font-size: 13.5px; color: var(--app-fg-muted); margin-bottom: 10px; }
 
-/* =============================================================================
-   14) ANIMATIONS
-   ============================================================================ */
-.fade-in-up {
-  animation: fadeInUp .35s ease-out;
+/* 9) CHIPS DE ESTADO --------------------------------------------------------- */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 700; letter-spacing: .02em;
+  border: 1px solid var(--app-border); background: var(--app-bg-secondary); color: var(--app-fg);
 }
+.chip-ok   { color: var(--color-ok);    border-color: var(--color-ok);    background: rgba(22,163,74,.10); }
+.chip-warn { color: var(--color-warn);  border-color: var(--color-warn);  background: rgba(245,158,11,.12); }
+.chip-err  { color: var(--color-error); border-color: var(--color-error); background: rgba(220,38,38,.10); }
 
+/* 10) ANIMAÇÕES -------------------------------------------------------------- */
+.fade-in-up { animation: fadeInUp .35s ease-out; }
 @keyframes fadeInUp {
   from { opacity: 0; transform: translate3d(0, 8px, 0); }
   to   { opacity: 1; transform: translate3d(0, 0, 0); }
 }
-
-.pulse-glow {
-  animation: pulseGlow 1.6s ease-in-out infinite;
+.pulse-glow { animation: pulseGlow 1.6s ease-in-out infinite; }
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 0 var(--glow); }
+  50%      { box-shadow: 0 0 16px var(--glow); }
 }
 
-@keyframes pulseGlow {
-  0%   { box-shadow: 0 0 0px var(--glow); }
-  50%  { box-shadow: 0 0 16px var(--glow); }
-  100% { box-shadow: 0 0 0px var(--glow); }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* 11) RESPONSIVO -------------------------------------------------------------- */
+@media (max-width: 900px) {
+  .app-page-title { font-size: 20px; }
+  .card { padding: 14px 16px; }
+  .card .big { font-size: 24px; }
+  .step-circle { width: 32px; height: 32px; font-size: 13px; }
+  .app-footer { flex-direction: column; align-items: flex-start; gap: 4px; }
 }
